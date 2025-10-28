@@ -9,14 +9,14 @@ My Python Package is a Python library designed to provide [brief description of 
 To install My Python Package, you can use pip:
 
 ```bash
-pip install my-python-package
+pip install parmmosahn
 ```
 
 Alternatively, you can clone the repository and install it locally:
 
 ```bash
-git clone https://github.com/yourusername/my-python-package.git
-cd my-python-package
+git clone https://github.com/robbedewin/PaRMMoSaHN.git
+cd PaRMMoSaHN
 pip install -e .
 ```
 
@@ -25,17 +25,17 @@ pip install -e .
 Here are some examples of how to use My Python Package:
 
 ```python
-from my_package import core
+import parmmosahn as pmm
 
 # Example usage of core functionality
-result = core.some_function()
+result = pmm.core.some_function()
 print(result)
 ```
 
 For command-line interface usage, you can run:
 
 ```bash
-my-package-cli --option value
+parmmosahn --option value
 ```
 
 ## Contributing
