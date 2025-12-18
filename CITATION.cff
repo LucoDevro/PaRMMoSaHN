@@ -7,8 +7,8 @@ date-released: 2025-12-18
 authors:
   - family-names: "De Win"
     given-names: "Robbe"
-    email: "your.email@example.com"
-    orcid: "https://orcid.org/0000-0000-0000-0000"
+    email: "robbedewin@hotmail.com"
+    orcid: "https://orcid.org/0009-0006-7003-5219"
 repository-code: "https://github.com/robbedewin/PaRMMoSaHN"
 url: "https://github.com/robbedewin/PaRMMoSaHN"
 abstract: "PaRMMoSaHN is a Python library for pangenome-based reconstruction of strain-specific metabolic models from bacterial genomes. It enables researchers to construct accurate metabolic models by leveraging pangenome information to capture strain-level diversity and generate homologous network representations."
