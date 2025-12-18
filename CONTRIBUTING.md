@@ -16,7 +16,7 @@ Thank you for your interest in contributing to PaRMMoSaHN! This document provide
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    pip install -e ".[dev]"
    ```
-4. Install pre-commit hooks:
+4. Install pre-commit hooks (this will run linters and formatters before each commit):
    ```bash
    pre-commit install
    ```

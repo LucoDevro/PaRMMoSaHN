@@ -6,16 +6,20 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> 🚧 **Status: Under Active Development** - Documentation and features are being actively implemented. See [docs/TODO.md](docs/TODO.md) for tracking progress.
+
 ## Overview
 
 PaRMMoSaHN is a Python library for pangenome-based reconstruction of strain-specific metabolic models from bacterial genomes. It enables researchers to construct accurate metabolic models by leveraging pangenome information to capture strain-level diversity and generate homologous network representations.
 
 ## Features
 
-- Construct pangenome-based metabolic models
-- Derive strain-specific models from pangenome references
-- Automated and manual curation workflows
-- Integration with standard metabolic modeling frameworks
+<!-- TODO: Update with actual implemented capabilities as they're completed -->
+
+- [ ] Construct pangenome-based metabolic models (in progress)
+- [ ] Derive strain-specific models from pangenome references (planned)
+- [ ] Automated and manual curation workflows (planned)
+- [ ] Integration with standard metabolic modeling frameworks (planned)
 
 ## Installation
 
@@ -51,21 +55,22 @@ For a complete list, see [`requirements.txt`](requirements.txt).
 
 ### Example Usage
 
-```python
-from package.core import ExampleClass, helper_function
+<!-- TODO: Replace with real usage examples once core functionality is implemented -->
 
-# Example workflow
-result = helper_function()
-print(result)
+```python
+# Example placeholder - will be updated with actual API
+from package.core import PangenomeBuilder, ModelDeriver
+
+# TODO: Add real workflow example here
 ```
 
 For command-line interface:
 
 ```bash
-parmmosahn --help
+parmmosahn --help  # TODO: Document CLI commands once implemented
 ```
 
-See the [notebooks/](notebooks/) directory for detailed workflow examples.
+See the [notebooks/](notebooks/) directory for detailed workflow examples (in progress).
 
 ## Contributing
 
@@ -98,8 +103,7 @@ See [`CITATION.cff`](CITATION.cff) for more citation formats.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
-
-This work was developed as part of a thesis project at [Your Institution].
+This work was developed as part of a thesis project at KU Leuven in the laboratory of Prof. Masschelein, in collaboration with the VIB-KU Leuven Center for Microbiology.
 
 ## Contact
 
