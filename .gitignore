@@ -218,5 +218,47 @@ __marimo__/
 # vs Code settings
 .vscode/settings.json
 
-# input data files
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+
+# Jupyter Notebook files
+*.ipynb
+
+# Pre-commit
+.pre-commit-config.yaml.bak
+
+# Data files (large data should not be in git)
+# data/  # Already covered above
+
+# Model artifacts
+models/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.pickle
+
+# Logs and monitoring
+logs/
+wandb/
+mlruns/
+*.log
+
+# Large binary files
+*.h5
+*.hdf5
+*.zip
+*.tar.gz
+*.tar.bz2
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# data files
 data/

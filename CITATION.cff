@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "PaRMMoSaHN: Pangenome-based Reconstruction of Metabolic Models of Strains and Homologous Networks"
+version: 0.1.0
+date-released: 2025-12-18
+authors:
+  - family-names: "De Win"
+    given-names: "Robbe"
+    email: "your.email@example.com"
+    orcid: "https://orcid.org/0000-0000-0000-0000"
+repository-code: "https://github.com/robbedewin/PaRMMoSaHN"
+url: "https://github.com/robbedewin/PaRMMoSaHN"
+abstract: "PaRMMoSaHN is a Python library for pangenome-based reconstruction of strain-specific metabolic models from bacterial genomes. It enables researchers to construct accurate metabolic models by leveraging pangenome information to capture strain-level diversity and generate homologous network representations."
+keywords:
+  - pangenome
+  - metabolic modeling
+  - systems biology
+  - strain-specific models
+  - bioinformatics
+license: MIT
