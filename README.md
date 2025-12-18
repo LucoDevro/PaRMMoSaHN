@@ -84,7 +84,8 @@ If you use PaRMMoSaHN in your research, please cite:
 ```bibtex
 @software{dewin2025parmmosahn,
   author = {De Win, Robbe},
-  title = {PaRMMoSaHN: Pangenome-based Reconstruction of Metabolic Models of Strains and Homologous Networks},
+  title = {PaRMMoSaHN: Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks},
+  version = {0.1.0},
   year = {2025},
   url = {https://github.com/robbedewin/PaRMMoSaHN}
 }
