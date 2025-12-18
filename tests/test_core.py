@@ -1,12 +1,12 @@
 import pytest
-from my_package.core import some_function  # Replace with actual function names
+
+from package.core import ExampleClass, helper_function
 
 
-def test_some_function():
-    # Test case for some_function
-    input_data = ...  # Define input data
-    expected_output = ...  # Define expected output
-    assert some_function(input_data) == expected_output
+def test_helper_function_returns_expected_message():
+    assert helper_function() == "This is a helper function."
 
 
-# Add more test cases as needed
+@pytest.mark.parametrize("value,expected", [(0, 0), (2, 4), (-3, -6)])
+def test_example_class_example_method_doubles_value(value, expected):
+    assert ExampleClass(value).example_method() == expected
