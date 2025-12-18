@@ -4,4 +4,11 @@ __all__ = [
     "core",
     "cli",
     "utils",
-]  # Specify the modules to be exported when using 'from package import *'
+    "config",
+    "io",
+    "pangenome",
+    "models",
+    "curation",
+    "results",
+    "pipeline",
+]
