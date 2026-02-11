@@ -195,9 +195,9 @@ cython_debug/
 .abstra/
 
 # Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
+#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore
 #   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer, 
+#   and can be added to the global gitignore or merged into this file. However, if you prefer,
 #   you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
@@ -218,5 +218,47 @@ __marimo__/
 # vs Code settings
 .vscode/settings.json
 
-# input data files
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+
+# Jupyter Notebook files
+*.ipynb
+
+# Pre-commit
+.pre-commit-config.yaml.bak
+
+# Data files (large data should not be in git)
+# data/  # Already covered above
+
+# Model artifacts
+models/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.pickle
+
+# Logs and monitoring
+logs/
+wandb/
+mlruns/
+*.log
+
+# Large binary files
+*.h5
+*.hdf5
+*.zip
+*.tar.gz
+*.tar.bz2
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# data files
 data/

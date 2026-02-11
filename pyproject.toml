@@ -5,8 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "parmmosahn"
 version = "0.1.0"
-description = "PaRMMoSaHN - Pangenome-based Reconstruction of Metabolic Models of Strains and Homologous Networks"
-authors = [{name = "Your Name", email = "your.email@example.com"}]
+description = "PaRMMoSaHN - Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks"
+authors = [{name = "Your Name", email = "robbedewin@hotmail.com"}]
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.9,<3.13"

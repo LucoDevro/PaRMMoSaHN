@@ -5,11 +5,12 @@ def main_functionality():
     """
     pass
 
+
 class ExampleClass:
     """
     An example class to demonstrate how to structure your core functionality.
     """
-    
+
     def __init__(self, value):
         self.value = value
 
@@ -18,6 +19,7 @@ class ExampleClass:
         An example method that does something with the value.
         """
         return self.value * 2
+
 
 def helper_function():
     """
