@@ -1,13 +1,14 @@
 import json
 import logging
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import cobra as cb
 import pandas as pd
 
-from parmmosahn.utils import run_command
+from parmmosahn.utils import ToolExecutionError, run_command
 
 logger = logging.getLogger(__name__)
 
@@ -222,3 +223,121 @@ def apply_curations(
     curated_model_path.parent.mkdir(parents=True, exist_ok=True)
     cb.io.write_sbml_model(model, str(curated_model_path))
     logger.info(f"Saved curated model to {curated_model_path}")
+
+
+def run_sbo_annotation(
+    model_dir: str | Path,
+    output_dir: str | Path,
+    sbo_wrapper_script: str | Path,
+    sbo_dbs_dir: str | Path,
+) -> Path:
+    """
+    Runs the custom SBOannotator wrapper on all curated models.
+    """
+    model_dir = Path(model_dir).resolve()
+    output_dir = Path(output_dir).resolve()
+    sbo_wrapper = Path(sbo_wrapper_script).resolve()
+    dbs_dir = Path(sbo_dbs_dir).resolve()
+
+    if not sbo_wrapper.exists():
+        raise FileNotFoundError(f"SBOannotator wrapper not found at {sbo_wrapper}")
+
+    models_out = output_dir / "models"
+    logs_out = output_dir / "logs"
+    models_out.mkdir(parents=True, exist_ok=True)
+    logs_out.mkdir(parents=True, exist_ok=True)
+    dbs_dir.mkdir(parents=True, exist_ok=True)
+
+    xml_models = list(model_dir.glob("*.xml"))
+    logger.info(f"Adding SBO terms to {len(xml_models)} models...")
+
+    for xml in xml_models:
+        strain_name = xml.stem
+        logger.info(f"Running SBOannotator for {strain_name}...")
+
+        dest_xml = models_out / xml.name
+        log_out = logs_out / f"{strain_name}.log"
+        log_err = logs_out / f"{strain_name}.err"
+
+        cmd = ["python", str(sbo_wrapper), str(xml), str(dest_xml), str(dbs_dir)]
+
+        # Using our robust utils function to capture logs directly to files
+        run_command(cmd, stdout_file=log_out, stderr_file=log_err)
+
+    return models_out
+
+
+def run_model_polisher(
+    model_dir: str | Path, output_dir: str | Path, polisher_compose_dir: str | Path
+) -> Path:
+    """
+    Executes the Palsson lab ModelPolisher via Docker Compose.
+    """
+    model_dir = Path(model_dir).resolve()
+    output_dir = Path(output_dir).resolve()
+    compose_dir = Path(polisher_compose_dir).resolve()
+
+    compose_file = compose_dir / "docker-compose.yml"
+    if not compose_file.exists():
+        raise FileNotFoundError(f"docker-compose.yml not found in {compose_dir}")
+
+    models_out = output_dir / "models"
+    logs_out = output_dir / "logs"
+    models_out.mkdir(parents=True, exist_ok=True)
+    logs_out.mkdir(parents=True, exist_ok=True)
+
+    xml_models = list(model_dir.glob("*.xml"))
+    logger.info(f"Polishing {len(xml_models)} models with ModelPolisher (Docker)...")
+
+    for xml in xml_models:
+        strain_name = xml.stem
+        logger.info(f"Polishing {strain_name}...")
+
+        # We must mount the absolute paths for Docker volumes to work
+        vol_models = f"{model_dir}:/models/"
+        vol_out = f"{models_out}:/output/"
+        vol_logs = f"{logs_out}:/logs/"
+
+        cmd = [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_file),
+            "run",
+            "-T",
+            "--rm",
+            "-v",
+            vol_models,
+            "-v",
+            vol_out,
+            "-v",
+            vol_logs,
+            "polisher",
+            "java",
+            "-jar",
+            "/ModelPolisher-2.1-beta.jar",
+            f"--input=/models/{xml.name}",
+            f"--output=/output/{xml.name}",
+            "--annotate-with-bigg=true",
+            "--check-mass-balance=true",
+            f"--log-file=/logs/{xml.name}.log",
+        ]
+
+        try:
+            # We run this from the compose_dir as working directory using 'cwd'
+            # to ensure docker-compose finds any relative DB files it needs
+            subprocess.run(
+                cmd,
+                cwd=str(compose_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error(f"ModelPolisher failed on {strain_name}.")
+            logger.error(f"Docker STDERR:\n{e.stderr}")
+            # We continue instead of raising an exception so the rest of the batch can finish
+            continue
+
+    return models_out

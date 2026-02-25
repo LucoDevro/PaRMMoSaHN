@@ -141,6 +141,67 @@ def gather(model_dir, output_dir):
     gather_and_convert_models(model_dir, output_dir)
 
 
+@cli.command()
+@click.option("--model-dir", required=True, type=click.Path(exists=True))
+@click.option("--output-dir", default="04-annotated_models")
+@click.option(
+    "--sbo-script",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to SBOannotator_wrapper.py",
+)
+@click.option(
+    "--sbo-dbs", required=True, type=click.Path(), help="Path to SBO DBs directory"
+)
+def annotate_sbo(model_dir, output_dir, sbo_script, sbo_dbs):
+    """Add SBO terms to curated models."""
+    from parmmosahn.curation import run_sbo_annotation
+
+    run_sbo_annotation(model_dir, output_dir, sbo_script, sbo_dbs)
+
+
+@cli.command()
+@click.option("--model-dir", required=True, type=click.Path(exists=True))
+@click.option("--output-dir", default="05-polished_models")
+@click.option(
+    "--polisher-dir",
+    required=True,
+    type=click.Path(exists=True),
+    help="Dir containing ModelPolisher docker-compose.yml",
+)
+def polish(model_dir, output_dir, polisher_dir):
+    """Polish models using Palsson lab ModelPolisher (requires Docker)."""
+    from parmmosahn.curation import run_model_polisher
+
+    run_model_polisher(model_dir, output_dir, polisher_dir)
+
+
+@cli.command()
+@click.option("--genomes-dir", required=True, type=click.Path(exists=True))
+@click.option("--output-dir", required=True, type=click.Path())
+@click.option("--label", required=True)
+@click.option("--medium", required=True, type=click.Path(exists=True))
+@click.option("--curation-db", required=True, type=click.Path(exists=True))
+@click.option("--threads", default=14)
+@click.option(
+    "--skip-polisher", is_flag=True, help="Skip the Docker-based ModelPolisher step."
+)
+# ... (add options for sbo and polisher dirs if needed)
+def run(genomes_dir, output_dir, label, medium, curation_db, threads, skip_polisher):
+    """Run the entire PaRMMoSaHN pipeline from start to finish."""
+    from parmmosahn.pipeline import run_all
+
+    run_all(
+        Path(genomes_dir),
+        Path(output_dir),
+        label,
+        Path(medium),
+        Path(curation_db),
+        threads=threads,
+        skip_polisher=skip_polisher,
+    )
+
+
 def main():
     cli()
 
