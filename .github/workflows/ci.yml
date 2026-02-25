@@ -39,7 +39,8 @@ jobs:
 
     - name: Type check with mypy
       run: |
-        mypy src/
+        python -m pip install pandas-stubs  # Explicitly install pandas types
+        mypy --install-types --non-interactive src/
 
   build:
     runs-on: ubuntu-latest
