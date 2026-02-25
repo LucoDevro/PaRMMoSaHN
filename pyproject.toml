@@ -6,26 +6,26 @@ build-backend = "setuptools.build_meta"
 name = "parmmosahn"
 version = "0.1.0"
 description = "PaRMMoSaHN - Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks"
-authors = [{name = "Your Name", email = "robbedewin@hotmail.com"}]
+authors = [{name = "Robbe De Win", email = "robbedewin@hotmail.com"}]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.10,<3.14"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 
 dependencies = [
-    "numpy>=1.21.0",
-    "pandas>=1.3.0",
-    "scikit-learn>=0.24.2",
-    "matplotlib>=3.4.2",
+    "cobra>=0.29.0",     # For SBML model manipulation
+    "pandas>=1.3.0",     # For dataframes
+    "openpyxl>=3.0.0",   # Essential for reading your Excel curation DB
+    "click>=8.0.0",      # For the CLI framework
 ]
 
 [project.optional-dependencies]
@@ -37,12 +37,24 @@ dev = [
 ]
 
 [project.scripts]
-parmmosahn = "package.cli:main"
+# This exposes the command 'parmmosahn' to the terminal
+parmmosahn = "parmmosahn.cli:main"
 
 [tool.black]
 line-length = 88
-target-version = ['py39', 'py310', 'py311', 'py312']
+target-version = ['py310', 'py311', 'py312', 'py313']
 
 [tool.isort]
 profile = "black"
 line_length = 88
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "cobra.*",
+    "pandas.*",
+    "click.*"
+]
+ignore_missing_imports = true

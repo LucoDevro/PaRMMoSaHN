@@ -66,7 +66,7 @@ def remove_duplicates(model, duplicates):
 
 
 model = cb.io.read_sbml_model(source_model_filename)
-(imbalances, duplicates) = read_curations(curations_database)
+imbalances, duplicates = read_curations(curations_database)
 model = correct_imbalances(model, imbalances)
 model = remove_duplicates(model, duplicates)
 cb.io.write_sbml_model(model, curated_model_filename)

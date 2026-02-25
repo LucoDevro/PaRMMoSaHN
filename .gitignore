@@ -262,3 +262,6 @@ mlruns/
 
 # data files
 data/
+
+# test runs
+test_run/

@@ -1,4 +1,4 @@
-# my-python-package/src/package/__init__.py
+# my-python-package/src/parmmosahn/__init__.py
 
 __all__ = [
     "core",
@@ -9,6 +9,5 @@ __all__ = [
     "pangenome",
     "models",
     "curation",
-    "results",
     "pipeline",
 ]
