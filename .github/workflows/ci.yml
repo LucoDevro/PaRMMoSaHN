@@ -12,9 +12,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1. Removed windows-latest because Bioconda does not support it
+        # Removed windows-latest because Bioconda does not support it
         os: [ubuntu-latest]
-        python-version: ['3.10', '3.11', '3.12', '3.13']
+        # ppanggolin 2.2.0+ doenst work with python 3.13 yet
+        python-version: ['3.10', '3.11', '3.12']
 
     steps:
     - uses: actions/checkout@v4
