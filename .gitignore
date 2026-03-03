@@ -269,3 +269,9 @@ mlruns/
 
 # test runs
 test_run/
+
+
+# temporary files excel
+~*.xlsx
+
+docs/
