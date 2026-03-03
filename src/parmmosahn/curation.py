@@ -1,13 +1,15 @@
 import json
 import logging
 import re
+import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cobra as cb
 import pandas as pd
+from cobra.core import Model, Reaction
 
-from parmmosahn.utils import run_command
+from parmmosahn.utils import ToolExecutionError, run_command
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +82,10 @@ def extract_memote_problems(
         df = []
         for rxn_id, model_name in incidence_dict.items():
             try:
-                network = cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
-                rxn_obj = network.reactions.get_by_id(rxn_id)
+                network = cast(
+                    Model, cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
+                )
+                rxn_obj = cast(Reaction, network.reactions.get_by_id(str(rxn_id)))
                 df.append(
                     {
                         "ID": rxn_obj.id,
@@ -102,18 +106,23 @@ def extract_memote_problems(
         id_regex = re.compile(r"[0-9]{5}")
         for rxn_pair, model_name in incidence_dict.items():
             try:
-                network = cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
-                rxn_pair_obj = [network.reactions.get_by_id(r) for r in rxn_pair]
-
+                network = cast(
+                    Model, cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
+                )
+                rxn_pair_obj = [
+                    cast(Reaction, network.reactions.get_by_id(str(r)))
+                    for r in rxn_pair
+                ]
                 # Extract numbers to find default reaction
                 rxn_ids = [
-                    int(id_regex.findall(r.id)[0]) if id_regex.findall(r.id) else 99999
+                    int(match[0]) if (match := id_regex.findall(r.id)) else 99999
                     for r in rxn_pair_obj
                 ]
+
                 min_idx = rxn_ids.index(min(rxn_ids))
 
-                default_rxn = rxn_pair_obj.pop(min_idx)
-                non_default_rxn = rxn_pair_obj[0]
+                default_rxn = cast(Reaction, rxn_pair_obj.pop(min_idx))
+                non_default_rxn = cast(Reaction, rxn_pair_obj[0])
 
                 df.append(
                     {
@@ -169,12 +178,12 @@ def apply_curations(
         logger.error(f"Failed to read curation DB: {e}. Are the sheet names correct?")
         raise
 
-    model = cb.io.read_sbml_model(str(source_model_path))
+    model = cast(Model, cb.io.read_sbml_model(str(source_model_path)))
 
     # Correct Imbalances
     for rxn_name, form in zip(imbalances["reaction_id"], imbalances["new_formula"]):
         try:
-            rxn = model.reactions.get_by_id(rxn_name)
+            rxn = cast(Reaction, model.reactions.get_by_id(str(rxn_name)))
             if form:
                 logger.debug(f"Correcting imbalanced {rxn_name}")
                 rxn.build_reaction_from_string(str(form))
@@ -194,8 +203,8 @@ def apply_curations(
             if len(rxn_pair_names) != 2:
                 continue
 
-            rxn1 = model.reactions.get_by_id(rxn_pair_names[0])
-            rxn2 = model.reactions.get_by_id(rxn_pair_names[1])
+            rxn1 = cast(Reaction, model.reactions.get_by_id(rxn_pair_names[0]))
+            rxn2 = cast(Reaction, model.reactions.get_by_id(rxn_pair_names[1]))
 
             logger.debug(
                 f"Correcting duplicate pair ({rxn1.id}, {rxn2.id}) with decision {decision}"
@@ -222,3 +231,133 @@ def apply_curations(
     curated_model_path.parent.mkdir(parents=True, exist_ok=True)
     cb.io.write_sbml_model(model, str(curated_model_path))
     logger.info(f"Saved curated model to {curated_model_path}")
+
+
+def run_sbo_annotation(
+    model_dir: str | Path,
+    output_dir: str | Path,
+    sbo_wrapper_script: str | Path,
+    sbo_dbs_dir: str | Path,
+) -> Path:
+    """
+    Runs the custom SBOannotator wrapper on all curated models.
+    """
+    model_dir = Path(model_dir).resolve()
+    output_dir = Path(output_dir).resolve()
+    sbo_wrapper = Path(sbo_wrapper_script).resolve()
+    dbs_dir = Path(sbo_dbs_dir).resolve()
+
+    if not sbo_wrapper.exists():
+        raise FileNotFoundError(f"SBOannotator wrapper not found at {sbo_wrapper}")
+
+    models_out = output_dir / "models"
+    logs_out = output_dir / "logs"
+    models_out.mkdir(parents=True, exist_ok=True)
+    logs_out.mkdir(parents=True, exist_ok=True)
+    dbs_dir.mkdir(parents=True, exist_ok=True)
+
+    xml_models = list(model_dir.glob("*.xml"))
+    logger.info(f"Adding SBO terms to {len(xml_models)} models...")
+
+    for xml in xml_models:
+        strain_name = xml.stem
+        logger.info(f"Running SBOannotator for {strain_name}...")
+
+        dest_xml = models_out / xml.name
+        log_out = logs_out / f"{strain_name}.log"
+        log_err = logs_out / f"{strain_name}.err"
+
+        cmd = ["python", str(sbo_wrapper), str(xml), str(dest_xml), str(dbs_dir)]
+
+        # Using our robust utils function to capture logs directly to files
+        run_command(cmd, stdout_file=log_out, stderr_file=log_err)
+
+    return models_out
+
+
+def run_model_polisher(
+    model_dir: str | Path,
+    output_dir: str | Path,
+    polisher_compose_dir: str | Path,
+    engine: str = "docker",  # New parameter: "docker", "podman", or "apptainer"
+) -> Path:
+    """
+    Executes the Palsson lab ModelPolisher via Docker Compose or alternative engines.
+    """
+    model_dir = Path(model_dir).resolve()
+    output_dir = Path(output_dir).resolve()
+    compose_dir = Path(polisher_compose_dir).resolve()
+
+    # Determine the base command based on the engine
+    if engine == "docker":
+        base_cmd = ["docker", "compose"]
+    elif engine == "podman":
+        base_cmd = ["podman-compose"]
+    elif engine == "apptainer":
+        # Apptainer compose is a newer feature, but works similarly for HPC
+        base_cmd = ["apptainer", "compose"]
+    else:
+        raise ValueError(f"Unsupported container engine: {engine}")
+
+    compose_file = compose_dir / "docker-compose.yml"
+    if not compose_file.exists():
+        raise FileNotFoundError(f"docker-compose.yml not found in {compose_dir}")
+
+    models_out = output_dir / "models"
+    logs_out = output_dir / "logs"
+    models_out.mkdir(parents=True, exist_ok=True)
+    logs_out.mkdir(parents=True, exist_ok=True)
+
+    xml_models = list(model_dir.glob("*.xml"))
+    logger.info(f"Polishing {len(xml_models)} models with ModelPolisher ({engine})...")
+
+    for xml in xml_models:
+        strain_name = xml.stem
+        logger.info(f"Polishing {strain_name}...")
+
+        # We must mount the absolute paths for Docker volumes to work
+        vol_models = f"{model_dir}:/models/"
+        vol_out = f"{models_out}:/output/"
+        vol_logs = f"{logs_out}:/logs/"
+
+        cmd = base_cmd + [
+            "-f",
+            str(compose_file),
+            "run",
+            "-T",
+            "--rm",
+            "-v",
+            vol_models,
+            "-v",
+            vol_out,
+            "-v",
+            vol_logs,
+            "polisher",
+            "java",
+            "-jar",
+            "/ModelPolisher-2.1-beta.jar",
+            f"--input=/models/{xml.name}",
+            f"--output=/output/{xml.name}",
+            "--annotate-with-bigg=true",
+            "--check-mass-balance=true",
+            f"--log-file=/logs/{xml.name}.log",
+        ]
+
+        try:
+            # We run this from the compose_dir as working directory using 'cwd'
+            # to ensure docker-compose finds any relative DB files it needs
+            subprocess.run(
+                cmd,
+                cwd=str(compose_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error(f"ModelPolisher failed on {strain_name}.")
+            logger.error(f"Docker STDERR:\n{e.stderr}")
+            # We continue instead of raising an exception so the rest of the batch can finish
+            continue
+
+    return models_out

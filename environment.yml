@@ -1,20 +1,17 @@
-name: parmmosahn
+name: parmmosahn_env
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
   - defaults
 dependencies:
-  - python>=3.9,<3.13
-  - pip
-  # External CLI tools
-  - gapseq
-  - ppanggolin
-  - diamond
-  - memote
-  # Python packages
-  - biopython
-  - pandas
-  - openpyxl  # for Excel file reading
-  - cobra>=0.26.0  # COBRApy for metabolic models
+  # We leave Python somewhat loose here, because GitHub Actions will override it
+  # during the matrix testing!
+  - python>=3.10
+
+  # Pin external binaries to specific minor versions
+  - bioconda::ppanggolin=2.2.*
+  - bioconda::gapseq=1.4.*
+  - bioconda::diamond=2.1.*
+
   - pip:
-    - -e .
+    - .[dev]  # In the repo, this installs the local package and test dependencies
