@@ -3,10 +3,11 @@ import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cobra as cb
 import pandas as pd
+from cobra.core import Model, Reaction
 
 from parmmosahn.utils import ToolExecutionError, run_command
 
@@ -81,8 +82,10 @@ def extract_memote_problems(
         df = []
         for rxn_id, model_name in incidence_dict.items():
             try:
-                network = cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
-                rxn_obj = network.reactions.get_by_id(rxn_id)
+                network = cast(
+                    Model, cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
+                )
+                rxn_obj = cast(Reaction, network.reactions.get_by_id(str(rxn_id)))
                 df.append(
                     {
                         "ID": rxn_obj.id,
@@ -103,18 +106,23 @@ def extract_memote_problems(
         id_regex = re.compile(r"[0-9]{5}")
         for rxn_pair, model_name in incidence_dict.items():
             try:
-                network = cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
-                rxn_pair_obj = [network.reactions.get_by_id(r) for r in rxn_pair]
-
+                network = cast(
+                    Model, cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
+                )
+                rxn_pair_obj = [
+                    cast(Reaction, network.reactions.get_by_id(str(r)))
+                    for r in rxn_pair
+                ]
                 # Extract numbers to find default reaction
                 rxn_ids = [
-                    int(id_regex.findall(r.id)[0]) if id_regex.findall(r.id) else 99999
+                    int(match[0]) if (match := id_regex.findall(r.id)) else 99999
                     for r in rxn_pair_obj
                 ]
+
                 min_idx = rxn_ids.index(min(rxn_ids))
 
-                default_rxn = rxn_pair_obj.pop(min_idx)
-                non_default_rxn = rxn_pair_obj[0]
+                default_rxn = cast(Reaction, rxn_pair_obj.pop(min_idx))
+                non_default_rxn = cast(Reaction, rxn_pair_obj[0])
 
                 df.append(
                     {
@@ -170,12 +178,12 @@ def apply_curations(
         logger.error(f"Failed to read curation DB: {e}. Are the sheet names correct?")
         raise
 
-    model = cb.io.read_sbml_model(str(source_model_path))
+    model = cast(Model, cb.io.read_sbml_model(str(source_model_path)))
 
     # Correct Imbalances
     for rxn_name, form in zip(imbalances["reaction_id"], imbalances["new_formula"]):
         try:
-            rxn = model.reactions.get_by_id(rxn_name)
+            rxn = cast(Reaction, model.reactions.get_by_id(str(rxn_name)))
             if form:
                 logger.debug(f"Correcting imbalanced {rxn_name}")
                 rxn.build_reaction_from_string(str(form))
@@ -195,8 +203,8 @@ def apply_curations(
             if len(rxn_pair_names) != 2:
                 continue
 
-            rxn1 = model.reactions.get_by_id(rxn_pair_names[0])
-            rxn2 = model.reactions.get_by_id(rxn_pair_names[1])
+            rxn1 = cast(Reaction, model.reactions.get_by_id(rxn_pair_names[0]))
+            rxn2 = cast(Reaction, model.reactions.get_by_id(rxn_pair_names[1]))
 
             logger.debug(
                 f"Correcting duplicate pair ({rxn1.id}, {rxn2.id}) with decision {decision}"
