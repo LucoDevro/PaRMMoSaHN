@@ -274,4 +274,8 @@ test_run/
 # temporary files excel
 ~*.xlsx
 
+
 docs/
+
+# Remove the notebook files
+notebooks/
