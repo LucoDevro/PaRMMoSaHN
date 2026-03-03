@@ -1,110 +1,130 @@
 # PaRMMoSaHN
 
-**Pa**ngenome-based **R**econstruction of **M**etabolic **Mo**dels of **S**trains **a**nd **H**omologous **N**etworks
+**Pa**ngenome **R**eference-based **M**etabolic **Mo**delling by **Sa**ving **H**omolog **N**etworks
 
 [![CI](https://github.com/robbedewin/PaRMMoSaHN/workflows/CI/badge.svg)](https://github.com/robbedewin/PaRMMoSaHN/actions)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-> 🚧 **Status: Under Active Development** - Documentation and features are being actively implemented. See [docs/TODO.md](docs/TODO.md) for tracking progress.
 
 ## Overview
 
-PaRMMoSaHN is a Python library for pangenome-based reconstruction of strain-specific metabolic models from bacterial genomes. It enables researchers to construct accurate metabolic models by leveraging pangenome information to capture strain-level diversity and generate homologous network representations.
+**PaRMMoSaHN** is a Python-based pipeline that bridges partitioned pangenome graphs with high-fidelity metabolic reconstruction.
+
+Instead of building metabolic models for hundreds of strains from scratch (which is computationally expensive and prone to inconsistent gap-filling), PaRMMoSaHN builds a singular high-quality "pan-model" and rapidly derives strain-specific models by mapping strains to the pan-model via homology networks.
 
 ## Features
 
-<!-- TODO: Update with actual implemented capabilities as they're completed -->
-
-- [ ] Construct pangenome-based metabolic models (in progress)
-- [ ] Derive strain-specific models from pangenome references (planned)
-- [ ] Automated and manual curation workflows (planned)
-- [ ] Integration with standard metabolic modeling frameworks (planned)
+- **Pangenome Construction:** Automated soft-core genome extraction using [PPanGGOLiN](https://github.com/labgem/PPanGGOLiN).
+- **Pan-Model Generation:** High-fidelity pangenome-scale metabolic network reconstruction via [gapseq](https://gapseq.readthedocs.io/).
+- **Rapid Strain Derivation:** Maps individual strains to the pan-model using [DIAMOND](https://github.com/bbuchfink/diamond) and gap-fills missing reactions.
+- **Automated Curation:** Handles duplicates, stoichiometry correction, and MEMOTE-driven curation via an intuitive Excel decision database using `cobrapy`.
+- **FAIR Compliance:** Optionally polishes and annotates final SBML models using the Palsson lab's [ModelPolisher](https://github.com/draeger-lab/ModelPolisher) (supports Docker, Podman, and Apptainer for HPCs).
+- **Multi-format Export:** Exports final validated models to SBML (.xml), JSON, and MATLAB formats.
 
 ## Installation
 
-### From Source
+Because PaRMMoSaHN orchestrates several complex bioinformatics binaries, **you must use Conda/Mamba** to install the environment. Standard `pip` cannot install tools like `diamond` or `gapseq`.
 
-Clone the repository and install in development mode:
-
+### 1. Clone the repository
 ```bash
-git clone https://github.com/robbedewin/PaRMMoSaHN.git
+git clone [https://github.com/robbedewin/PaRMMoSaHN.git](https://github.com/robbedewin/PaRMMoSaHN.git)
 cd PaRMMoSaHN
-pip install -e .
+
 ```
 
-### Dependencies
+### 2. Create the Conda Environment
 
-PaRMMoSaHN requires Python 3.9 or higher. Key dependencies include:
-- numpy
-- pandas
-- scikit-learn
-- matplotlib
+We provide an `environment.yml` that strictly pins the compatible versions of all external dependencies.
+*(Note: We highly recommend using `mamba` or `micromamba` for faster installation).*
 
-For a complete list, see [`requirements.txt`](requirements.txt).
+```bash
+conda env create -f environment.yml
+conda activate parmmosahn_env
+
+```
 
 ## Quick Start
 
-### Workflow
+PaRMMoSaHN is primarily driven through its Command Line Interface (CLI).
 
-1. **Construct Pangenome**: Build a pangenome from genome sequences
-2. **Build Pan-Model**: Create a pangenome-wide metabolic model
-3. **Derive Strain Models**: Generate strain-specific models
-4. **Curate Models**: Apply manual and automatic curation
-5. **Analyze Results**: Gather and visualize results
+### The Orchestrator (`run`)
 
-### Example Usage
-
-<!-- TODO: Replace with real usage examples once core functionality is implemented -->
-
-```python
-# Example placeholder - will be updated with actual API
-from package.core import PangenomeBuilder, ModelDeriver
-
-# TODO: Add real workflow example here
-```
-
-For command-line interface:
+To execute the pipeline from start to finish, use the `run` command.
 
 ```bash
-parmmosahn --help  # TODO: Document CLI commands once implemented
+parmmosahn run \
+  --genomes-dir /path/to/gbff_files/ \
+  --output-dir ./parmmosahn_results/ \
+  --label My_Strains \
+  --medium medium_config.csv \
+  --curation-db curation_database.xlsx \
+  --threads 14
+
 ```
 
-See the [notebooks/](notebooks/) directory for detailed workflow examples (in progress).
+### Required Inputs
 
-## Contributing
+1. **`--genomes-dir`**: A directory containing your strain genomes in GenBank format (`.gbff`).
+2. **`--medium`**: A `.csv` file defining the growth medium for gap-filling (gapseq format).
+3. **`--curation-db`**: An Excel (`.xlsx`) file containing curation rules. Must contain sheets named `corrected_balances` and `duplicate_reactions`.
 
-Contributions are welcome! Please follow these steps to contribute:
+## Advanced Configuration & HPC Usage
 
-1. Fork the repository.
-2. Create a new branch (`git checkout -b feature/YourFeature`).
-3. Make your changes and commit them (`git commit -m 'Add some feature'`).
-4. Push to the branch (`git push origin feature/YourFeature`).
-5. Open a pull request.
+PaRMMoSaHN exposes advanced parameters for highly diverse pangenomes and High-Performance Computing (HPC) environments.
+
+```bash
+parmmosahn run ... \
+  --cluster-id 0.80 \
+  --cluster-cov 0.80 \
+  --diamond-bits 150 \
+  --gapseq-bits 150
+
+```
+
+### ModelPolisher on HPC Clusters
+
+By default, Step 6 (ModelPolisher) attempts to use `docker compose`. If you are running on an HPC cluster where Docker is forbidden, you can switch the container engine to **Apptainer** or **Podman**, or skip the step entirely:
+
+```bash
+# Use Apptainer (Singularity) instead of Docker
+parmmosahn run ... --container-engine apptainer
+
+# Or skip the polishing step entirely
+parmmosahn run ... --skip-polisher
+
+```
+
+## Modular Usage
+
+You can also run specific parts of the pipeline individually if you only need a pangenome or a pan-model:
+
+```bash
+parmmosahn pangenome --genomes-dir ./data --label test --threads 8
+parmmosahn panmodel --fasta softcore.faa --threads 8
+
+```
+
+Run `parmmosahn --help` for a full list of commands.
 
 ## Citation
 
 If you use PaRMMoSaHN in your research, please cite:
 
 ```bibtex
-@software{dewin2025parmmosahn,
+@software{dewin2026parmmosahn,
   author = {De Win, Robbe},
   title = {PaRMMoSaHN: Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks},
   version = {0.1.0},
-  year = {2025},
-  url = {https://github.com/robbedewin/PaRMMoSaHN}
+  year = {2026},
+  url = {[https://github.com/robbedewin/PaRMMoSaHN](https://github.com/robbedewin/PaRMMoSaHN)}
 }
-```
 
-See [`CITATION.cff`](CITATION.cff) for more citation formats.
+```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
 
 ## Acknowledgments
-This work was developed as part of a thesis project at KU Leuven in the laboratory of Prof. Masschelein, in collaboration with the VIB-KU Leuven Center for Microbiology.
 
-## Contact
-
-For questions or issues, please [open an issue](https://github.com/robbedewin/PaRMMoSaHN/issues) on GitHub.
+This work was developed as part of a Master's thesis project at KU Leuven in the laboratory of Prof. Masschelein, in collaboration with the VIB-KU Leuven Center for Microbiology.
