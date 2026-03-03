@@ -260,8 +260,12 @@ mlruns/
 *.bak
 *~
 
-# data files
-data/
+# Ignore only top-level data directory
+/data/
+
+# Keep test fixtures
+!/tests/data/
+!/tests/data/**
 
 # test runs
 test_run/
