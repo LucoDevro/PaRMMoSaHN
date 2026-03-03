@@ -1,8 +1,9 @@
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
-from parmmosahn.models import clean_fasta_file
+from parmmosahn.models import clean_fasta_file, filter_blast_table
 
 
 def test_clean_fasta_file_with_bad_chars(tmp_path: Path):
@@ -37,3 +38,71 @@ def test_clean_fasta_file_decoding_error(tmp_path: Path):
 
     with pytest.raises(UnicodeDecodeError):
         clean_fasta_file(binary_file)
+
+
+def test_filter_blast_table(tmp_path: Path):
+    """
+    Test the Pandas logic that merges BLAST hits with the pan-model
+    and filters out lower-scoring duplicates for the same pathway.
+    """
+    # 1. Create dummy input files
+    blast_file = tmp_path / "strain.tsv"
+    pan_rxn_file = tmp_path / "pan_reactions.tsv"
+    out_file = tmp_path / "filtered_output.tsv"
+
+    # Dummy DIAMOND output: 12 columns total (we care about 0, 1, and 11)
+    # Col 0: Query (strain gene), Col 1: Target (pan gene), Col 11: Bitscore
+    blast_data = (
+        "gene1\tpan_A\tx\tx\tx\tx\tx\tx\tx\tx\tx\t100.0\n"
+        "gene1\tpan_B\tx\tx\tx\tx\tx\tx\tx\tx\tx\t50.0\n"  # Lower score, same gene/pathway
+        "gene2\tpan_C\tx\tx\tx\tx\tx\tx\tx\tx\tx\t120.5\n"
+    )
+    blast_file.write_text(blast_data, encoding="utf-8")
+
+    # Dummy Pan-model table (needs to handle commented lines too)
+    pan_rxn_data = (
+        "# This is a comment that should be ignored\n"
+        "stitle\trxn\tpathway\textra_info\n"
+        "pan_A\tRXN1\tPATH1\tdata_A\n"
+        "pan_B\tRXN2\tPATH1\tdata_B\n"  # gene1 hits both pan_A and pan_B which are in PATH1
+        "pan_C\tRXN3\tPATH2\tdata_C\n"
+    )
+    pan_rxn_file.write_text(pan_rxn_data, encoding="utf-8")
+
+    # 2. Run the function
+    filter_blast_table(
+        pan_reaction_table_file=pan_rxn_file,
+        strain_blast_hits_file=blast_file,
+        output_file=out_file,
+    )
+
+    # 3. Assertions
+    assert out_file.exists()
+
+    # Read the output to verify the logic
+    result_df = pd.read_table(out_file)
+
+    # Expected behavior:
+    # - gene1 -> pan_A (RXN1, PATH1) score 100.0 -> KEPT
+    # - gene1 -> pan_B (RXN2, PATH1) score 50.0 -> DROPPED (duplicate query/pathway with lower score)
+    # - gene2 -> pan_C (RXN3, PATH2) score 120.5 -> KEPT
+
+    assert (
+        len(result_df) == 2
+    ), "Should have dropped the lower scoring duplicate pathway."
+
+    # Verify the columns were cleaned up correctly
+    assert list(result_df.columns) == ["stitle", "rxn", "pathway", "extra_info"]
+
+    # Verify the 'stitle' column was overwritten with the 'Query' (strain gene) values
+    stitles = result_df["stitle"].tolist()
+    assert "gene1" in stitles
+    assert "gene2" in stitles
+    assert "pan_A" not in stitles  # Target pan_A should be gone
+
+    # Verify the specific surviving rows
+    gene1_row = result_df[result_df["stitle"] == "gene1"].iloc[0]
+    assert (
+        gene1_row["rxn"] == "RXN1"
+    )  # Pan_A's reaction, because it had the higher score
+    assert gene1_row["pathway"] == "PATH1"
