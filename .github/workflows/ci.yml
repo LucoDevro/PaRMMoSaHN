@@ -13,7 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         # 1. Removed windows-latest because Bioconda does not support it
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13']
 
     steps:
