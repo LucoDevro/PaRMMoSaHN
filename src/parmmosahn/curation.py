@@ -268,14 +268,28 @@ def run_sbo_annotation(
 
 
 def run_model_polisher(
-    model_dir: str | Path, output_dir: str | Path, polisher_compose_dir: str | Path
+    model_dir: str | Path,
+    output_dir: str | Path,
+    polisher_compose_dir: str | Path,
+    engine: str = "docker",  # New parameter: "docker", "podman", or "apptainer"
 ) -> Path:
     """
-    Executes the Palsson lab ModelPolisher via Docker Compose.
+    Executes the Palsson lab ModelPolisher via Docker Compose or alternative engines.
     """
     model_dir = Path(model_dir).resolve()
     output_dir = Path(output_dir).resolve()
     compose_dir = Path(polisher_compose_dir).resolve()
+
+    # Determine the base command based on the engine
+    if engine == "docker":
+        base_cmd = ["docker", "compose"]
+    elif engine == "podman":
+        base_cmd = ["podman-compose"]
+    elif engine == "apptainer":
+        # Apptainer compose is a newer feature, but works similarly for HPC
+        base_cmd = ["apptainer", "compose"]
+    else:
+        raise ValueError(f"Unsupported container engine: {engine}")
 
     compose_file = compose_dir / "docker-compose.yml"
     if not compose_file.exists():
@@ -287,7 +301,7 @@ def run_model_polisher(
     logs_out.mkdir(parents=True, exist_ok=True)
 
     xml_models = list(model_dir.glob("*.xml"))
-    logger.info(f"Polishing {len(xml_models)} models with ModelPolisher (Docker)...")
+    logger.info(f"Polishing {len(xml_models)} models with ModelPolisher ({engine})...")
 
     for xml in xml_models:
         strain_name = xml.stem
@@ -298,9 +312,7 @@ def run_model_polisher(
         vol_out = f"{models_out}:/output/"
         vol_logs = f"{logs_out}:/logs/"
 
-        cmd = [
-            "docker",
-            "compose",
+        cmd = base_cmd + [
             "-f",
             str(compose_file),
             "run",

@@ -183,11 +183,23 @@ def polish(model_dir, output_dir, polisher_dir):
 @click.option("--medium", required=True, type=click.Path(exists=True))
 @click.option("--curation-db", required=True, type=click.Path(exists=True))
 @click.option("--threads", default=14)
+@click.option("--skip-polisher", is_flag=True, help="Skip the ModelPolisher step.")
 @click.option(
-    "--skip-polisher", is_flag=True, help="Skip the Docker-based ModelPolisher step."
+    "--container-engine",
+    type=click.Choice(["docker", "podman", "apptainer"]),
+    default="docker",
+    help="Container engine to use for ModelPolisher.",
 )
-# ... (add options for sbo and polisher dirs if needed)
-def run(genomes_dir, output_dir, label, medium, curation_db, threads, skip_polisher):
+def run(
+    genomes_dir,
+    output_dir,
+    label,
+    medium,
+    curation_db,
+    threads,
+    skip_polisher,
+    container_engine,
+):
     """Run the entire PaRMMoSaHN pipeline from start to finish."""
     from parmmosahn.pipeline import run_all
 
@@ -199,6 +211,7 @@ def run(genomes_dir, output_dir, label, medium, curation_db, threads, skip_polis
         Path(curation_db),
         threads=threads,
         skip_polisher=skip_polisher,
+        engine=container_engine,
     )
 
 

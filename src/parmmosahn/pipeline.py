@@ -21,6 +21,7 @@ def run_all(
     sbo_dbs: Path | None = None,
     polisher_dir: Path | None = None,
     skip_polisher: bool = False,
+    engine: str = "docker",
 ):
     """Executes the entire PaRMMoSaHN pipeline from end to end."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -74,15 +75,17 @@ def run_all(
         logger.info("=== STEP 6: ModelPolisher (SKIPPED by user) ===")
     elif not polisher_dir:
         logger.info("=== STEP 6: ModelPolisher (SKIPPED - Missing compose dir) ===")
-    elif not shutil.which("docker"):
+    elif not shutil.which(
+        engine if engine != "podman" else "podman-compose"
+    ):  # Quick check if tool exists
         logger.warning(
-            "=== STEP 6: ModelPolisher (SKIPPED - Docker is not installed on this system) ==="
+            f"=== STEP 6: ModelPolisher (SKIPPED - {engine} is not installed) ==="
         )
     else:
-        logger.info("=== STEP 6: ModelPolisher (Docker) ===")
+        logger.info(f"=== STEP 6: ModelPolisher ({engine}) ===")
         polished_out = output_dir / "06-polished"
         current_models_dir = run_model_polisher(
-            current_models_dir, polished_out, polisher_dir
+            current_models_dir, polished_out, polisher_dir, engine=engine
         )
 
     # --- STEP 7: Gather & Convert ---
