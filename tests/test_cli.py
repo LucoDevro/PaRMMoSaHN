@@ -99,4 +99,5 @@ def test_cli_run_all(mock_run_all, runner, tmp_path: Path):
         Path(db_file),
         threads=8,
         skip_polisher=True,
+        engine="docker",  # Default value
     )
