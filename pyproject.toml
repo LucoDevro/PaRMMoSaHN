@@ -25,6 +25,7 @@ dependencies = [
     "pandas>=1.3.0",     # For dataframes
     "openpyxl>=3.0.0",   # Essential for reading your Excel curation DB
     "click>=8.0.0",      # For the CLI framework
+    "memote>=0.13.0",    # For automated model curation
 ]
 
 [project.optional-dependencies]
