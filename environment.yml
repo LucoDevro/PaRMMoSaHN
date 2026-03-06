@@ -12,6 +12,7 @@ dependencies:
   - bioconda::ppanggolin=2.2.*
   - bioconda::gapseq=1.4.*
   - bioconda::diamond=2.1.*
+  - numpy>=1.25,<2.0  # ppanggolin requires numpy<2.0
 
   - pip:
     - .[dev]  # In the repo, this installs the local package and test dependencies
