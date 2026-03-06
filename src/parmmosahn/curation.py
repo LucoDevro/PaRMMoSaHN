@@ -1,13 +1,19 @@
+import contextlib
 import json
 import logging
+import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Dict, Tuple, cast
 
 import cobra as cb
 import pandas as pd
 from cobra.core import Model, Reaction
+
+# Import memote API directly
+from memote.suite import api as memote_api
+from memote.suite.reporting import ReportConfiguration
 
 from parmmosahn.utils import ToolExecutionError, run_command
 
@@ -19,25 +25,51 @@ logger = logging.getLogger(__name__)
 
 
 def run_memote_snapshot(model_path: Path, output_json: Path, output_html: Path) -> None:
-    """Runs memote report snapshot on a single model."""
+    """
+    Runs memote report snapshot on a single model via the native Python API.
+    Saves both the JSON test results and the rendered HTML report.
+    """
     logger.info(f"Running memote snapshot on {model_path.name}...")
-    # Requires your modified memote version that supports --json
-    cmd = [
-        "memote",
-        "report",
-        "snapshot",
-        "--json",
-        str(output_json),
-        "--filename",
-        str(output_html),
-        str(model_path),
-    ]
-    # We suppress stdout/stderr as memote is very noisy
-    run_command(
-        cmd,
-        stdout_file=output_json.parent / "memote_run.log",
-        stderr_file=output_json.parent / "memote_run.err",
-    )
+
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_json.parent.mkdir(parents=True, exist_ok=True)
+
+    # 1. Validate and load model via memote's parser
+    model_obj, sbml_ver, notifications = memote_api.validate_model(str(model_path))
+    if model_obj is None:
+        logger.error(
+            f"Failed to load model {model_path.name} for memote due to SBML errors."
+        )
+        return
+
+    # 2. Test model (suppress stdout to avoid pytest polluting the console)
+    pytest_args = ["--tb", "no", "-q"]
+
+    with open(os.devnull, "w") as devnull:
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            # Tell Pylance this returns a Tuple because results=True
+            output = memote_api.test_model(
+                model_obj, sbml_version=sbml_ver, results=True, pytest_args=pytest_args
+            )
+            # Safely unpack by casting to the expected Tuple signature
+            code, results = cast(Tuple[int, Any], output)
+
+    # 3. Generate and save the reports
+    config = ReportConfiguration.load()
+
+    # Save HTML report
+    html_report = memote_api.snapshot_report(results, config=config, html=True)
+    if html_report:
+        with output_html.open("w", encoding="utf-8") as f:
+            f.write(cast(str, html_report))
+
+    # Save JSON report (test data)
+    json_report = memote_api.snapshot_report(results, config=config, html=False)
+    if json_report:
+        with output_json.open("w", encoding="utf-8") as f:
+            f.write(cast(str, json_report))
+
+    logger.info(f"Memote snapshot completed for {model_path.name}.")
 
 
 def extract_memote_problems(
@@ -45,20 +77,25 @@ def extract_memote_problems(
 ) -> None:
     """
     Parses memote JSON reports to find imbalances and duplicates.
-    Replaces: make_curation_db.py
+    Generates tabular files for further automated curation.
     """
     logger.info("Extracting problem balances and duplicates from memote reports...")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    def read_test_results(test_key: str) -> dict:
+    def read_test_results(test_key: str) -> Dict[Any, str]:
+        """Extracts unique problem instances from a specific test across all JSON reports."""
         rxns: set[Any] = set()
-        first_encountered = {}
+        first_encountered: dict[Any, str] = {}
+
         for report_file in report_dir.glob("*.json"):
             model_name = report_file.stem
             try:
-                with report_file.open("r") as f:
+                with report_file.open("r", encoding="utf-8") as f:
                     cont = json.load(f)
-                encountered_rxns = cont["tests"][test_key]["data"]
+
+                encountered_rxns = (
+                    cont.get("tests", {}).get(test_key, {}).get("data", [])
+                )
 
                 if not encountered_rxns:
                     continue
@@ -69,24 +106,28 @@ def extract_memote_problems(
                 new_rxns = set(encountered_rxns).difference(rxns)
                 for r in new_rxns:
                     first_encountered[r] = model_name
-                rxns = rxns.union(new_rxns)
+
+                rxns.update(new_rxns)
             except (KeyError, IndexError, json.JSONDecodeError):
-                logger.warning(f"Could not parse {test_key} in {report_file.name}")
+                logger.warning(f"Could not parse '{test_key}' in {report_file.name}")
+
         return first_encountered
 
     first_encounter_charge = read_test_results("test_reaction_charge_balance")
     first_encounter_mass = read_test_results("test_reaction_mass_balance")
     first_encounter_dupl = read_test_results("test_find_duplicate_reactions")
 
-    def save_problem_balances(incidence_dict: dict, save_name: str):
-        df = []
+    def save_problem_balances(incidence_dict: Dict[str, str], save_name: str) -> None:
+        df_rows = []
         for rxn_id, model_name in incidence_dict.items():
+            model_path = model_dir / f"{model_name}.xml"
+            if not model_path.exists():
+                continue
+
             try:
-                network = cast(
-                    Model, cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
-                )
+                network = cast(Model, cb.io.read_sbml_model(str(model_path)))
                 rxn_obj = cast(Reaction, network.reactions.get_by_id(str(rxn_id)))
-                df.append(
+                df_rows.append(
                     {
                         "ID": rxn_obj.id,
                         "Name": rxn_obj.name,
@@ -98,33 +139,42 @@ def extract_memote_problems(
             except Exception as e:
                 logger.debug(f"Skipping {rxn_id} in {model_name}: {e}")
 
-        if df:
-            pd.DataFrame(df).to_csv(output_dir / save_name, sep="\t", index=False)
+        if df_rows:
+            out_file = output_dir / save_name
+            pd.DataFrame(df_rows).to_csv(out_file, sep="\t", index=False)
+            logger.info(f"Saved {len(df_rows)} problem balances to {out_file.name}")
 
-    def save_duplicates(incidence_dict: dict, save_name: str):
-        df = []
-        id_regex = re.compile(r"[0-9]{5}")
+    def save_duplicates(
+        incidence_dict: Dict[Tuple[str, ...], str], save_name: str
+    ) -> None:
+        import re
+
+        df_rows = []
+        id_regex = re.compile(r"\d{5}")
+
         for rxn_pair, model_name in incidence_dict.items():
+            model_path = model_dir / f"{model_name}.xml"
+            if not model_path.exists():
+                continue
+
             try:
-                network = cast(
-                    Model, cb.io.read_sbml_model(str(model_dir / f"{model_name}.xml"))
-                )
+                network = cast(Model, cb.io.read_sbml_model(str(model_path)))
                 rxn_pair_obj = [
                     cast(Reaction, network.reactions.get_by_id(str(r)))
                     for r in rxn_pair
                 ]
-                # Extract numbers to find default reaction
+
+                # Extract numbers to guess the 'default' base reaction
                 rxn_ids = [
                     int(match[0]) if (match := id_regex.findall(r.id)) else 99999
                     for r in rxn_pair_obj
                 ]
 
                 min_idx = rxn_ids.index(min(rxn_ids))
-
                 default_rxn = cast(Reaction, rxn_pair_obj.pop(min_idx))
                 non_default_rxn = cast(Reaction, rxn_pair_obj[0])
 
-                df.append(
+                df_rows.append(
                     {
                         "First_encounter": model_name,
                         "Pair": str(rxn_pair).strip("()"),
@@ -145,8 +195,10 @@ def extract_memote_problems(
             except Exception as e:
                 logger.debug(f"Skipping pair {rxn_pair} in {model_name}: {e}")
 
-        if df:
-            pd.DataFrame(df).to_csv(output_dir / save_name, sep="\t", index=False)
+        if df_rows:
+            out_file = output_dir / save_name
+            pd.DataFrame(df_rows).to_csv(out_file, sep="\t", index=False)
+            logger.info(f"Saved {len(df_rows)} duplicate pairs to {out_file.name}")
 
     save_problem_balances(first_encounter_charge, "charge_imbalances.tsv")
     save_problem_balances(first_encounter_mass, "mass_imbalances.tsv")
