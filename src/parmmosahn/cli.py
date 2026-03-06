@@ -119,7 +119,7 @@ def strains(genomes_dir, pangenome_fasta, panmodel_rxns, output_dir, medium, thr
 def curate(source_model, curated_model, db):
     """Step 5: Apply curation database rules to a model."""
     click.echo(f"Curating model {Path(source_model).name}...")
-    apply_curations(source_model, curated_model, db)
+    apply_curations(Path(source_model), Path(curated_model), Path(db))
 
 
 @cli.command()
