@@ -279,3 +279,9 @@ docs/
 
 # Remove the notebook files
 notebooks/
+*.xlsx
+
+
+# Some test folders
+curated_models/
+test_reports/
