@@ -176,6 +176,65 @@ def polish(model_dir, output_dir, polisher_dir):
     run_model_polisher(model_dir, output_dir, polisher_dir)
 
 
+@cli.group()
+def evaluate():
+    """Commands for evaluating draft models via Memote to generate curation TSVs."""
+    pass
+
+
+@evaluate.command()
+@click.option(
+    "--model",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Path to a single draft .xml model.",
+)
+@click.option(
+    "--out-dir",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Directory to save the .html and .json reports.",
+)
+def snapshot(model: Path, out_dir: Path):
+    """Run memote on a single model to generate JSON and HTML reports."""
+    from parmmosahn.curation import run_memote_snapshot
+
+    out_json = out_dir / f"{model.stem}.json"
+    out_html = out_dir / f"{model.stem}.html"
+
+    click.echo(f"Running memote on {model.name}...")
+    run_memote_snapshot(model, out_json, out_html)
+    click.echo(f"Done! Reports saved to {out_dir}")
+
+
+@evaluate.command()
+@click.option(
+    "--report-dir",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Dir containing memote .json reports.",
+)
+@click.option(
+    "--model-dir",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Dir containing the drafted .xml models.",
+)
+@click.option(
+    "--out-dir",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Directory to save the output TSVs.",
+)
+def extract(report_dir: Path, model_dir: Path, out_dir: Path):
+    """Parse a directory of memote JSONs and extract imbalances/duplicates into TSVs."""
+    from parmmosahn.curation import extract_memote_problems
+
+    click.echo(f"Extracting problems from {report_dir}...")
+    extract_memote_problems(report_dir, model_dir, out_dir)
+    click.echo(f"Done! TSVs saved to {out_dir}")
+
+
 @cli.command()
 @click.option("--genomes-dir", required=True, type=click.Path(exists=True))
 @click.option("--output-dir", required=True, type=click.Path())
