@@ -66,3 +66,6 @@ pythonpath = [
 testpaths = [
   "tests"
 ]
+
+[tool.setuptools.package-data]
+parmmosahn = ["data/*.yml"]
