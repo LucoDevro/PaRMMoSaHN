@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import subprocess
+import time
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Dict, Tuple, cast
 
@@ -73,136 +75,133 @@ def run_memote_snapshot(model_path: Path, output_json: Path, output_html: Path) 
 
 
 def extract_memote_problems(
-    report_dir: Path, model_dir: Path, output_dir: Path
+    report_dir: Path, model_dir: Path, output_excel: Path
 ) -> None:
     """
     Parses memote JSON reports to find imbalances and duplicates.
-    Generates tabular files for further automated curation.
+    Writes a 3-sheet Excel template matching the PaRMMoSaHN curation DB format.
     """
     logger.info("Extracting problem balances and duplicates from memote reports...")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_excel.parent.mkdir(parents=True, exist_ok=True)
 
-    def read_test_results(test_key: str) -> Dict[Any, str]:
-        """Extracts unique problem instances from a specific test across all JSON reports."""
+    def read_test_results(test_key: str) -> dict:
         rxns: set[Any] = set()
         first_encountered: dict[Any, str] = {}
-
         for report_file in report_dir.glob("*.json"):
             model_name = report_file.stem
             try:
                 with report_file.open("r", encoding="utf-8") as f:
                     cont = json.load(f)
-
                 encountered_rxns = (
                     cont.get("tests", {}).get(test_key, {}).get("data", [])
                 )
-
                 if not encountered_rxns:
                     continue
-
                 if isinstance(encountered_rxns[0], list):
                     encountered_rxns = [tuple(i) for i in encountered_rxns]
-
                 new_rxns = set(encountered_rxns).difference(rxns)
                 for r in new_rxns:
                     first_encountered[r] = model_name
-
                 rxns.update(new_rxns)
-            except (KeyError, IndexError, json.JSONDecodeError):
-                logger.warning(f"Could not parse '{test_key}' in {report_file.name}")
-
+            except Exception:
+                pass
         return first_encountered
 
     first_encounter_charge = read_test_results("test_reaction_charge_balance")
     first_encounter_mass = read_test_results("test_reaction_mass_balance")
     first_encounter_dupl = read_test_results("test_find_duplicate_reactions")
 
-    def save_problem_balances(incidence_dict: Dict[str, str], save_name: str) -> None:
-        df_rows = []
-        for rxn_id, model_name in incidence_dict.items():
-            model_path = model_dir / f"{model_name}.xml"
-            if not model_path.exists():
-                continue
-
-            try:
-                network = cast(Model, cb.io.read_sbml_model(str(model_path)))
-                rxn_obj = cast(Reaction, network.reactions.get_by_id(str(rxn_id)))
-                df_rows.append(
-                    {
-                        "ID": rxn_obj.id,
-                        "Name": rxn_obj.name,
-                        "Equation": rxn_obj.build_reaction_string(),
-                        "Imbalance": str(rxn_obj.check_mass_balance()).strip("{}"),
-                        "First_encounter": model_name,
-                    }
-                )
-            except Exception as e:
-                logger.debug(f"Skipping {rxn_id} in {model_name}: {e}")
-
-        if df_rows:
-            out_file = output_dir / save_name
-            pd.DataFrame(df_rows).to_csv(out_file, sep="\t", index=False)
-            logger.info(f"Saved {len(df_rows)} problem balances to {out_file.name}")
-
-    def save_duplicates(
-        incidence_dict: Dict[Tuple[str, ...], str], save_name: str
-    ) -> None:
-        import re
-
+    def get_duplicates_df() -> pd.DataFrame:
         df_rows = []
         id_regex = re.compile(r"\d{5}")
-
-        for rxn_pair, model_name in incidence_dict.items():
+        for rxn_pair, model_name in first_encounter_dupl.items():
             model_path = model_dir / f"{model_name}.xml"
             if not model_path.exists():
                 continue
-
             try:
                 network = cast(Model, cb.io.read_sbml_model(str(model_path)))
                 rxn_pair_obj = [
                     cast(Reaction, network.reactions.get_by_id(str(r)))
                     for r in rxn_pair
                 ]
-
-                # Extract numbers to guess the 'default' base reaction
                 rxn_ids = [
                     int(match[0]) if (match := id_regex.findall(r.id)) else 99999
                     for r in rxn_pair_obj
                 ]
 
                 min_idx = rxn_ids.index(min(rxn_ids))
-                default_rxn = cast(Reaction, rxn_pair_obj.pop(min_idx))
-                non_default_rxn = cast(Reaction, rxn_pair_obj[0])
+                r1 = cast(Reaction, rxn_pair_obj.pop(min_idx))
+                r2 = cast(Reaction, rxn_pair_obj[0])
 
                 df_rows.append(
                     {
-                        "First_encounter": model_name,
-                        "Pair": str(rxn_pair).strip("()"),
-                        "ID 1": default_rxn.id,
-                        "Name 1": default_rxn.name,
-                        "Equation 1": default_rxn.build_reaction_string(),
-                        "Lower bound 1": default_rxn.lower_bound,
-                        "Upper bound 1": default_rxn.upper_bound,
-                        "GPR 1": default_rxn.gene_reaction_rule,
-                        "ID 2": non_default_rxn.id,
-                        "Name 2": non_default_rxn.name,
-                        "Equation 2": non_default_rxn.build_reaction_string(),
-                        "Lower bound 2": non_default_rxn.lower_bound,
-                        "Upper bound 2": non_default_rxn.upper_bound,
-                        "GPR 2": non_default_rxn.gene_reaction_rule,
+                        "Pair": str(rxn_pair),
+                        "Decision": "",  # Leave empty for human input (1 = keep ID 1, 2 = keep ID 2)
+                        "ID 1": r1.id,
+                        "Name 1": r1.name,
+                        "Equation 1": r1.build_reaction_string(),
+                        "Lower bound 1": r1.lower_bound,
+                        "Upper bound 1": r1.upper_bound,
+                        "ID 2": r2.id,
+                        "Name 2": r2.name,
+                        "Equation 2": r2.build_reaction_string(),
+                        "Lower bound 2": r2.lower_bound,
+                        "Upper bound 2": r2.upper_bound,
                     }
                 )
-            except Exception as e:
-                logger.debug(f"Skipping pair {rxn_pair} in {model_name}: {e}")
+            except Exception:
+                pass
+        return pd.DataFrame(df_rows)
 
-        if df_rows:
-            out_file = output_dir / save_name
-            pd.DataFrame(df_rows).to_csv(out_file, sep="\t", index=False)
-            logger.info(f"Saved {len(df_rows)} duplicate pairs to {out_file.name}")
+    def get_imbalance_df() -> pd.DataFrame:
+        df_rows = []
+        # Combine charge and mass into one list to process
+        combined = [(r, m, "charge") for r, m in first_encounter_charge.items()] + [
+            (r, m, "mass") for r, m in first_encounter_mass.items()
+        ]
 
-    save_problem_balances(first_encounter_charge, "charge_imbalances.tsv")
-    save_problem_balances(first_encounter_mass, "mass_imbalances.tsv")
-    save_duplicates(first_encounter_dupl, "duplicate_reactions.tsv")
+        for rxn_id, model_name, bal_type in combined:
+            model_path = model_dir / f"{model_name}.xml"
+            if not model_path.exists():
+                continue
+            try:
+                network = cast(Model, cb.io.read_sbml_model(str(model_path)))
+                rxn_obj = cast(Reaction, network.reactions.get_by_id(str(rxn_id)))
+                df_rows.append(
+                    {
+                        "reaction_id": rxn_obj.id,
+                        "name": rxn_obj.name,
+                        "new_formula": rxn_obj.build_reaction_string(),  # Default to old formula, human modifies this
+                        "balance_type": bal_type,
+                        "modification": "",
+                        "Comment": str(rxn_obj.check_mass_balance()).strip(
+                            "{}"
+                        ),  # Put the memote error in comments
+                    }
+                )
+            except Exception:
+                pass
+        return pd.DataFrame(df_rows)
+
+    # Write DataFrames to Excel
+    logger.info(f"Writing curation template to {output_excel.name}...")
+    with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
+        get_duplicates_df().to_excel(
+            writer, sheet_name="duplicate_reactions", index=False
+        )
+        get_imbalance_df().to_excel(
+            writer, sheet_name="curated_imbalances", index=False
+        )
+        # Create an empty sheet for the human to drag "ignored" imbalances into
+        pd.DataFrame(
+            columns=[
+                "reaction_id",
+                "name",
+                "Imbalance",
+                "Reason to leave intact",
+                "Comment",
+            ]
+        ).to_excel(writer, sheet_name="ignored_imbalances", index=False)
 
 
 # ==========================================
@@ -211,78 +210,88 @@ def extract_memote_problems(
 
 
 def apply_curations(
-    source_model_path: Path, curated_model_path: Path, curations_database: Path
-) -> None:
+    model_path: Path, curation_db_path: Path, output_dir: Path
+) -> Path | None:
     """
-    Applies the Excel decision database to a model.
-    Replaces: curate_models.py
+    Reads the curation database and applies fixes to a specific strain model.
+    Drops duplicate reactions based on 'Decision' and updates formulas based on 'new_formula'.
     """
-    logger.info(f"Applying curations to {source_model_path.name}...")
+    out_file = output_dir / model_path.name
+
+    # Check if we've already curated this file to save time on pipeline restarts
+    if out_file.exists():
+        return out_file
 
     try:
-        imbalances = pd.read_excel(
-            curations_database, sheet_name="corrected_balances"
-        ).fillna("")
-        duplicates = pd.read_excel(
-            curations_database, sheet_name="duplicate_reactions"
-        ).fillna("")
+        # Cast the loaded model so Pylance knows its type
+        model = cast(Model, cb.io.read_sbml_model(str(model_path)))
     except Exception as e:
-        logger.error(f"Failed to read curation DB: {e}. Are the sheet names correct?")
-        raise
+        logger.error(f"Failed to load {model_path.name} for curation: {e}")
+        return None
 
-    model = cast(Model, cb.io.read_sbml_model(str(source_model_path)))
+    # Load Excel DB
+    try:
+        # Sheet 0 = Duplicates (Tab 1), Sheet 1 = Curations (Tab 2)
+        df_dupl = pd.read_excel(curation_db_path, sheet_name=0)
+        df_cur = pd.read_excel(curation_db_path, sheet_name=1)
+    except Exception as e:
+        logger.error(f"Could not read curation database {curation_db_path}: {e}")
+        return None
 
-    # Correct Imbalances
-    for rxn_name, form in zip(imbalances["reaction_id"], imbalances["new_formula"]):
-        try:
-            rxn = cast(Reaction, model.reactions.get_by_id(str(rxn_name)))
-            if form:
-                logger.debug(f"Correcting imbalanced {rxn_name}")
-                rxn.build_reaction_from_string(str(form))
-            else:
-                logger.debug(f"Removing imbalanced {rxn_name}")
-                rxn.remove_from_model(remove_orphans=True)
-        except KeyError:
+    changes_made = 0
+
+    # 1. Apply Duplicate Fixes
+    for _, row in df_dupl.iterrows():
+        decision = row.get("Decision")
+        id1 = row.get("ID 1")
+        id2 = row.get("ID 2")
+
+        # Skip if human hasn't made a decision
+        if pd.isna(decision) or not str(decision).strip():
             continue
 
-    # Remove Duplicates
-    for rxn_pair_names0, decision in zip(duplicates["Pair"], duplicates["Decision"]):
-        try:
-            # Safely parse the string tuple from the excel sheet e.g. "'rxn1', 'rxn2'"
-            pair_str = str(rxn_pair_names0).replace("'", "").replace('"', "")
-            rxn_pair_names = [r.strip() for r in pair_str.split(",")]
+        decision = str(decision).strip()
+        to_drop = id2 if decision == "1" else id1 if decision == "2" else None
 
-            if len(rxn_pair_names) != 2:
-                continue
+        if to_drop and to_drop in model.reactions:
+            # Cast to Reaction before interacting with it
+            rxn_to_drop = cast(Reaction, model.reactions.get_by_id(to_drop))
+            rxn_to_drop.remove_from_model(remove_orphans=True)
+            changes_made += 1
 
-            rxn1 = cast(Reaction, model.reactions.get_by_id(rxn_pair_names[0]))
-            rxn2 = cast(Reaction, model.reactions.get_by_id(rxn_pair_names[1]))
+    # 2. Apply Formula Fixes
+    for _, row in df_cur.iterrows():
+        rxn_id = row.get("reaction_id")
+        new_formula = row.get("new_formula")
 
-            logger.debug(
-                f"Correcting duplicate pair ({rxn1.id}, {rxn2.id}) with decision {decision}"
-            )
+        # Skip if no reaction ID, no formula, or reaction not in this specific strain model
+        if (
+            pd.isna(rxn_id)
+            or pd.isna(new_formula)
+            or str(rxn_id) not in model.reactions
+        ):
+            continue
 
-            if decision == 1:
-                rxn2.remove_from_model(remove_orphans=True)
-            elif decision == -1:
-                rxn1.remove_from_model(remove_orphans=True)
-            elif decision == 0:
-                rxn1.remove_from_model(remove_orphans=True)
-                rxn2.remove_from_model(remove_orphans=True)
-            elif decision == 2:
-                pass  # Keep both
-            else:
+        # Cast to Reaction so Pylance recognizes .build_reaction_string()
+        rxn = cast(Reaction, model.reactions.get_by_id(str(rxn_id)))
+        old_formula = rxn.build_reaction_string()
+
+        # Only apply if the formula actually changed
+        if str(new_formula).strip() != old_formula:
+            try:
+                # Cobrapy method to safely overwrite stoichiometry
+                rxn.build_reaction_from_string(str(new_formula).strip())
+                changes_made += 1
+            except Exception as e:
                 logger.warning(
-                    f"Unknown decision {decision} for pair {rxn_pair_names0}"
+                    f"Could not apply new formula for {rxn_id} in {model_path.name}: {e}"
                 )
 
-        except KeyError:
-            continue
+    # 3. Save the model
+    cb.io.write_sbml_model(model, str(out_file))
+    logger.debug(f"Applied {changes_made} curations to {model_path.name}")
 
-    # Save the curated model
-    curated_model_path.parent.mkdir(parents=True, exist_ok=True)
-    cb.io.write_sbml_model(model, str(curated_model_path))
-    logger.info(f"Saved curated model to {curated_model_path}")
+    return out_file
 
 
 def run_sbo_annotation(
@@ -330,30 +339,23 @@ def run_sbo_annotation(
 def run_model_polisher(
     model_dir: str | Path,
     output_dir: str | Path,
-    polisher_compose_dir: str | Path,
-    engine: str = "docker",  # New parameter: "docker", "podman", or "apptainer"
+    engine: str = "docker",
 ) -> Path:
     """
     Executes the Palsson lab ModelPolisher via Docker Compose or alternative engines.
+    Automatically provisions the local BiGG and Annotation databases.
     """
     model_dir = Path(model_dir).resolve()
     output_dir = Path(output_dir).resolve()
-    compose_dir = Path(polisher_compose_dir).resolve()
 
-    # Determine the base command based on the engine
     if engine == "docker":
         base_cmd = ["docker", "compose"]
     elif engine == "podman":
         base_cmd = ["podman-compose"]
     elif engine == "apptainer":
-        # Apptainer compose is a newer feature, but works similarly for HPC
         base_cmd = ["apptainer", "compose"]
     else:
         raise ValueError(f"Unsupported container engine: {engine}")
-
-    compose_file = compose_dir / "docker-compose.yml"
-    if not compose_file.exists():
-        raise FileNotFoundError(f"docker-compose.yml not found in {compose_dir}")
 
     models_out = output_dir / "models"
     logs_out = output_dir / "logs"
@@ -363,53 +365,91 @@ def run_model_polisher(
     xml_models = list(model_dir.glob("*.xml"))
     logger.info(f"Polishing {len(xml_models)} models with ModelPolisher ({engine})...")
 
-    for xml in xml_models:
-        strain_name = xml.stem
-        logger.info(f"Polishing {strain_name}...")
+    run_env = os.environ.copy()
+    run_env["MODEL_DIR"] = str(model_dir)
+    run_env["OUTPUT_DIR"] = str(models_out)
+    run_env["LOGS_DIR"] = str(logs_out)
 
-        # We must mount the absolute paths for Docker volumes to work
-        vol_models = f"{model_dir}:/models/"
-        vol_out = f"{models_out}:/output/"
-        vol_logs = f"{logs_out}:/logs/"
+    compose_resource = files("parmmosahn.data").joinpath("docker-compose.yml")
 
-        cmd = base_cmd + [
-            "-f",
-            str(compose_file),
-            "run",
-            "-T",
-            "--rm",
-            "-v",
-            vol_models,
-            "-v",
-            vol_out,
-            "-v",
-            vol_logs,
-            "polisher",
-            "java",
-            "-jar",
-            "/ModelPolisher-2.1-beta.jar",
-            f"--input=/models/{xml.name}",
-            f"--output=/output/{xml.name}",
-            "--annotate-with-bigg=true",
-            "--check-mass-balance=true",
-            f"--log-file=/logs/{xml.name}.log",
-        ]
+    with as_file(compose_resource) as compose_file:
+        compose_dir = compose_file.parent
+
+        # STEP 1: Boot up the background databases
+        logger.info(
+            "Starting local ModelPolisher databases (this may take a moment)..."
+        )
+        subprocess.run(
+            base_cmd
+            + ["-f", str(compose_file), "up", "-d", "biggdb", "adb", "validator"],
+            cwd=str(compose_dir),
+            env=run_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # <-- NEW: Wait for PostgreSQL to actually finish booting up!
+        logger.info("Waiting 15 seconds for databases to initialize...")
+        time.sleep(15)
+
+        success_count = 0
+        fail_count = 0
 
         try:
-            # We run this from the compose_dir as working directory using 'cwd'
-            # to ensure docker-compose finds any relative DB files it needs
+            # STEP 2: Process the models
+            for xml in xml_models:
+                strain_name = xml.stem
+                logger.info(f"Polishing {strain_name}...")
+
+                cmd = base_cmd + [
+                    "-f",
+                    str(compose_file),
+                    "run",
+                    "-T",
+                    "--rm",
+                    "polisher",
+                    f"--input=/models/{xml.name}",
+                    f"--output=/output/{xml.name}",
+                    "--annotate-with-bigg=true",
+                ]
+
+                try:
+                    subprocess.run(
+                        cmd,
+                        cwd=str(compose_dir),
+                        env=run_env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=True,
+                    )
+                    success_count += 1
+
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"ModelPolisher failed on {strain_name}.")
+                    if e.stdout.strip():
+                        logger.error(f"Docker STDOUT:\n{e.stdout.strip()}")
+                    if e.stderr.strip():
+                        logger.error(f"Docker STDERR:\n{e.stderr.strip()}")
+                    fail_count += 1
+                    continue
+
+        finally:
+            # STEP 3: Shut down databases
+            logger.info("Shutting down local ModelPolisher databases...")
             subprocess.run(
-                cmd,
+                base_cmd + ["-f", str(compose_file), "down"],
                 cwd=str(compose_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True,
+                env=run_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-        except subprocess.CalledProcessError as e:
-            logger.error(f"ModelPolisher failed on {strain_name}.")
-            logger.error(f"Docker STDERR:\n{e.stderr}")
-            # We continue instead of raising an exception so the rest of the batch can finish
-            continue
+
+    if fail_count > 0:
+        logger.warning(
+            f"Polishing finished with {fail_count} failures and {success_count} successes."
+        )
+    else:
+        logger.info(f"Successfully polished all {success_count} models.")
 
     return models_out

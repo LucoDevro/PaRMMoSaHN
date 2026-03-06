@@ -163,12 +163,6 @@ def annotate_sbo(model_dir, output_dir, sbo_script, sbo_dbs):
 @cli.command()
 @click.option("--model-dir", required=True, type=click.Path(exists=True))
 @click.option("--output-dir", default="05-polished_models")
-@click.option(
-    "--polisher-dir",
-    required=True,
-    type=click.Path(exists=True),
-    help="Dir containing ModelPolisher docker-compose.yml",
-)
 def polish(model_dir, output_dir, polisher_dir):
     """Polish models using Palsson lab ModelPolisher (requires Docker)."""
     from parmmosahn.curation import run_model_polisher
@@ -211,28 +205,32 @@ def snapshot(model: Path, out_dir: Path):
 @click.option(
     "--report-dir",
     required=True,
-    type=click.Path(exists=True, path_type=Path),
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
     help="Dir containing memote .json reports.",
 )
 @click.option(
     "--model-dir",
     required=True,
-    type=click.Path(exists=True, path_type=Path),
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
     help="Dir containing the drafted .xml models.",
 )
 @click.option(
-    "--out-dir",
-    required=True,
-    type=click.Path(path_type=Path),
-    help="Directory to save the output TSVs.",
+    "--out-excel",
+    default="curation_template.xlsx",
+    show_default=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="File path to save the output Excel template.",
 )
-def extract(report_dir: Path, model_dir: Path, out_dir: Path):
-    """Parse a directory of memote JSONs and extract imbalances/duplicates into TSVs."""
+def extract(report_dir: Path, model_dir: Path, out_excel: Path):
+    """Parse a directory of memote JSONs and extract imbalances/duplicates into an Excel template."""
     from parmmosahn.curation import extract_memote_problems
 
     click.echo(f"Extracting problems from {report_dir}...")
-    extract_memote_problems(report_dir, model_dir, out_dir)
-    click.echo(f"Done! TSVs saved to {out_dir}")
+
+    extract_memote_problems(report_dir, model_dir, out_excel)
+
+    # Using .resolve() prints the absolute path so the user knows exactly where it went!
+    click.echo(f"Done! Excel template saved to {out_excel.resolve()}")
 
 
 @cli.command()

@@ -85,7 +85,7 @@ def run_all(
         logger.info(f"=== STEP 6: ModelPolisher ({engine}) ===")
         polished_out = output_dir / "06-polished"
         current_models_dir = run_model_polisher(
-            current_models_dir, polished_out, polisher_dir, engine=engine
+            current_models_dir, polished_out, engine=engine
         )
 
     # --- STEP 7: Gather & Convert ---
