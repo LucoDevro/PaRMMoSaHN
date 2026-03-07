@@ -261,11 +261,11 @@ def run(
     from parmmosahn.pipeline import run_all
 
     run_all(
-        Path(genomes_dir),
-        Path(output_dir),
-        label,
-        Path(medium),
-        Path(curation_db),
+        genomes_dir=Path(genomes_dir),
+        output_dir=Path(output_dir),
+        label=label,
+        medium_file=Path(medium),
+        curation_db=Path(curation_db),
         threads=threads,
         skip_polisher=skip_polisher,
         engine=container_engine,

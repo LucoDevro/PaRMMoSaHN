@@ -19,7 +19,6 @@ def run_all(
     threads: int = 14,
     sbo_wrapper: Path | None = None,
     sbo_dbs: Path | None = None,
-    polisher_dir: Path | None = None,
     skip_polisher: bool = False,
     engine: str = "docker",
 ):
@@ -55,8 +54,7 @@ def run_all(
     curated_out.mkdir(exist_ok=True)
 
     for draft_model in draft_models_dir.glob("*/*.xml"):
-        curated_xml = curated_out / draft_model.name
-        apply_curations(draft_model, curated_xml, curation_db)
+        apply_curations(draft_model, curation_db, curated_out)
 
     current_models_dir = curated_out
 
@@ -73,8 +71,6 @@ def run_all(
     # --- STEP 6: ModelPolisher via Docker (Optional) ---
     if skip_polisher:
         logger.info("=== STEP 6: ModelPolisher (SKIPPED by user) ===")
-    elif not polisher_dir:
-        logger.info("=== STEP 6: ModelPolisher (SKIPPED - Missing compose dir) ===")
     elif not shutil.which(
         engine if engine != "podman" else "podman-compose"
     ):  # Quick check if tool exists
