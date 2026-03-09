@@ -3,12 +3,16 @@ message: "If you use this software, please cite it as below."
 type: software
 title: "PaRMMoSaHN: Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks"
 version: 0.1.0
-date-released: 2025-12-18  # TODO: Update to actual release date when v0.1.0 is published
+date-released: 2026-03-09
 authors:
   - family-names: "De Win"
     given-names: "Robbe"
     email: "robbedewin@hotmail.com"
     orcid: "https://orcid.org/0009-0006-7003-5219"
+  - family-names: "De Vrieze"
+    given-names: "Lucas"
+    email: "lucas.devrieze@kuleuven.be"
+    orcid: "https://orcid.org/0000-0001-6221-9348"
 repository-code: "https://github.com/robbedewin/PaRMMoSaHN"
 url: "https://github.com/robbedewin/PaRMMoSaHN"
 abstract: "PaRMMoSaHN is a Python library for pangenome-based reconstruction of strain-specific metabolic models from bacterial genomes. It enables researchers to construct accurate metabolic models by leveraging pangenome information to capture strain-level diversity and generate homologous network representations."
