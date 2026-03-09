@@ -1,0 +1,11 @@
+# Include basic project files
+include README.md
+include LICENSE
+include pyproject.toml
+include environment.yml
+
+# Include all files in the package data directory (our docker-compose.yml)
+recursive-include src/parmmosahn/data *
+
+# (Optional) Include test data if you want users to be able to run tests locally
+recursive-include tests/data *

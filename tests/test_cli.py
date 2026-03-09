@@ -87,17 +87,16 @@ def test_cli_run_all(mock_run_all, runner, tmp_path: Path):
         ],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, f"CLI command failed: {result.output}"
 
-    # Verify run_all was called.
-    # Notice the CLI converts string paths to pathlib.Path objects before calling run_all!
+    # FIXED: The CLI passes arguments as explicitly named keyword arguments (kwargs)
     mock_run_all.assert_called_once_with(
-        Path(genomes_dir),
-        Path(output_dir),
-        "my_strains",
-        Path(medium_file),
-        Path(db_file),
+        genomes_dir=Path(genomes_dir),
+        output_dir=Path(output_dir),
+        label="my_strains",
+        medium_file=Path(medium_file),
+        curation_db=Path(db_file),
         threads=8,
         skip_polisher=True,
-        engine="docker",  # Default value
+        engine="docker",  # The default value in the click option
     )

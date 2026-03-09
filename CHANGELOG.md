@@ -7,27 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.1.0] - 2026-03-09
+
 ### Added
+- Initial release and core package structure
+- Basic CLI interface for end-to-end execution
+- Pangenome construction workflow (via PPanGGOLiN)
+- Pan-model building capabilities (via gapseq)
+- Strain model derivation and homolog network mapping
+- "Human-in-the-loop" automatic curation tools (Excel-based)
+- Docker/Podman integration for automated ModelPolisher execution
+- Results gathering and formatting functionality
+- Test suite (pytest), type checking (mypy), and code formatting (black/isort)
 - CI/CD pipeline with GitHub Actions
-- Pre-commit hooks for code quality
-- Test suite with pytest
-- Type checking with mypy
-- Code formatting with black and isort
-
-## [0.1.0] - 2025-12-18
-
-### Added
-- Initial release
-- Core package structure
-- Basic CLI interface
-- Pangenome construction workflow
-- Pan-model building capabilities
-- Strain model derivation
-- Manual and automatic curation tools
-- Results gathering functionality
-- Example notebooks for workflows
-- MIT License
-- README with installation and usage instructions
 
 [unreleased]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/robbedewin/PaRMMoSaHN/releases/tag/v0.1.0

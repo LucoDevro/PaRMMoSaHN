@@ -1,0 +1,27 @@
+services:
+  biggdb:
+    image: schmirgel/bigg_db:1.6
+    hostname: biggdb
+    # Force the container to expose port 1310 instead of 5432
+    command: -p 1310
+
+  adb:
+    image: schmirgel/annotatedb:0.1.1
+    hostname: adb
+    # Force AnnotationDB to expose port 1311 (ModelPolisher expects 1311 for ADB)
+    command: -p 1311
+
+  validator:
+    image: schmirgel/sbmlvalidator:1.0.0
+    hostname: sbmlvalidator
+
+  polisher:
+    image: schmirgel/modelpolisher:2.1
+    depends_on:
+      - biggdb
+      - adb
+      - validator
+    volumes:
+      - ${MODEL_DIR}:/models
+      - ${OUTPUT_DIR}:/output
+      - ${LOGS_DIR}:/logs
