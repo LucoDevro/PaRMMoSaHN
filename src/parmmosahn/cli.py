@@ -238,9 +238,19 @@ def extract(report_dir: Path, model_dir: Path, out_excel: Path):
 @click.option("--output-dir", required=True, type=click.Path())
 @click.option("--label", required=True)
 @click.option("--medium", required=True, type=click.Path(exists=True))
-@click.option("--curation-db", required=True, type=click.Path(exists=True))
+@click.option(
+    "--curation-db",
+    required=False,
+    type=click.Path(exists=True),
+    help="Optional Excel DB for curation.",
+)
 @click.option("--threads", default=14)
 @click.option("--skip-polisher", is_flag=True, help="Skip the ModelPolisher step.")
+@click.option(
+    "--stop-after-drafts",
+    is_flag=True,
+    help="Stop pipeline before curation to allow manual evaluation.",
+)
 @click.option(
     "--container-engine",
     type=click.Choice(["docker", "podman", "apptainer"]),
@@ -255,9 +265,10 @@ def run(
     curation_db,
     threads,
     skip_polisher,
+    stop_after_drafts,
     container_engine,
 ):
-    """Run the entire PaRMMoSaHN pipeline from start to finish."""
+    """Run the PaRMMoSaHN pipeline from start to finish."""
     from parmmosahn.pipeline import run_all
 
     run_all(
@@ -265,8 +276,44 @@ def run(
         output_dir=Path(output_dir),
         label=label,
         medium_file=Path(medium),
-        curation_db=Path(curation_db),
+        curation_db=Path(curation_db) if curation_db else None,
         threads=threads,
+        skip_polisher=skip_polisher,
+        engine=container_engine,
+        stop_after_drafts=stop_after_drafts,
+    )
+
+
+@cli.command()
+@click.option(
+    "--drafts-dir",
+    required=True,
+    type=click.Path(exists=True),
+    help="Folder containing draft models (e.g., 03-strains)",
+)
+@click.option(
+    "--output-dir", required=True, type=click.Path(), help="Base output directory"
+)
+@click.option(
+    "--curation-db",
+    required=True,
+    type=click.Path(exists=True),
+    help="Filled Excel DB for curation.",
+)
+@click.option("--skip-polisher", is_flag=True, help="Skip the ModelPolisher step.")
+@click.option(
+    "--container-engine",
+    type=click.Choice(["docker", "podman", "apptainer"]),
+    default="docker",
+)
+def resume(drafts_dir, output_dir, curation_db, skip_polisher, container_engine):
+    """Resume the pipeline from Step 4 using a completed curation database."""
+    from parmmosahn.pipeline import run_downstream
+
+    run_downstream(
+        draft_models_dir=Path(drafts_dir),
+        output_dir=Path(output_dir),
+        curation_db=Path(curation_db),
         skip_polisher=skip_polisher,
         engine=container_engine,
     )

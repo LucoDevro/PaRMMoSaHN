@@ -10,17 +10,78 @@ from parmmosahn.results import gather_and_convert_models
 logger = logging.getLogger(__name__)
 
 
+def run_downstream(
+    draft_models_dir: Path,
+    output_dir: Path,
+    curation_db: Path | None = None,
+    sbo_wrapper: Path | None = None,
+    sbo_dbs: Path | None = None,
+    skip_polisher: bool = False,
+    engine: str = "docker",
+):
+    """Executes Steps 4-7: Curation, SBO, Polishing, and Export."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- STEP 4: Automatic Curation ---
+    curated_out = output_dir / "04-curated_models"
+    curated_out.mkdir(exist_ok=True)
+
+    if curation_db and curation_db.exists():
+        logger.info("=== STEP 4: Applying Automatic Curations ===")
+        for draft_model in draft_models_dir.glob("*/*.xml"):
+            apply_curations(draft_model, curation_db, curated_out)
+    else:
+        logger.info("=== STEP 4: Automatic Curation (SKIPPED - No DB provided) ===")
+        # Safely copy draft models forward so the pipeline doesn't break
+        for draft_model in draft_models_dir.glob("*/*.xml"):
+            shutil.copy(draft_model, curated_out / draft_model.name)
+
+    current_models_dir = curated_out
+
+    # --- STEP 5: SBO Annotation (Optional) ---
+    if sbo_wrapper and sbo_dbs:
+        logger.info("=== STEP 5: SBO Annotation ===")
+        sbo_out = output_dir / "05-sbo_annotated"
+        current_models_dir = run_sbo_annotation(
+            current_models_dir, sbo_out, sbo_wrapper, sbo_dbs
+        )
+    else:
+        logger.info("=== STEP 5: SBO Annotation (SKIPPED - Missing paths) ===")
+
+    # --- STEP 6: ModelPolisher via Docker (Optional) ---
+    if skip_polisher:
+        logger.info("=== STEP 6: ModelPolisher (SKIPPED by user) ===")
+    elif not shutil.which(engine if engine != "podman" else "podman-compose"):
+        logger.warning(
+            f"=== STEP 6: ModelPolisher (SKIPPED - {engine} is not installed) ==="
+        )
+    else:
+        logger.info(f"=== STEP 6: ModelPolisher ({engine}) ===")
+        polished_out = output_dir / "06-polished"
+        current_models_dir = run_model_polisher(
+            current_models_dir, polished_out, engine=engine
+        )
+
+    # --- STEP 7: Gather & Convert ---
+    logger.info("=== STEP 7: Gathering Final Results ===")
+    final_out = output_dir / "07-final_results"
+    gather_and_convert_models(current_models_dir, final_out)
+
+    logger.info(f"Pipeline complete! All results saved to {final_out}")
+
+
 def run_all(
     genomes_dir: Path,
     output_dir: Path,
     label: str,
     medium_file: Path,
-    curation_db: Path,
+    curation_db: Path | None = None,
     threads: int = 14,
     sbo_wrapper: Path | None = None,
     sbo_dbs: Path | None = None,
     skip_polisher: bool = False,
     engine: str = "docker",
+    stop_after_drafts: bool = False,  # NEW FLAG
 ):
     """Executes the entire PaRMMoSaHN pipeline from end to end."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -48,45 +109,18 @@ def run_all(
         threads=threads,
     )
 
-    # --- STEP 4: Automatic Curation ---
-    logger.info("=== STEP 4: Applying Automatic Curations ===")
-    curated_out = output_dir / "04-curated_models"
-    curated_out.mkdir(exist_ok=True)
+    if stop_after_drafts:
+        logger.info("=== Pipeline paused after draft generation ===")
+        logger.info(f"Draft models are ready for evaluation in: {draft_models_dir}")
+        return
 
-    for draft_model in draft_models_dir.glob("*/*.xml"):
-        apply_curations(draft_model, curation_db, curated_out)
-
-    current_models_dir = curated_out
-
-    # --- STEP 5: SBO Annotation (Optional) ---
-    if sbo_wrapper and sbo_dbs:
-        logger.info("=== STEP 5: SBO Annotation ===")
-        sbo_out = output_dir / "05-sbo_annotated"
-        current_models_dir = run_sbo_annotation(
-            current_models_dir, sbo_out, sbo_wrapper, sbo_dbs
-        )
-    else:
-        logger.info("=== STEP 5: SBO Annotation (SKIPPED - Missing paths) ===")
-
-    # --- STEP 6: ModelPolisher via Docker (Optional) ---
-    if skip_polisher:
-        logger.info("=== STEP 6: ModelPolisher (SKIPPED by user) ===")
-    elif not shutil.which(
-        engine if engine != "podman" else "podman-compose"
-    ):  # Quick check if tool exists
-        logger.warning(
-            f"=== STEP 6: ModelPolisher (SKIPPED - {engine} is not installed) ==="
-        )
-    else:
-        logger.info(f"=== STEP 6: ModelPolisher ({engine}) ===")
-        polished_out = output_dir / "06-polished"
-        current_models_dir = run_model_polisher(
-            current_models_dir, polished_out, engine=engine
-        )
-
-    # --- STEP 7: Gather & Convert ---
-    logger.info("=== STEP 7: Gathering Final Results ===")
-    final_out = output_dir / "07-final_results"
-    gather_and_convert_models(current_models_dir, final_out)
-
-    logger.info(f"Pipeline complete! All results saved to {final_out}")
+    # Pass everything to the downstream runner
+    run_downstream(
+        draft_models_dir=draft_models_dir,
+        output_dir=output_dir,
+        curation_db=curation_db,
+        sbo_wrapper=sbo_wrapper,
+        sbo_dbs=sbo_dbs,
+        skip_polisher=skip_polisher,
+        engine=engine,
+    )
