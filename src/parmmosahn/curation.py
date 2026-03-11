@@ -111,15 +111,33 @@ def extract_memote_problems(
     first_encounter_mass = read_test_results("test_reaction_mass_balance")
     first_encounter_dupl = read_test_results("test_find_duplicate_reactions")
 
+    # --- NEW: Cache loaded models so we don't load the same XML 50 times! ---
+    _loaded_models = {}
+
+    def get_cached_model(model_name: str):
+        if model_name not in _loaded_models:
+            # Check the new subfolder architecture
+            model_path = model_dir / model_name / f"{model_name}.xml"
+            # Fallback if it's flat
+            if not model_path.exists():
+                model_path = model_dir / f"{model_name}.xml"
+
+            if model_path.exists():
+                _loaded_models[model_name] = cast(
+                    Model, cb.io.read_sbml_model(str(model_path))
+                )
+            else:
+                _loaded_models[model_name] = None
+        return _loaded_models[model_name]
+
     def get_duplicates_df() -> pd.DataFrame:
         df_rows = []
         id_regex = re.compile(r"\d{5}")
         for rxn_pair, model_name in first_encounter_dupl.items():
-            model_path = model_dir / f"{model_name}.xml"
-            if not model_path.exists():
+            network = get_cached_model(model_name)
+            if not network:
                 continue
             try:
-                network = cast(Model, cb.io.read_sbml_model(str(model_path)))
                 rxn_pair_obj = [
                     cast(Reaction, network.reactions.get_by_id(str(r)))
                     for r in rxn_pair
@@ -136,7 +154,7 @@ def extract_memote_problems(
                 df_rows.append(
                     {
                         "Pair": str(rxn_pair),
-                        "Decision": "",  # Leave empty for human input (1 = keep ID 1, 2 = keep ID 2)
+                        "Decision": "",  # Leave empty for human input
                         "ID 1": r1.id,
                         "Name 1": r1.name,
                         "Equation 1": r1.build_reaction_string(),
@@ -149,50 +167,60 @@ def extract_memote_problems(
                         "Upper bound 2": r2.upper_bound,
                     }
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Skipping duplicate pair {rxn_pair}: {e}")
         return pd.DataFrame(df_rows)
 
     def get_imbalance_df() -> pd.DataFrame:
         df_rows = []
-        # Combine charge and mass into one list to process
         combined = [(r, m, "charge") for r, m in first_encounter_charge.items()] + [
             (r, m, "mass") for r, m in first_encounter_mass.items()
         ]
 
         for rxn_id, model_name, bal_type in combined:
-            model_path = model_dir / f"{model_name}.xml"
-            if not model_path.exists():
+            network = get_cached_model(model_name)
+            if not network:
                 continue
             try:
-                network = cast(Model, cb.io.read_sbml_model(str(model_path)))
                 rxn_obj = cast(Reaction, network.reactions.get_by_id(str(rxn_id)))
                 df_rows.append(
                     {
                         "reaction_id": rxn_obj.id,
                         "name": rxn_obj.name,
-                        "new_formula": rxn_obj.build_reaction_string(),  # Default to old formula, human modifies this
+                        "new_formula": rxn_obj.build_reaction_string(),
                         "balance_type": bal_type,
                         "modification": "",
-                        "Comment": str(rxn_obj.check_mass_balance()).strip(
-                            "{}"
-                        ),  # Put the memote error in comments
+                        "Comment": str(rxn_obj.check_mass_balance()).strip("{}"),
                     }
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Skipping imbalanced reaction {rxn_id}: {e}")
         return pd.DataFrame(df_rows)
 
     # Write DataFrames to Excel
     logger.info(f"Writing curation template to {output_excel.name}...")
     with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
-        get_duplicates_df().to_excel(
-            writer, sheet_name="duplicate_reactions", index=False
-        )
-        get_imbalance_df().to_excel(
-            writer, sheet_name="curated_imbalances", index=False
-        )
-        # Create an empty sheet for the human to drag "ignored" imbalances into
+        df_dupl = get_duplicates_df()
+        if df_dupl.empty:
+            df_dupl = pd.DataFrame(
+                columns=["Pair", "Decision", "ID 1", "Name 1", "Equation 1"]
+            )
+        df_dupl.to_excel(writer, sheet_name="duplicate_reactions", index=False)
+
+        df_imb = get_imbalance_df()
+        if df_imb.empty:
+            df_imb = pd.DataFrame(
+                columns=[
+                    "reaction_id",
+                    "name",
+                    "new_formula",
+                    "balance_type",
+                    "modification",
+                    "Comment",
+                ]
+            )
+        df_imb.to_excel(writer, sheet_name="curated_imbalances", index=False)
+
         pd.DataFrame(
             columns=[
                 "reaction_id",

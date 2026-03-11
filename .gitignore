@@ -290,3 +290,7 @@ test_results/
 
 # commands md
 commands.md
+
+
+# Helper scripts
+get_excel.py
