@@ -61,3 +61,21 @@ def test_run_command_with_file_output(tmp_path: Path):
         called_kwargs = mock_run.call_args.kwargs
         assert called_kwargs["stdout"].name == str(stdout_file)
         assert called_kwargs["stderr"].name == str(stderr_file)
+
+
+def test_extract_proteome_from_gbff(tmp_path: Path, dummy_gbff: Path):
+    """Test that GBFF files are correctly converted to FAA files using the real dummy file."""
+    from parmmosahn.utils import extract_proteome_from_gbff
+
+    out_faa = tmp_path / "test.faa"
+
+    # Run the extractor
+    result_path = extract_proteome_from_gbff(dummy_gbff, out_faa)
+
+    assert result_path == out_faa
+    assert out_faa.exists()
+
+    # Verify the contents of the generated FASTA (just check that it has standard FASTA headers)
+    faa_content = out_faa.read_text()
+    assert faa_content.startswith(">")
+    assert len(faa_content) > 10  # Ensure it actually extracted something

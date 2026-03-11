@@ -4,6 +4,7 @@ from unittest.mock import patch
 from parmmosahn.pipeline import run_all
 
 
+@patch("parmmosahn.pipeline.evaluate_final_models")
 @patch("parmmosahn.pipeline.gather_and_convert_models")
 @patch("parmmosahn.pipeline.apply_curations")
 @patch("parmmosahn.pipeline.derive_strain_models")
@@ -15,6 +16,7 @@ def test_pipeline_run_all_integration(
     mock_derive_strains,
     mock_apply_curations,
     mock_gather,
+    mock_evaluate_final,
     tmp_path: Path,
 ):
     """
@@ -38,13 +40,12 @@ def test_pipeline_run_all_integration(
     dummy_fasta = tmp_path / "dummy_softcore.faa"
     mock_build_pangenome.return_value = dummy_fasta
 
-    # derive_strain_models mock needs to create a dummy draft model
     def mock_derive_side_effect(genomes, fasta, rxns, out_dir, medium, threads):
-        strain_dir = out_dir / "strain_A"
+        strain_dir = out_dir / "models" / "strain_A"
         strain_dir.mkdir(parents=True)
-        draft_xml = strain_dir / "filtered-Reactions.tbl.xml"
+        draft_xml = strain_dir / "strain_A.xml"
         draft_xml.touch()
-        return out_dir
+        return out_dir / "models"
 
     mock_derive_strains.side_effect = mock_derive_side_effect
 
@@ -57,6 +58,7 @@ def test_pipeline_run_all_integration(
         curation_db=curation_db,
         threads=4,
         skip_polisher=True,
+        stop_after_drafts=False,
     )
 
     # 4. Assertions: Verify the "Chain of Custody"
@@ -83,9 +85,9 @@ def test_pipeline_run_all_integration(
 
     # FIXED: The pipeline passes (model_path, curation_db_path, output_dir)
     expected_curated_out = output_dir / "04-curated_models"
-    expected_draft_xml = (
-        expected_strains_out / "strain_A" / "filtered-Reactions.tbl.xml"
-    )
+
+    # FIXED: Match the new directory structure and renamed XML file
+    expected_draft_xml = expected_strains_out / "models" / "strain_A" / "strain_A.xml"
 
     mock_apply_curations.assert_called_once_with(
         expected_draft_xml, curation_db, expected_curated_out
@@ -93,3 +95,28 @@ def test_pipeline_run_all_integration(
 
     expected_final_out = output_dir / "07-final_results"
     mock_gather.assert_called_once_with(expected_curated_out, expected_final_out)
+    mock_evaluate_final.assert_called_once_with(expected_curated_out, output_dir)
+
+
+@patch("parmmosahn.pipeline.generate_curation_template")
+@patch("parmmosahn.pipeline.derive_strain_models")
+@patch("parmmosahn.pipeline.build_pan_model")
+@patch("parmmosahn.pipeline.build_pangenome")
+def test_pipeline_stop_after_drafts(
+    mock_build_pangenome, mock_build_panmodel, mock_derive, mock_gen_template, tmp_path
+):
+    """Test that the pipeline correctly pauses and generates the memote template."""
+    from parmmosahn.pipeline import run_all
+
+    mock_derive.return_value = tmp_path / "drafts"
+
+    run_all(
+        genomes_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        label="test",
+        medium_file=tmp_path / "medium.csv",
+        stop_after_drafts=True,
+    )
+
+    # Assert it called the hidden evaluator and stopped
+    mock_gen_template.assert_called_once()

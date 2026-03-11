@@ -56,17 +56,14 @@ def test_cli_pangenome_missing_args(runner):
 @patch("parmmosahn.pipeline.run_all")
 def test_cli_run_all(mock_run_all, runner, tmp_path: Path):
     """Test the 'run' command (the main pipeline orchestrator)."""
-    # Create required dummy directories and files
     genomes_dir = tmp_path / "genomes"
     genomes_dir.mkdir()
     medium_file = tmp_path / "medium.csv"
     medium_file.touch()
     db_file = tmp_path / "curation_db.xlsx"
     db_file.touch()
-
     output_dir = tmp_path / "results"
 
-    # Simulate the user executing the full pipeline
     result = runner.invoke(
         cli,
         [
@@ -89,7 +86,6 @@ def test_cli_run_all(mock_run_all, runner, tmp_path: Path):
 
     assert result.exit_code == 0, f"CLI command failed: {result.output}"
 
-    # FIXED: The CLI passes arguments as explicitly named keyword arguments (kwargs)
     mock_run_all.assert_called_once_with(
         genomes_dir=Path(genomes_dir),
         output_dir=Path(output_dir),
@@ -98,5 +94,44 @@ def test_cli_run_all(mock_run_all, runner, tmp_path: Path):
         curation_db=Path(db_file),
         threads=8,
         skip_polisher=True,
-        engine="docker",  # The default value in the click option
+        engine="docker",
+        stop_after_drafts=False,
     )
+
+
+@patch("parmmosahn.pipeline.run_downstream")
+@patch("parmmosahn.models.derive_strain_models")
+def test_cli_project(mock_derive, mock_downstream, runner, tmp_path):
+    """Test the 'project' command for rapid strain mapping."""
+    genomes = tmp_path / "genomes"
+    genomes.mkdir()
+    pangenome = tmp_path / "pan.faa"
+    pangenome.touch()
+    pan_rxns = tmp_path / "pan.tbl"
+    pan_rxns.touch()
+    medium = tmp_path / "medium.csv"
+    medium.touch()
+    out = tmp_path / "out"
+
+    mock_derive.return_value = out / "03-strains" / "models"
+
+    result = runner.invoke(
+        cli,
+        [
+            "project",
+            "--genomes-dir",
+            str(genomes),
+            "--pangenome-fasta",
+            str(pangenome),
+            "--panmodel-rxns",
+            str(pan_rxns),
+            "--medium",
+            str(medium),
+            "--output-dir",
+            str(out),
+        ],
+    )
+
+    assert result.exit_code == 0
+    mock_derive.assert_called_once()
+    mock_downstream.assert_called_once()
