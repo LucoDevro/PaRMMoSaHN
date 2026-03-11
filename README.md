@@ -45,7 +45,7 @@ pip install "git+[https://github.com/robbedewin/PaRMMoSaHN.git@v0.1.0](https://g
 
 ## Quick Start
 
-PaRMMoSaHN is primarily driven through its Command Line Interface (CLI). There are two main ways to run the pipeline, depending on whether you want to manually curate the draft models.
+PaRMMoSaHN is primarily driven through its Command Line Interface (CLI). There are three main ways to run the pipeline.
 
 ### Workflow A: Fully Automated Run (No Manual Curation)
 To execute the pipeline from start to finish, automatically carrying forward draft models without manual intervention, simply run:
@@ -68,11 +68,10 @@ parmmosahn run \
 
 ### Workflow B: Human-in-the-Loop Curation
 
-For highly accurate models, PaRMMoSaHN allows you to pause the pipeline, manually evaluate the draft models using an Excel spreadsheet, and then resume the pipeline to polish and export them.
+For highly accurate models, PaRMMoSaHN allows you to pause the pipeline, manually evaluate the draft models using an automatically generated Excel spreadsheet, and then resume the pipeline to polish and export them.
 
-**Step 1: Generate Draft Models and Pause**
-
-Use the `--stop-after-drafts` flag. The pipeline will build the pangenome, pan-model, and draft strains, and then stop.
+**Step 1: Generate Drafts & Auto-Evaluate**
+Use the `--stop-after-drafts` flag. The pipeline will build the pangenome, pan-model, and draft strains. It will then automatically run Memote to extract mass imbalances and duplicate reactions, generate a `curation_template.xlsx` file, and pause.
 
 ```bash
 parmmosahn run \
@@ -84,29 +83,32 @@ parmmosahn run \
 
 ```
 
-**Step 2: Generate the Evaluation Spreadsheet**
+*Open the resulting `results/curation_template.xlsx` in Excel, make your curation decisions in the `curated_imbalances` and `duplicate_reactions` sheets, and save the file.*
 
-Use the `evaluate` commands to run MEMOTE tests on the draft models and extract the problems into a human-readable Excel template.
-
-```bash
-parmmosahn evaluate snapshot --model-dir ./results/03-strains --out-dir ./reports
-parmmosahn evaluate extract --report-dir ./reports --model-dir ./results/03-strains
-
-```
-
-*Open the resulting `curation_template.xlsx` in Excel, make your curation decisions in the `curated_imbalances` and `duplicate_reactions` sheets, and save the file.*
-
-**Step 3: Resume the Pipeline**
-
-Provide your filled Excel database to the `resume` command to apply your curations, run ModelPolisher, and generate the final FAIR-compliant SBML models.
+**Step 2: Resume the Pipeline**
+Run the `resume` command. It will auto-detect your Excel file, apply your curations, run SBO annotation and ModelPolisher, and generate the final FAIR-compliant SBML models.
 
 ```bash
 parmmosahn resume \
-  --drafts-dir ./results/03-strains \
-  --output-dir ./results \
-  --curation-db curation_template.xlsx
+  --output-dir ./results
 
 ```
+
+### Workflow C: Rapid Projection (New Isolates)
+
+If you already have a curated pan-model and just sequenced a new clinical or environmental isolate, you can bypass the heavy pangenome construction and map it in minutes.
+
+```bash
+parmmosahn project \
+  --genomes-dir ./new_strain_data/ \
+  --pangenome-fasta ./results/01-pangenome/My_Strains.faa \
+  --panmodel-rxns ./results/02-panmodel/My_Strains-all-Reactions.tbl \
+  --medium medium.csv \
+  --output-dir ./projection_results/
+
+```
+
+*(Note: You can also pass `--stop-after-drafts` to this command to curate the new isolate before finalizing!)*
 
 ## Advanced Configuration & HPC Usage
 

@@ -5,6 +5,10 @@ on:
     branches: [ main, develop ]
     tags:
       - 'v*'  # Only trigger on tags that start with "v" (like v0.1.0)
+    paths-ignore:
+      - '**.md'          # Don't run if only markdown files change
+      - 'LICENSE'        # Don't run if the license changes
+      - '.gitignore'
   pull_request:
     branches: [ main, develop ]
 
@@ -24,7 +28,7 @@ jobs:
 
     # 2. Replaced setup-python with setup-micromamba to test your actual environment
     - name: Setup Conda Environment
-      uses: mamba-org/setup-micromamba@v1
+      uses: mamba-org/setup-micromamba@v2
       with:
         environment-file: environment.yml
         create-args: >-
