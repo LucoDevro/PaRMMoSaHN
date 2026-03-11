@@ -285,3 +285,8 @@ notebooks/
 # Some test folders
 curated_models/
 test_reports/
+test_genomes/
+test_results/
+
+# commands md
+commands.md
