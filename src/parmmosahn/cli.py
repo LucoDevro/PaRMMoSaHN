@@ -65,7 +65,7 @@ def panmodel(fasta, output_dir, threads):
     "--genomes-dir",
     required=True,
     type=click.Path(exists=True),
-    help="Directory of strain .faa genomes.",
+    help="Directory of strain genomes (.gbff or .faa).",
 )
 @click.option(
     "--pangenome-fasta",
@@ -170,71 +170,118 @@ def polish(model_dir, output_dir, polisher_dir):
     run_model_polisher(model_dir, output_dir, polisher_dir)
 
 
-@cli.group()
-def evaluate():
-    """Commands for evaluating draft models via Memote to generate curation TSVs."""
-    pass
-
-
-@evaluate.command()
+@cli.command()
 @click.option(
-    "--model",
+    "--genomes-dir",
     required=True,
-    type=click.Path(exists=True, path_type=Path),
-    help="Path to a single draft .xml model.",
+    type=click.Path(exists=True),
+    help="Directory of new strain genomes (.faa or .gbff).",
 )
 @click.option(
-    "--out-dir",
+    "--pangenome-fasta",
     required=True,
-    type=click.Path(path_type=Path),
-    help="Directory to save the .html and .json reports.",
+    type=click.Path(exists=True),
+    help="Existing soft-core FASTA.",
 )
-def snapshot(model: Path, out_dir: Path):
-    """Run memote on a single model to generate JSON and HTML reports."""
-    from parmmosahn.curation import run_memote_snapshot
-
-    out_json = out_dir / f"{model.stem}.json"
-    out_html = out_dir / f"{model.stem}.html"
-
-    click.echo(f"Running memote on {model.name}...")
-    run_memote_snapshot(model, out_json, out_html)
-    click.echo(f"Done! Reports saved to {out_dir}")
-
-
-@evaluate.command()
 @click.option(
-    "--report-dir",
+    "--panmodel-rxns",
     required=True,
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Dir containing memote .json reports.",
+    type=click.Path(exists=True),
+    help="Existing panmodel reaction table.",
 )
 @click.option(
-    "--model-dir",
+    "--medium",
     required=True,
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Dir containing the drafted .xml models.",
+    type=click.Path(exists=True),
+    help="Media CSV file for gapfilling.",
 )
 @click.option(
-    "--out-excel",
-    default="curation_template.xlsx",
-    show_default=True,
-    type=click.Path(dir_okay=False, path_type=Path),
-    help="File path to save the output Excel template.",
+    "--output-dir",
+    required=True,
+    type=click.Path(),
+    help="Output directory for new models.",
 )
-def extract(report_dir: Path, model_dir: Path, out_excel: Path):
-    """Parse a directory of memote JSONs and extract imbalances/duplicates into an Excel template."""
-    from parmmosahn.curation import extract_memote_problems
+@click.option(
+    "--curation-db",
+    type=click.Path(exists=True),
+    help="Optional Excel DB for curation.",
+)
+@click.option("--threads", default=14)
+@click.option("--skip-polisher", is_flag=True, help="Skip the ModelPolisher step.")
+@click.option(
+    "--container-engine",
+    type=click.Choice(["docker", "podman", "apptainer"]),
+    default="docker",
+)
+@click.option(
+    "--stop-after-drafts",
+    is_flag=True,
+    help="Stop pipeline before curation to allow manual evaluation.",
+)
+def project(
+    genomes_dir,
+    pangenome_fasta,
+    panmodel_rxns,
+    medium,
+    output_dir,
+    curation_db,
+    threads,
+    skip_polisher,
+    container_engine,
+    stop_after_drafts,
+):
+    """
+    Rapidly project new strains (.faa or .gbff) onto an existing pan-model and run downstream curation.
+    Skips Steps 1 & 2 (PPanGGOLiN).
+    """
+    from parmmosahn.curation import generate_curation_template
+    from parmmosahn.models import derive_strain_models
+    from parmmosahn.pipeline import run_downstream
 
-    click.echo(f"Extracting problems from {report_dir}...")
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
 
-    extract_memote_problems(report_dir, model_dir, out_excel)
+    # 1. Run Strain Derivation (Step 3)
+    click.echo("=== STEP 3: Deriving Strain Models ===")
+    strains_out = out_path / "03-strains"
+    draft_models_dir = derive_strain_models(
+        genomes_dir=genomes_dir,
+        pangenome_fasta=pangenome_fasta,
+        panmodel_rxn_table=panmodel_rxns,
+        output_dir=strains_out,
+        medium_file=medium,
+        threads=threads,
+    )
 
-    # Using .resolve() prints the absolute path so the user knows exactly where it went!
-    click.echo(f"Done! Excel template saved to {out_excel.resolve()}")
+    if stop_after_drafts:
+        click.echo("=== Preparing Human-in-the-Loop Curation (running memote) ===")
+        generate_curation_template(draft_models_dir, out_path)
+        click.echo("=== Pipeline paused for Human-in-the-Loop Curation ===")
+        click.echo(
+            f"ACTION REQUIRED: Please fill out the curation template at {out_path}/curation_template.xlsx"
+        )
+        click.echo(
+            f"When finished, resume using: parmmosahn resume --output-dir {out_path.resolve()}"
+        )
+        return
+
+    # 2. Pipe directly into downstream processing (Steps 4-7)
+    run_downstream(
+        draft_models_dir=draft_models_dir,
+        output_dir=out_path,
+        curation_db=Path(curation_db) if curation_db else None,
+        skip_polisher=skip_polisher,
+        engine=container_engine,
+    )
 
 
 @cli.command()
-@click.option("--genomes-dir", required=True, type=click.Path(exists=True))
+@click.option(
+    "--genomes-dir",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory of input genomes (.gbff required for full pipeline, .faa accepted for strain derivation).",
+)
 @click.option("--output-dir", required=True, type=click.Path())
 @click.option("--label", required=True)
 @click.option("--medium", required=True, type=click.Path(exists=True))
@@ -286,19 +333,20 @@ def run(
 
 @cli.command()
 @click.option(
-    "--drafts-dir",
+    "--output-dir",
     required=True,
-    type=click.Path(exists=True),
-    help="Folder containing draft models (e.g., 03-strains)",
+    type=click.Path(exists=True, path_type=Path),
+    help="Base output directory",
 )
 @click.option(
-    "--output-dir", required=True, type=click.Path(), help="Base output directory"
+    "--drafts-dir",
+    type=click.Path(exists=True, path_type=Path),
+    help="Optional: Folder containing draft models. Defaults to <output-dir>/03-strains/models",
 )
 @click.option(
     "--curation-db",
-    required=True,
-    type=click.Path(exists=True),
-    help="Filled Excel DB for curation.",
+    type=click.Path(path_type=Path),
+    help="Optional: Path to Excel DB. Defaults to <output-dir>/curation_template.xlsx",
 )
 @click.option("--skip-polisher", is_flag=True, help="Skip the ModelPolisher step.")
 @click.option(
@@ -306,14 +354,41 @@ def run(
     type=click.Choice(["docker", "podman", "apptainer"]),
     default="docker",
 )
-def resume(drafts_dir, output_dir, curation_db, skip_polisher, container_engine):
+def resume(
+    output_dir: Path,
+    drafts_dir: Path | None,
+    curation_db: Path | None,
+    skip_polisher,
+    container_engine,
+):
     """Resume the pipeline from Step 4 using a completed curation database."""
     from parmmosahn.pipeline import run_downstream
 
+    # Auto-resolve defaults based on the project root
+    if not drafts_dir:
+        drafts_dir = output_dir / "03-strains" / "models"
+        if not drafts_dir.exists():
+            raise click.BadParameter(
+                f"Could not find draft models at {drafts_dir}. Please specify --drafts-dir manually."
+            )
+
+    if not curation_db:
+        curation_db = output_dir / "curation_template.xlsx"
+
+    # Informative error if the default file isn't there
+    if not curation_db.exists():
+        raise click.FileError(
+            str(curation_db),
+            hint="Could not find 'curation_template.xlsx' in the output directory. "
+            "If you moved or renamed your Excel file, please provide its exact path using the --curation-db flag.",
+        )
+
+    click.echo(f"Resuming pipeline using curation database: {curation_db.name}")
+
     run_downstream(
-        draft_models_dir=Path(drafts_dir),
-        output_dir=Path(output_dir),
-        curation_db=Path(curation_db),
+        draft_models_dir=drafts_dir,
+        output_dir=output_dir,
+        curation_db=curation_db,
         skip_polisher=skip_polisher,
         engine=container_engine,
     )

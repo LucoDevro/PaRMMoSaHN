@@ -2,7 +2,13 @@ import logging
 import shutil
 from pathlib import Path
 
-from parmmosahn.curation import apply_curations, run_model_polisher, run_sbo_annotation
+from parmmosahn.curation import (
+    apply_curations,
+    evaluate_final_models,
+    generate_curation_template,
+    run_model_polisher,
+    run_sbo_annotation,
+)
 from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.pangenome import build_pangenome
 from parmmosahn.results import gather_and_convert_models
@@ -67,6 +73,10 @@ def run_downstream(
     final_out = output_dir / "07-final_results"
     gather_and_convert_models(current_models_dir, final_out)
 
+    # --- STEP 8: Final Evaluation ---
+    # current_models_dir holds the final XMLs right before they were gathered
+    evaluate_final_models(current_models_dir, output_dir)
+
     logger.info(f"Pipeline complete! All results saved to {final_out}")
 
 
@@ -110,8 +120,16 @@ def run_all(
     )
 
     if stop_after_drafts:
-        logger.info("=== Pipeline paused after draft generation ===")
-        logger.info(f"Draft models are ready for evaluation in: {draft_models_dir}")
+        logger.info("=== Preparing Human-in-the-Loop Curation (running memote) ===")
+        template_path = generate_curation_template(draft_models_dir, output_dir)
+        logger.info("=== Pipeline paused for Human-in-the-Loop Curation ===")
+        logger.info(f"Draft models are ready in: {draft_models_dir}")
+        logger.info(
+            f"ACTION REQUIRED: Please fill out the curation template at {template_path.resolve()}"
+        )
+        logger.info(
+            f"When finished, resume using: parmmosahn resume --output-dir {output_dir.resolve()}"
+        )
         return
 
     # Pass everything to the downstream runner

@@ -1,9 +1,11 @@
 import logging
+import re
+import shutil
 from pathlib import Path
 
 import pandas as pd
 
-from parmmosahn.utils import ToolExecutionError, run_command
+from parmmosahn.utils import ToolExecutionError, extract_proteome_from_gbff, run_command
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +166,7 @@ def derive_strain_models(
 ) -> Path:
     """
     Uses diamond and gapseq to project the pan-model onto individual strains.
-    Replaces 03-derive_strain_models.ipynb logic.
+    Gracefully accepts both .gbff (extracts CDS) and .faa (direct mapping).
     """
     genomes_dir = Path(genomes_dir).resolve()
     pangenome_fasta = Path(pangenome_fasta).resolve()
@@ -172,29 +174,47 @@ def derive_strain_models(
     medium_file = Path(medium_file).resolve()
     output_dir = Path(output_dir).resolve()
 
+    # HPC Readiness: Create an isolated directory for processed proteomes
     matches_dir = output_dir / "matches"
     models_dir = output_dir / "models"
-    matches_dir.mkdir(parents=True, exist_ok=True)
-    models_dir.mkdir(parents=True, exist_ok=True)
+    proteomes_dir = output_dir / "proteomes"
 
-    genomes = list(genomes_dir.glob("*.faa"))
-    if not genomes:
-        raise FileNotFoundError(f"No .faa genome files found in {genomes_dir}")
+    for d in [matches_dir, models_dir, proteomes_dir]:
+        d.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Clean FASTA files
-    for genome in genomes:
-        clean_fasta_file(genome)  # Using the function we built in Step 2
+    # Collect both file types
+    faa_files = list(genomes_dir.glob("*.faa"))
+    gbff_files = list(genomes_dir.glob("*.gbff"))
+
+    if not faa_files and not gbff_files:
+        raise FileNotFoundError(f"No .faa or .gbff files found in {genomes_dir}")
+
+    processed_genomes = []
+
+    # 1. Prepare Genomes (Extract GBFFs and isolate FAAs)
+    logger.info("Preparing input genomes for DIAMOND mapping...")
+
+    for gbff in gbff_files:
+        out_faa = proteomes_dir / f"{gbff.stem}.faa"
+        extract_proteome_from_gbff(gbff, out_faa)
+        clean_fasta_file(out_faa)  # Clean the safe, isolated file
+        processed_genomes.append(out_faa)
+
+    for faa in faa_files:
+        out_faa = proteomes_dir / faa.name
+        if not out_faa.exists():
+            shutil.copy(faa, out_faa)  # Protect read-only original inputs
+        clean_fasta_file(out_faa)
+        processed_genomes.append(out_faa)
 
     # Step 2: Build Diamond DB
     logger.info("Building Diamond database from pangenome...")
     db_path = output_dir / pangenome_fasta.stem
     run_command(["diamond", "makedb", "--in", str(pangenome_fasta), "-d", str(db_path)])
-
-    # We must append .dmnd for the blastp command
     db_file = str(db_path) + ".dmnd"
 
-    # Step 3: Iterate through strains to map and generate models
-    for genome in genomes:
+    # Step 3: Iterate through strains
+    for genome in processed_genomes:
         strain_name = genome.stem
         logger.info(f"--- Processing strain: {strain_name} ---")
 
@@ -227,7 +247,7 @@ def derive_strain_models(
         filtered_rxn_tbl = strain_dir / "filtered-Reactions.tbl"
         filter_blast_table(panmodel_rxn_table, match_file, filtered_rxn_tbl)
 
-        # 3c. Find Transporters
+        # 3c. Find Transporters (Using the protein FASTA)
         run_command(
             [
                 "gapseq",
@@ -292,13 +312,42 @@ def derive_strain_models(
 
         # 3f. Clean XML tags (Replaces the bash `sed` command)
         xml_file = strain_dir / "filtered-Reactions.tbl.xml"
+        final_xml = strain_dir / f"{strain_name}.xml"
+
         if xml_file.exists():
             xml_content = xml_file.read_text(encoding="utf-8")
+
+            # 1. Fix the exchange reaction tags
             if "R_EX_" in xml_content:
-                xml_file.write_text(
-                    xml_content.replace("R_EX_", "EX_"), encoding="utf-8"
-                )
-                logger.debug(f"Fixed 'R_EX_' tags in {xml_file.name}")
+                xml_content = xml_content.replace("R_EX_", "EX_")
+
+            # 2. Fix the internal SBML Model ID (Sanitize for SBML SId rules)
+            # Replace any character that is NOT a letter, number, or underscore with an underscore
+            safe_model_id = re.sub(r"[^a-zA-Z0-9_]", "_", strain_name)
+
+            # SBML IDs also cannot start with a number. Catch that edge case just in case.
+            if safe_model_id and safe_model_id[0].isdigit():
+                safe_model_id = f"M_{safe_model_id}"
+
+            xml_content = xml_content.replace(
+                'id="filtered_Reactions_tbl"', f'id="{safe_model_id}"'
+            )
+            xml_content = xml_content.replace(
+                'id="filtered-Reactions.tbl"', f'id="{safe_model_id}"'
+            )
+
+            # Write to the new properly named file and delete the old gapseq one
+            final_xml.write_text(xml_content, encoding="utf-8")
+            xml_file.unlink()
+            logger.debug(
+                f"Saved cleaned XML as {final_xml.name} with internal ID {safe_model_id}"
+            )
+
+        # This prevents memote and the pipeline from picking up duplicate/unfinished models
+        draft_xml = strain_dir / "filtered-Reactions.tbl-draft.xml"
+        if draft_xml.exists():
+            draft_xml.unlink()
+            logger.debug(f"Removed intermediate draft model {draft_xml.name}")
 
     logger.info(f"All strain models successfully generated in {models_dir}")
     return models_dir

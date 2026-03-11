@@ -453,3 +453,47 @@ def run_model_polisher(
         logger.info(f"Successfully polished all {success_count} models.")
 
     return models_out
+
+
+# ==========================================
+# Phase 3: Hidden Evaluators (Pipeline Auto-Triggers)
+# ==========================================
+
+
+def generate_curation_template(model_dir: Path, output_dir: Path) -> Path:
+    """Hidden Evaluator: Runs memote on drafts and generates the Excel template."""
+    # Hide the raw reports in the strains folder to keep the root directory clean
+    reports_dir = output_dir / "03-strains" / "reports_pre_curation"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    models = list(model_dir.rglob("*.xml"))
+    logger.info(f"Running automated memote evaluation on {len(models)} draft models...")
+
+    for model in models:
+        out_json = reports_dir / f"{model.stem}.json"
+        out_html = reports_dir / f"{model.stem}.html"
+        run_memote_snapshot(model, out_json, out_html)
+
+    out_excel = output_dir / "curation_template.xlsx"
+    extract_memote_problems(reports_dir, model_dir, out_excel)
+    return out_excel
+
+
+def evaluate_final_models(model_dir: Path, output_dir: Path) -> None:
+    """Hidden Evaluator: Runs memote on final models to prove FAIR compliance."""
+    reports_dir = output_dir / "08-final_reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    models = list(model_dir.rglob("*.xml"))
+    if not models:
+        logger.warning("No final XML models found to evaluate.")
+        return
+
+    logger.info(f"=== STEP 8: Final Memote Evaluation ===")
+    logger.info(f"Running final memote evaluation on {len(models)} polished models...")
+    for model in models:
+        out_json = reports_dir / f"{model.stem}.json"
+        out_html = reports_dir / f"{model.stem}.html"
+        run_memote_snapshot(model, out_json, out_html)
+
+    logger.info(f"Final FAIR-compliance reports saved to {reports_dir}")
