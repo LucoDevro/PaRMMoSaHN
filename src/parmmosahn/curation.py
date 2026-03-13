@@ -418,7 +418,21 @@ def run_model_polisher(
 
         # <-- NEW: Wait for PostgreSQL to actually finish booting up!
         logger.info("Waiting 15 seconds for databases to initialize...")
-        time.sleep(15)
+        time.sleep(240)
+
+        # --- ADD THESE LINES TO FIX THE "FAST" ATTRIBUTE BUG ---
+        logger.info("Downgrading SBML headers to L3V1 for beta compatibility...")
+        for xml in xml_models:
+            content = xml.read_text(encoding="utf-8")
+            if 'level="3" version="2"' in content:
+                content = content.replace(
+                    'level="3" version="2"', 'level="3" version="1"'
+                )
+                content = content.replace(
+                    "level3/version2/core", "level3/version1/core"
+                )
+                xml.write_text(content, encoding="utf-8")
+        # -------------------------------------------------------
 
         success_count = 0
         fail_count = 0
@@ -436,6 +450,9 @@ def run_model_polisher(
                     "-T",
                     "--rm",
                     "polisher",
+                    "java",
+                    "-jar",
+                    "ModelPolisher-2.1-beta.jar",
                     f"--input=/models/{xml.name}",
                     f"--output=/output/{xml.name}",
                     "--annotate-with-bigg=true",
