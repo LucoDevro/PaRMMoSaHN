@@ -294,3 +294,6 @@ commands.md
 
 # Helper scripts
 get_excel.py
+testing_scripts/
+test_results_copy/
+test_results_M_flag/
