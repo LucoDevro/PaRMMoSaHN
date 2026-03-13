@@ -79,6 +79,8 @@ def build_pan_model(
         str(out_dir),  # Gapseq output directory
         "-K",
         str(threads),
+        "-M",
+        "prot",  # Explicitly tell gapseq these are proteins
         str(fasta_path),
     ]
 
