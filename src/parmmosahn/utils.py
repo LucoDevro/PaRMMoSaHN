@@ -61,8 +61,7 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
 
     Architectural notes:
     - Yields features generator-style to maintain low memory overhead.
-    - Uses atomic writing (temp file -> rename) to prevent race conditions or
-      corrupted files on HPC network drives (e.g., Lustre/NFS) if a Slurm job dies.
+    - Atomic rename to prevent race conditions in HPC environments.
     """
     if output_faa_path.exists():
         logger.info(
@@ -104,7 +103,7 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
         if count == 0:
             logger.warning(f"No CDS translations found in {gbff_path}!")
 
-        # Atomic rename (POSIX standard, extremely safe for HPC parallel jobs)
+        # Atomic rename to final destination
         temp_path.replace(output_faa_path)
         logger.debug(f"Successfully extracted {count} proteins to {output_faa_path}")
 

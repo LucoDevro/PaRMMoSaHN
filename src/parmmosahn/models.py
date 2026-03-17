@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 def clean_fasta_file(fasta_path: Path) -> None:
     """
     Removes problematic characters (like '’') from FASTA files to prevent gapseq errors.
-    Replaces: cat $pangenome | tr -d "’" > tmp && mv tmp $pangenome
     """
     logger.info(f"Cleaning problematic characters from {fasta_path.name}...")
     try:
@@ -101,7 +100,6 @@ def filter_blast_table(
 ) -> None:
     """
     Filters the panmodel reaction table based on DIAMOND blast hits.
-    Native implementation of the provided 'filter_blast_table.py'.
     """
 
     def format_number(num):
@@ -176,7 +174,7 @@ def derive_strain_models(
     medium_file = Path(medium_file).resolve()
     output_dir = Path(output_dir).resolve()
 
-    # HPC Readiness: Create an isolated directory for processed proteomes
+    # Create an isolated directory for processed proteomes
     matches_dir = output_dir / "matches"
     models_dir = output_dir / "models"
     proteomes_dir = output_dir / "proteomes"
@@ -312,7 +310,7 @@ def derive_strain_models(
             stderr_file=log_err,
         )
 
-        # 3f. Clean XML tags (Replaces the bash `sed` command)
+        # 3f. Clean XML tags and internal model IDs for compatibility with downstream tools
         xml_file = strain_dir / "filtered-Reactions.tbl.xml"
         final_xml = strain_dir / f"{strain_name}.xml"
 

@@ -49,11 +49,9 @@ def run_memote_snapshot(model_path: Path, output_json: Path, output_html: Path) 
 
     with open(os.devnull, "w") as devnull:
         with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            # Tell Pylance this returns a Tuple because results=True
             output = memote_api.test_model(
                 model_obj, sbml_version=sbml_ver, results=True, pytest_args=pytest_args
             )
-            # Safely unpack by casting to the expected Tuple signature
             code, results = cast(Tuple[int, Any], output)
 
     # 3. Generate and save the reports
@@ -111,7 +109,8 @@ def extract_memote_problems(
     first_encounter_mass = read_test_results("test_reaction_mass_balance")
     first_encounter_dupl = read_test_results("test_find_duplicate_reactions")
 
-    # --- NEW: Cache loaded models so we don't load the same XML 50 times! ---
+    # Trying to cache loaded models, too avoid loading the same XML 50 times.
+    # TODO check if this actually improves performance or just adds complexity.
     _loaded_models = {}
 
     def get_cached_model(model_name: str):
@@ -237,6 +236,8 @@ def extract_memote_problems(
 # ==========================================
 
 
+# TODO consider splitting this function into two: one for applying duplicates and one for applying formula fixes, since they are conceptually separate and might be done by different people in the future. The duplicate fixing could even be automated based on the reaction IDs, while the formula fixes would always require manual review and input. For now, I'll keep them together since they both rely on loading the same model and it avoids redundant file I/O, but it's something to consider for future refactoring.
+# TODO implement the desicion logic: if decision == "1", drop ID 2; if decision == "2", drop ID 1; if decision 0, throw both away; if decision 3, keep both. Need to decide how to handle the "keep both" case since that would mean both reactions are technically duplicates. If blank, need to decide what to do as well, maybe skip and log for manual review later?
 def apply_curations(
     model_path: Path, curation_db_path: Path, output_dir: Path
 ) -> Path | None:
@@ -251,7 +252,6 @@ def apply_curations(
         return out_file
 
     try:
-        # Cast the loaded model so Pylance knows its type
         model = cast(Model, cb.io.read_sbml_model(str(model_path)))
     except Exception as e:
         logger.error(f"Failed to load {model_path.name} for curation: {e}")
@@ -300,7 +300,6 @@ def apply_curations(
         ):
             continue
 
-        # Cast to Reaction so Pylance recognizes .build_reaction_string()
         rxn = cast(Reaction, model.reactions.get_by_id(str(rxn_id)))
         old_formula = rxn.build_reaction_string()
 
@@ -416,11 +415,11 @@ def run_model_polisher(
             stderr=subprocess.DEVNULL,
         )
 
-        # <-- NEW: Wait for PostgreSQL to actually finish booting up!
-        logger.info("Waiting 15 seconds for databases to initialize...")
+        # Wait for PostgreSQL to actually finish booting up, otherwise it will reject connections from ModelPolisher and cause failures. 15 seconds was enough for newer versions, but 4 minutes seems necessary for older version.
+        logger.info("Waiting 240 seconds for databases to initialize...")
         time.sleep(240)
 
-        # --- ADD THESE LINES TO FIX THE "FAST" ATTRIBUTE BUG ---
+        # Downgrades SBML headers from L3V2 to L3V1 for compatibility with the beta version of ModelPolisher. This is a temporary workaround until we can upgrade to the latest ModelPolisher release that supports L3V2.
         logger.info("Downgrading SBML headers to L3V1 for beta compatibility...")
         for xml in xml_models:
             content = xml.read_text(encoding="utf-8")

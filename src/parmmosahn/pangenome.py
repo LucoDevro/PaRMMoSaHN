@@ -20,7 +20,6 @@ class ToolExecutionError(Exception):
 def clean_genbank_files(genomes_dir: Path) -> None:
     """
     Removes problematic characters (like '’') from GenBank files.
-    Replaces the bash command: find ... | xargs ... tr -d "’"
     """
     logger.info(
         f"Checking for problematic characters in GBFF files in {genomes_dir}..."
@@ -47,7 +46,7 @@ def clean_genbank_files(genomes_dir: Path) -> None:
 def create_annotations_list(genomes_dir: Path, output_list: Path) -> None:
     """
     Creates a tab-separated list mapping filenames to their absolute paths.
-    Replaces the bash command: paste <(dir -1 ...) <(find ...) > annotations.list
+    This is the format expected by PPanGGOLiN for its annotation step.
     """
     logger.info(f"Generating annotations list at {output_list}...")
     gbff_files = list(genomes_dir.glob("*.gbff"))
@@ -161,6 +160,7 @@ def build_pangenome(
         )
 
     # Calculate soft core threshold exactly as bash `echo "scale=5; 2/$no_genomes" | bc`
+    # TODO check if this is biologically relevant
     soft_core_threshold = round(2 / no_genomes, 5)
     logger.info(
         f"Calculated soft_core threshold: {soft_core_threshold} for {no_genomes} genomes."

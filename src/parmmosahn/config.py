@@ -13,7 +13,7 @@ from typing import Optional
 class PipelineConfig:
     """Holds high-level configuration for the full pipeline.
 
-    TODO: refine fields once the concrete parameters from notebooks are known.
+    TODO: refine fields with more specific types or enums where appropriate, and add validation logic if needed.
     """
 
     genomes_dir: Path

@@ -91,7 +91,7 @@ def run_all(
     sbo_dbs: Path | None = None,
     skip_polisher: bool = False,
     engine: str = "docker",
-    stop_after_drafts: bool = False,  # NEW FLAG
+    stop_after_drafts: bool = False,
 ):
     """Executes the entire PaRMMoSaHN pipeline from end to end."""
     output_dir.mkdir(parents=True, exist_ok=True)
