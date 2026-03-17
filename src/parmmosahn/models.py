@@ -257,6 +257,8 @@ def derive_strain_models(
                 "-b",
                 str(gapseq_bits),
                 "-f",
+                "-M",
+                "prot",
                 str(strain_dir),
                 str(genome),
             ],
