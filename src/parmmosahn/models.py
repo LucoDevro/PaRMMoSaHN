@@ -79,8 +79,6 @@ def build_pan_model(
         str(out_dir),  # Gapseq output directory
         "-K",
         str(threads),
-        "-M",
-        "prot",  # Explicitly tell gapseq these are proteins
         str(fasta_path),
     ]
 
@@ -117,6 +115,11 @@ def filter_blast_table(
         names=["Query", "Target", "Repr. bitscore"],
     )
 
+    # Take the best hit
+    strain_blast_hits.drop_duplicates(
+        subset = ['Query'], keep='first', inplace=True
+    )
+
     # Read pan-model reactions
     pan_reaction_table = pd.read_table(pan_reaction_table_file, comment="#")
 
@@ -136,7 +139,7 @@ def filter_blast_table(
         by="Repr. bitscore", ascending=False, inplace=True
     )
     strain_reaction_table.drop_duplicates(
-        subset=["Query", "pathway"], keep="first", inplace=True
+        subset=["Query", "pathway", "dbhit"], keep="first", inplace=True
     )
 
     strain_reaction_table.sort_index(inplace=True)
