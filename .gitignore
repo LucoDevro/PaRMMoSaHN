@@ -297,3 +297,19 @@ get_excel.py
 testing_scripts/
 test_results_copy/
 test_results_M_flag/
+
+
+# Can we ignore all the files in the root directory except for the ones we want to keep?
+# List all the files to not ignore in the root directory
+!.gitignore
+!.pre-commit-config.yaml
+!CHANGELOG.md
+!CONTRIBUTING.md
+!environment.yml
+!LICENSE
+!MANIFEST.in
+!pyproject.toml
+!README.md
+
+# Ignore all other files in the root directory
+*
