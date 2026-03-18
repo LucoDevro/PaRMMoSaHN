@@ -1,26 +1,33 @@
 services:
   biggdb:
-    image: schmirgel/bigg_db:1.6
+    image: mephenor/bigg_docker:1.6
+    container_name: modelpolisher_biggdb
     hostname: biggdb
-    # Force the container to expose port 1310 instead of 5432
-    command: -p 1310
+    ports:
+      - 1310:5432
 
   adb:
-    image: schmirgel/annotatedb:0.1.1
+    image: mephenor/adb_docker:0.1.1
+    container_name: modelpolisher_adb
     hostname: adb
-    # Force AnnotationDB to expose port 1311 (ModelPolisher expects 1311 for ADB)
-    command: -p 1311
+    ports:
+      - 1013:5432
 
+  # We keep the old validator service here solely so your Python
+  # script doesn't crash when it runs `up -d ... validator`
   validator:
     image: schmirgel/sbmlvalidator:1.0.0
     hostname: sbmlvalidator
 
   polisher:
-    image: schmirgel/modelpolisher:2.1
+    image: mephenor/modelpolisher:2.1-beta
     depends_on:
       - biggdb
       - adb
-      - validator
+    container_name: modelpolisher_java
+    stdin_open: true
+    tty: true
+    # YOU MUST KEEP THESE VOLUMES for your Python code to work!
     volumes:
       - ${MODEL_DIR}:/models
       - ${OUTPUT_DIR}:/output
