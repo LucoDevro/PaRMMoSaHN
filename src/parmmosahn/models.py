@@ -127,12 +127,14 @@ def filter_blast_table(
         right_on="stitle",
     )
 
+    # TODO check biological relevance of dropping duplicates. What happens if a gene is involved in multiple reactions in the same pathway?
     strain_reaction_table.drop_duplicates(
         inplace=True, ignore_index=True, subset=["Query", "Target", "rxn", "pathway"]
     )
     strain_reaction_table.sort_values(
         by="Repr. bitscore", ascending=False, inplace=True
     )
+    # Change pathway to 'rxn' here?
     strain_reaction_table.drop_duplicates(
         subset=["Query", "pathway"], keep="first", inplace=True
     )
