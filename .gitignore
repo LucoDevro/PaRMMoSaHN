@@ -310,9 +310,9 @@ test_results_M_flag/
 !MANIFEST.in
 !pyproject.toml
 !README.md
-!src/
-!tests/
-!.github/
+!src/*
+!tests/*
+!.github/*
 
 # Ignore all other files in the root directory
 *
