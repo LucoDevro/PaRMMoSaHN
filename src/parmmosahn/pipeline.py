@@ -7,7 +7,6 @@ from parmmosahn.curation import (
     evaluate_final_models,
     generate_curation_template,
     run_model_polisher,
-    run_sbo_annotation,
 )
 from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.pangenome import build_pangenome
@@ -20,12 +19,10 @@ def run_downstream(
     draft_models_dir: Path,
     output_dir: Path,
     curation_db: Path | None = None,
-    sbo_wrapper: Path | None = None,
-    sbo_dbs: Path | None = None,
     skip_polisher: bool = False,
     engine: str = "docker",
 ):
-    """Executes Steps 4-7: Curation, SBO, Polishing, and Export."""
+    """Executes Steps 4-7: Curation, Polishing, and Export."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- STEP 4: Automatic Curation ---
@@ -44,36 +41,26 @@ def run_downstream(
 
     current_models_dir = curated_out
 
-    # --- STEP 5: SBO Annotation (Optional) ---
-    if sbo_wrapper and sbo_dbs:
-        logger.info("=== STEP 5: SBO Annotation ===")
-        sbo_out = output_dir / "05-sbo_annotated"
-        current_models_dir = run_sbo_annotation(
-            current_models_dir, sbo_out, sbo_wrapper, sbo_dbs
-        )
-    else:
-        logger.info("=== STEP 5: SBO Annotation (SKIPPED - Missing paths) ===")
-
-    # --- STEP 6: ModelPolisher via Docker (Optional) ---
+    # --- STEP 5: ModelPolisher via Docker (Optional) ---
     if skip_polisher:
-        logger.info("=== STEP 6: ModelPolisher (SKIPPED by user) ===")
+        logger.info("=== STEP 5: ModelPolisher (SKIPPED by user) ===")
     elif not shutil.which(engine if engine != "podman" else "podman-compose"):
         logger.warning(
-            f"=== STEP 6: ModelPolisher (SKIPPED - {engine} is not installed) ==="
+            f"=== STEP 5: ModelPolisher (SKIPPED - {engine} is not installed) ==="
         )
     else:
-        logger.info(f"=== STEP 6: ModelPolisher ({engine}) ===")
-        polished_out = output_dir / "06-polished"
+        logger.info(f"=== STEP 5: ModelPolisher ({engine}) ===")
+        polished_out = output_dir / "05-polished"
         current_models_dir = run_model_polisher(
             current_models_dir, polished_out, engine=engine
         )
 
-    # --- STEP 7: Gather & Convert ---
-    logger.info("=== STEP 7: Gathering Final Results ===")
-    final_out = output_dir / "07-final_results"
+    # --- STEP 6: Gather & Convert ---
+    logger.info("=== STEP 6: Gathering Final Results ===")
+    final_out = output_dir / "06-final_results"
     gather_and_convert_models(current_models_dir, final_out)
 
-    # --- STEP 8: Final Evaluation ---
+    # --- STEP 7: Final Evaluation ---
     # current_models_dir holds the final XMLs right before they were gathered
     evaluate_final_models(current_models_dir, output_dir)
 
@@ -87,8 +74,6 @@ def run_all(
     medium_file: Path,
     curation_db: Path | None = None,
     threads: int = 14,
-    sbo_wrapper: Path | None = None,
-    sbo_dbs: Path | None = None,
     skip_polisher: bool = False,
     engine: str = "docker",
     stop_after_drafts: bool = False,
@@ -128,7 +113,7 @@ def run_all(
             f"ACTION REQUIRED: Please fill out the curation template at {template_path.resolve()}"
         )
         logger.info(
-            f"When finished, resume using: parmmosahn resume --output-dir {output_dir.resolve()}"
+            f"When finished, resume using: parmmosahn resume -o {output_dir.resolve()}"
         )
         return
 
@@ -137,8 +122,6 @@ def run_all(
         draft_models_dir=draft_models_dir,
         output_dir=output_dir,
         curation_db=curation_db,
-        sbo_wrapper=sbo_wrapper,
-        sbo_dbs=sbo_dbs,
         skip_polisher=skip_polisher,
         engine=engine,
     )

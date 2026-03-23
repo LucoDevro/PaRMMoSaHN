@@ -321,48 +321,6 @@ def apply_curations(
     return out_file
 
 
-def run_sbo_annotation(
-    model_dir: str | Path,
-    output_dir: str | Path,
-    sbo_wrapper_script: str | Path,
-    sbo_dbs_dir: str | Path,
-) -> Path:
-    """
-    Runs the custom SBOannotator wrapper on all curated models.
-    """
-    model_dir = Path(model_dir).resolve()
-    output_dir = Path(output_dir).resolve()
-    sbo_wrapper = Path(sbo_wrapper_script).resolve()
-    dbs_dir = Path(sbo_dbs_dir).resolve()
-
-    if not sbo_wrapper.exists():
-        raise FileNotFoundError(f"SBOannotator wrapper not found at {sbo_wrapper}")
-
-    models_out = output_dir / "models"
-    logs_out = output_dir / "logs"
-    models_out.mkdir(parents=True, exist_ok=True)
-    logs_out.mkdir(parents=True, exist_ok=True)
-    dbs_dir.mkdir(parents=True, exist_ok=True)
-
-    xml_models = list(model_dir.glob("*.xml"))
-    logger.info(f"Adding SBO terms to {len(xml_models)} models...")
-
-    for xml in xml_models:
-        strain_name = xml.stem
-        logger.info(f"Running SBOannotator for {strain_name}...")
-
-        dest_xml = models_out / xml.name
-        log_out = logs_out / f"{strain_name}.log"
-        log_err = logs_out / f"{strain_name}.err"
-
-        cmd = ["python", str(sbo_wrapper), str(xml), str(dest_xml), str(dbs_dir)]
-
-        # Using our robust utils function to capture logs directly to files
-        run_command(cmd, stdout_file=log_out, stderr_file=log_err)
-
-    return models_out
-
-
 def run_model_polisher(
     model_dir: str | Path,
     output_dir: str | Path,
