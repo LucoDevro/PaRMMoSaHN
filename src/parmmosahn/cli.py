@@ -8,8 +8,6 @@ from parmmosahn.curation import (
     run_memote_snapshot,
 )
 from parmmosahn.models import build_pan_model, derive_strain_models
-
-# Import our functional modules
 from parmmosahn.pangenome import build_pangenome
 from parmmosahn.results import gather_and_convert_models
 
@@ -34,10 +32,10 @@ def cli():
 @click.option(
     "-o",
     "--output",
-    default="01-pangenome",
+    default="00-pan_results",
     type=click.Path(),
     show_default=True,
-    help="Target directory for all pangenome output files.",
+    help="Target base directory for pan-related output files.",
 )
 @click.option(
     "-l",
@@ -48,64 +46,34 @@ def cli():
 @click.option(
     "-t",
     "--threads",
-    default=1,
-    show_default=True,
-    help="Number of CPU threads to allocate.",
-)
-def pangenome(genomes, output, label, threads):
-    """Step 1: Construct the partitioned pangenome using PPanGGOLiN."""
-    click.echo(f"Building pangenome '{label}'...")
-    build_pangenome(genomes, output, label, threads=threads)
-
-
-@cli.command()
-@click.option(
-    "-f",
-    "--fasta",
-    required=True,
-    type=click.Path(exists=True),
-    help="Path to the PPanGGOLiN soft-core FASTA file.",
-)
-@click.option(
-    "-o",
-    "--output",
-    default="02-pan_model",
-    type=click.Path(),
-    show_default=True,
-    help="Target directory for the pan-model output.",
-)
-@click.option(
-    "-t",
-    "--threads",
     default=14,
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
-def panmodel(fasta, output, threads):
-    """Step 2: Build the species-wide pan-model using gapseq."""
-    click.echo("Building pan-model...")
-    build_pan_model(fasta, output, threads=threads)
+def pan(genomes, output, label, threads):
+    """Step 1 & 2: Construct the partitioned pangenome and build the pan-model."""
+    from parmmosahn.pipeline import run_pan
+
+    click.echo(f"Building pangenome and pan-model '{label}'...")
+    run_pan(Path(genomes), Path(output), label, threads=threads)
 
 
 @cli.command()
 @click.option(
     "-g",
     "--genomes",
-    required=True,
     type=click.Path(exists=True),
     help="Directory of strain genome files (.gbff or .faa format).",
 )
 @click.option(
     "-f",
     "--fasta",
-    required=True,
     type=click.Path(exists=True),
     help="Path to the PPanGGOLiN soft-core FASTA file.",
 )
 @click.option(
     "-r",
     "--panmodel-rxns",
-    required=True,
     type=click.Path(exists=True),
     help="Path to the pan-model reaction table file.",
 )
@@ -120,7 +88,6 @@ def panmodel(fasta, output, threads):
 @click.option(
     "-m",
     "--medium",
-    required=True,
     type=click.Path(exists=True),
     help="Path to the media CSV file used for gapfilling.",
 )
@@ -133,12 +100,15 @@ def panmodel(fasta, output, threads):
 )
 def strains(genomes, fasta, panmodel_rxns, output, medium, threads):
     """Step 3: Derive strain-specific models using diamond and gapseq."""
+    if not all([genomes, fasta, panmodel_rxns, medium]):
+        raise click.UsageError("Missing required arguments for strain derivation.")
     click.echo("Deriving strain models...")
     derive_strain_models(genomes, fasta, panmodel_rxns, output, medium, threads=threads)
 
 
 @cli.command()
 @click.option(
+    "-s",
     "--source-model",
     required=True,
     type=click.Path(exists=True),
@@ -152,6 +122,7 @@ def strains(genomes, fasta, panmodel_rxns, output, medium, threads):
     help="Output path for the curated SBML model.",
 )
 @click.option(
+    "-d",
     "--db",
     required=True,
     type=click.Path(exists=True),
@@ -216,32 +187,28 @@ def gather(models, output):
     gather_and_convert_models(models, output)
 
 
-@cli.command()
+@cli.command(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.option(
     "-g",
     "--genomes",
-    required=True,
     type=click.Path(exists=True),
     help="Directory of new strain genome files (.faa or .gbff format).",
 )
 @click.option(
     "-f",
     "--fasta",
-    required=True,
     type=click.Path(exists=True),
     help="Path to an existing soft-core FASTA file.",
 )
 @click.option(
     "-r",
     "--panmodel-rxns",
-    required=True,
     type=click.Path(exists=True),
     help="Path to an existing pan-model reaction table file.",
 )
 @click.option(
     "-m",
     "--medium",
-    required=True,
     type=click.Path(exists=True),
     help="Path to the media CSV file for gapfilling.",
 )
@@ -250,13 +217,13 @@ def gather(models, output):
     "--output",
     required=True,
     type=click.Path(),
-    help="Target output directory for the new models.",
+    help="Target output directory for the project workflow.",
 )
 @click.option(
     "-c",
     "--curation-db",
-    type=click.Path(exists=True),
-    help="Optional path to an Excel DB for automated curation.",
+    type=click.Path(),
+    help="Path to the Excel DB for automated curation.",
 )
 @click.option(
     "-t",
@@ -266,7 +233,7 @@ def gather(models, output):
     help="Number of CPU threads to allocate.",
 )
 @click.option(
-    "--skip-polisher", is_flag=True, help="Skip the ModelPolisher execution step."
+    "--no-polish", is_flag=True, help="Skip the ModelPolisher execution step."
 )
 @click.option(
     "-e",
@@ -277,9 +244,20 @@ def gather(models, output):
     help="Container engine to use for running tools like ModelPolisher.",
 )
 @click.option(
-    "--stop-after-drafts",
+    "--curate",
     is_flag=True,
     help="Pause the pipeline before automatic curation to allow manual evaluation/edits.",
+)
+@click.option(
+    "--resume",
+    is_flag=True,
+    help="Resume the configured pipeline originating from Step 4 using a finished curation database.",
+)
+@click.option(
+    "-d",
+    "--drafts",
+    type=click.Path(exists=True, path_type=Path),
+    help="Optional path to draft models for zooming/resuming. Defaults to <output>/03-strains/models.",
 )
 def project(
     genomes,
@@ -289,13 +267,16 @@ def project(
     output,
     curation_db,
     threads,
-    skip_polisher,
+    no_polish,
     engine,
-    stop_after_drafts,
+    curate,
+    resume,
+    drafts,
 ):
     """
     Rapidly project new strains (.faa or .gbff format) onto an existing pan-model and continue with downstream curation.
     This bypasses Steps 1 & 2 (PPanGGOLiN).
+    Can also resume the project using the --resume flag.
     """
     from parmmosahn.curation import generate_curation_template
     from parmmosahn.models import derive_strain_models
@@ -303,6 +284,45 @@ def project(
 
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
+
+    # Handle Resume mode
+    if resume:
+        if not drafts:
+            drafts = out_path / "03-strains" / "models"
+            if not drafts.exists():
+                raise click.BadParameter(
+                    f"Could not find draft models at {drafts}. Please specify --drafts manually."
+                )
+
+        if not curation_db:
+            curation_db = out_path / "curation_template.xlsx"
+        else:
+            curation_db = Path(curation_db)
+
+        if not curation_db.exists():
+            raise click.FileError(
+                str(curation_db),
+                hint="Could not find the curation template. If you renamed or moved it, specify its path via --curation-db.",
+            )
+
+        click.echo(
+            f"Resuming pipeline using defined curation database: {curation_db.name}"
+        )
+
+        run_downstream(
+            draft_models_dir=drafts,
+            output_dir=out_path,
+            curation_db=curation_db,
+            no_polish=no_polish,
+            engine=engine,
+        )
+        return
+
+    # Normal mode (Not resuming)
+    if not all([genomes, fasta, panmodel_rxns, medium]):
+        raise click.UsageError(
+            "Missing required arguments for normal project strain derivation."
+        )
 
     # 1. Run Strain Derivation (Step 3)
     click.echo("=== STEP 3: Deriving Strain Models ===")
@@ -316,7 +336,7 @@ def project(
         threads=threads,
     )
 
-    if stop_after_drafts:
+    if curate:
         click.echo("=== Preparing Human-in-the-Loop Curation (running memote) ===")
         generate_curation_template(draft_models_dir, out_path)
         click.echo("=== Pipeline paused for Human-in-the-Loop Curation ===")
@@ -324,7 +344,7 @@ def project(
             f"ACTION REQUIRED: Please fill out the curation template at {out_path}/curation_template.xlsx"
         )
         click.echo(
-            f"When finished, resume using: parmmosahn resume -o {out_path.resolve()}"
+            f"When finished, resume using: parmmosahn project --resume -o {out_path.resolve()}"
         )
         return
 
@@ -333,160 +353,7 @@ def project(
         draft_models_dir=draft_models_dir,
         output_dir=out_path,
         curation_db=Path(curation_db) if curation_db else None,
-        skip_polisher=skip_polisher,
-        engine=engine,
-    )
-
-
-@cli.command()
-@click.option(
-    "-g",
-    "--genomes",
-    required=True,
-    type=click.Path(exists=True),
-    help="Directory of input genomes (.gbff format is required for the full pipeline, .faa format accepted for strain derivation).",
-)
-@click.option(
-    "-o",
-    "--output",
-    required=True,
-    type=click.Path(),
-    help="Target base directory for all outputs.",
-)
-@click.option(
-    "-l", "--label", required=True, help="A descriptive label for the pangenome run."
-)
-@click.option(
-    "-m",
-    "--medium",
-    required=True,
-    type=click.Path(exists=True),
-    help="Path to the media CSV file for gapfilling.",
-)
-@click.option(
-    "-c",
-    "--curation-db",
-    required=False,
-    type=click.Path(exists=True),
-    help="Optional path to an Excel DB used for automated curation.",
-)
-@click.option(
-    "-t",
-    "--threads",
-    default=14,
-    show_default=True,
-    help="Number of CPU threads to allocate.",
-)
-@click.option(
-    "--skip-polisher", is_flag=True, help="Skip the ModelPolisher execution step."
-)
-@click.option(
-    "--stop-after-drafts",
-    is_flag=True,
-    help="Pause the pipeline right before curation to allow manual evaluation/edits.",
-)
-@click.option(
-    "-e",
-    "--engine",
-    type=click.Choice(["docker", "podman", "apptainer"]),
-    default="docker",
-    show_default=True,
-    help="Container engine to use for running ModelPolisher.",
-)
-def run(
-    genomes,
-    output,
-    label,
-    medium,
-    curation_db,
-    threads,
-    skip_polisher,
-    stop_after_drafts,
-    engine,
-):
-    """Run the complete PaRMMoSaHN pipeline from start to finish."""
-    from parmmosahn.pipeline import run_all
-
-    run_all(
-        genomes_dir=Path(genomes),
-        output_dir=Path(output),
-        label=label,
-        medium_file=Path(medium),
-        curation_db=Path(curation_db) if curation_db else None,
-        threads=threads,
-        skip_polisher=skip_polisher,
-        engine=engine,
-        stop_after_drafts=stop_after_drafts,
-    )
-
-
-@cli.command()
-@click.option(
-    "-o",
-    "--output",
-    required=True,
-    type=click.Path(exists=True, path_type=Path),
-    help="Base output directory from the previously paused run.",
-)
-@click.option(
-    "-d",
-    "--drafts",
-    type=click.Path(exists=True, path_type=Path),
-    help="Optional path: Folder containing draft models. Defaults to <output>/03-strains/models.",
-)
-@click.option(
-    "-c",
-    "--curation-db",
-    type=click.Path(path_type=Path),
-    help="Optional path: Path to the Excel DB. Defaults to <output>/curation_template.xlsx.",
-)
-@click.option(
-    "--skip-polisher", is_flag=True, help="Skip the ModelPolisher execution step."
-)
-@click.option(
-    "-e",
-    "--engine",
-    type=click.Choice(["docker", "podman", "apptainer"]),
-    default="docker",
-    show_default=True,
-    help="Container engine to use for running ModelPolisher.",
-)
-def resume(
-    output: Path,
-    drafts: Path | None,
-    curation_db: Path | None,
-    skip_polisher,
-    engine,
-):
-    """Resume the configured pipeline originating from Step 4 using a finished curation database."""
-    from parmmosahn.pipeline import run_downstream
-
-    # Auto-resolve defaults based on the project root
-    if not drafts:
-        drafts = output / "03-strains" / "models"
-        if not drafts.exists():
-            raise click.BadParameter(
-                f"Could not find draft models at {drafts}. Please specify --drafts manually."
-            )
-
-    if not curation_db:
-        curation_db = output / "curation_template.xlsx"
-
-    # Informative error if the default file isn't there
-    if not curation_db.exists():
-        raise click.FileError(
-            str(curation_db),
-            hint="Could not find 'curation_template.xlsx' in the designated output directory. "
-            "If you renamed or moved your compiled Excel file, please define its exact path via the --curation-db flag.",
-        )
-
-    click.echo(f"Resuming pipeline referencing curation database: {curation_db.name}")
-
-    run_downstream(
-        draft_models_dir=drafts,
-        output_dir=output,
-        curation_db=curation_db,
-        skip_polisher=skip_polisher,
+        no_polish=no_polish,
         engine=engine,
     )
 
