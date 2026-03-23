@@ -27,6 +27,7 @@ dependencies = [
     "click>=8.0.0",      # For the CLI framework
     "memote>=0.13.0",    # For automated model curation
     "biopython>=1.79",   # For parsing GenBank files
+    "polars>=1.0.0",      # For efficient data manipulation in curation
 ]
 
 [project.optional-dependencies]
