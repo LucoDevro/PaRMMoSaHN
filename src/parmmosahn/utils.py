@@ -1,9 +1,8 @@
 import logging
-import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Any, Generator, Optional
 
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -23,36 +22,56 @@ def run_command(
 ) -> str | None:
     """
     Runs an external command robustly.
-    If stdout_file and stderr_file are provided, outputs are written to them instead of captured.
+    If stdout_file or stderr_file are provided, outputs are written to them instead of captured.
+    Returns standard output as string if stdout_file is None, else returns None.
     """
     logger.debug(f"Running command: {' '.join(cmd)}")
+    stdout_stream = None
+    stderr_stream = None
     try:
-        # Check if BOTH files are provided for file-based output
-        if stdout_file is not None and stderr_file is not None:
-            with stdout_file.open("a") as out, stderr_file.open("a") as err:
-                subprocess.run(cmd, stdout=out, stderr=err, text=True, check=True)
-            return None
+        kwargs: dict[str, Any] = {"text": True, "check": True}
 
-        # In all other cases (including if only one file is provided), capture to string
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
-        )
-        return result.stdout
+        # Determine stdout handling
+        if stdout_file is not None:
+            stdout_stream = stdout_file.open("a")
+            kwargs["stdout"] = stdout_stream
+        else:
+            kwargs["stdout"] = subprocess.PIPE
+
+        # Determine stderr handling
+        if stderr_file is not None:
+            stderr_stream = stderr_file.open("a")
+            kwargs["stderr"] = stderr_stream
+        else:
+            kwargs["stderr"] = subprocess.PIPE
+
+        result = subprocess.run(cmd, **kwargs)
+
+        # Close files if opened
+        if stdout_stream is not None:
+            stdout_stream.close()
+        if stderr_stream is not None:
+            stderr_stream.close()
+
+        # Return stdout if captured
+        if stdout_file is None:
+            return result.stdout
+        return None
 
     except subprocess.CalledProcessError as e:
         logger.error(f"Command failed: {' '.join(cmd)}")
-        if not (stdout_file and stderr_file):
+        if stderr_file is None:
             logger.error(f"Standard Error output:\n{e.stderr}")
         else:
             logger.error(f"Check {stderr_file} for detailed error logs.")
+
+        # Ensure we close file streams on error
+        if stdout_stream is not None and not stdout_stream.closed:
+            stdout_stream.close()
+        if stderr_stream is not None and not stderr_stream.closed:
+            stderr_stream.close()
+
         raise ToolExecutionError(f"Tool failed with exit code {e.returncode}") from e
-
-
-logger = logging.getLogger(__name__)
 
 
 def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
@@ -61,7 +80,7 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
 
     Architectural notes:
     - Yields features generator-style to maintain low memory overhead.
-    - Atomic rename to prevent race conditions in HPC environments.
+    - Uses TemporaryDirectory for safe temporary file creation.
     """
     if output_faa_path.exists():
         logger.info(
@@ -69,21 +88,19 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
         )
         return output_faa_path
 
-    # Define a generator to keep memory profile flat
     def _generate_proteins() -> Generator[SeqRecord, None, None]:
         with open(gbff_path, "r") as handle:
             for record in SeqIO.parse(handle, "genbank"):
                 for feature in record.features:
                     if feature.type == "CDS":
-                        # Edge case: Pseudogenes or broken annotations might lack a translation
                         translation = feature.qualifiers.get("translation", [None])[0]
                         if not translation:
                             continue
 
-                        # Edge case: Prefer locus_tag, fallback to protein_id, then feature ID
+                        # Prefer protein_id, fallback to locus_tag, then feature ID
                         seq_id = feature.qualifiers.get(
-                            "locus_tag",
-                            feature.qualifiers.get("protein_id", ["unknown_id"]),
+                            "protein_id",
+                            feature.qualifiers.get("locus_tag", ["unknown_id"]),
                         )[0]
 
                         yield SeqRecord(
@@ -92,24 +109,23 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
                             description=f"Extracted from {record.id}",
                         )
 
-    # Atomic write pattern for HPC safety
-    fd, temp_path_str = tempfile.mkstemp(dir=output_faa_path.parent, suffix=".faa.tmp")
-    temp_path = Path(temp_path_str)
-
     try:
-        with os.fdopen(fd, "w") as temp_out:
-            count = SeqIO.write(_generate_proteins(), temp_out, "fasta")
+        with tempfile.TemporaryDirectory(dir=output_faa_path.parent) as temp_dir:
+            temp_path = Path(temp_dir) / "temp.faa"
 
-        if count == 0:
-            logger.warning(f"No CDS translations found in {gbff_path}!")
+            with open(temp_path, "w") as temp_out:
+                count = SeqIO.write(_generate_proteins(), temp_out, "fasta")
 
-        # Atomic rename to final destination
-        temp_path.replace(output_faa_path)
-        logger.debug(f"Successfully extracted {count} proteins to {output_faa_path}")
+            if count == 0:
+                logger.warning(f"No CDS translations found in {gbff_path}!")
+
+            # Move from temp dir to final target
+            temp_path.replace(output_faa_path)
+            logger.debug(
+                f"Successfully extracted {count} proteins to {output_faa_path}"
+            )
 
     except Exception as e:
-        if temp_path.exists():
-            temp_path.unlink()
         logger.error(f"Failed to extract proteome from {gbff_path}: {e}")
         raise
 
