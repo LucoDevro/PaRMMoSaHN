@@ -4,7 +4,6 @@ __all__ = [
     "core",
     "cli",
     "utils",
-    "config",
     "io",
     "pangenome",
     "models",
