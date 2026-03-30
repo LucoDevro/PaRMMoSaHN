@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import subprocess
 import tempfile
@@ -25,9 +26,6 @@ def run_command(
     """
     logger.debug(f"Running command: {' '.join(cmd)}")
 
-    out_f = stdout_file.open("a") if stdout_file else None
-    err_f = stderr_file.open("a") if stderr_file else None
-
     captured_stdout: list[str] = []
     captured_stderr: list[str] = []
 
@@ -43,57 +41,59 @@ def run_command(
                     file_stream.write(line)
                     file_stream.flush()
 
-    try:
-        with subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-        ) as process:
+    # 1. Start the ExitStack
+    with contextlib.ExitStack() as stack:
+        out_f = stack.enter_context(stdout_file.open("a")) if stdout_file else None
+        err_f = stack.enter_context(stderr_file.open("a")) if stderr_file else None
 
-            # Use threads to read both streams concurrently
-            t_out = threading.Thread(
-                target=stream_reader,
-                args=(process.stdout, out_f, logger.info, captured_stdout),
-            )
-            t_err = threading.Thread(
-                target=stream_reader,
-                args=(process.stderr, err_f, logger.error, captured_stderr),
-            )
+        # 2. INDENT EVERYTHING INSIDE THE EXITSTACK
+        try:
+            with subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+            ) as process:
 
-            t_out.start()
-            t_err.start()
-
-            t_out.join()
-            t_err.join()
-            process.wait()
-
-            if process.returncode != 0:
-                # If it failed, bundle the stderr into the exception
-                err_msg = (
-                    "\n".join(captured_stderr)
-                    if not stderr_file
-                    else f"Check {stderr_file}."
+                # Use threads to read both streams concurrently
+                t_out = threading.Thread(
+                    target=stream_reader,
+                    args=(process.stdout, out_f, logger.info, captured_stdout),
                 )
-                raise subprocess.CalledProcessError(
-                    process.returncode, cmd, stderr=err_msg
+                t_err = threading.Thread(
+                    target=stream_reader,
+                    args=(process.stderr, err_f, logger.error, captured_stderr),
                 )
 
-        return "\n".join(captured_stdout) if stdout_file is None else None
+                t_out.start()
+                t_err.start()
 
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed: {' '.join(cmd)}")
-        if e.stderr:
-            logger.error(f"Standard Error output:\n{e.stderr}")
-        raise ToolExecutionError(f"Tool failed with exit code {e.returncode}") from e
+                # Wait for process first, THEN wait for threads to finish reading
+                process.wait()
+                t_out.join()
+                t_err.join()
 
-    finally:
-        if out_f:
-            out_f.close()
-        if err_f:
-            err_f.close()
+                if process.returncode != 0:
+                    # If it failed, bundle the stderr into the exception
+                    err_msg = (
+                        "\n".join(captured_stderr)
+                        if not stderr_file
+                        else f"Check {stderr_file}."
+                    )
+                    raise subprocess.CalledProcessError(
+                        process.returncode, cmd, stderr=err_msg
+                    )
+
+            return "\n".join(captured_stdout) if stdout_file is None else None
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Command failed: {' '.join(cmd)}")
+            if e.stderr:
+                logger.error(f"Standard Error output:\n{e.stderr}")
+            # Ensure ToolExecutionError is defined/imported in your file, otherwise use Exception
+            raise Exception(f"Tool failed with exit code {e.returncode}") from e
 
 
 def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
