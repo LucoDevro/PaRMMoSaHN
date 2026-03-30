@@ -1,6 +1,7 @@
 import logging
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -12,8 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class ToolExecutionError(Exception):
-    """Custom exception raised when an external bio-tool fails."""
-
     pass
 
 
@@ -21,57 +20,80 @@ def run_command(
     cmd: list[str], stdout_file: Path | None = None, stderr_file: Path | None = None
 ) -> str | None:
     """
-    Runs an external command robustly.
-    If stdout_file or stderr_file are provided, outputs are written to them instead of captured.
-    Returns standard output as string if stdout_file is None, else returns None.
+    Runs an external command robustly with REAL-TIME logging.
+    Separates stdout and stderr completely to avoid stream pollution.
     """
     logger.debug(f"Running command: {' '.join(cmd)}")
-    stdout_stream = None
-    stderr_stream = None
+
+    out_f = stdout_file.open("a") if stdout_file else None
+    err_f = stderr_file.open("a") if stderr_file else None
+
+    captured_stdout: list[str] = []
+    captured_stderr: list[str] = []
+
+    def stream_reader(pipe, file_stream, log_func, capture_list):
+        """Worker thread function to read streams without blocking."""
+        for line in pipe:
+            clean_line = line.strip()
+            if clean_line:
+                if file_stream is None:
+                    log_func(f"[{cmd[0]}] {clean_line}")
+                    capture_list.append(clean_line)
+                else:
+                    file_stream.write(line)
+                    file_stream.flush()
+
     try:
-        kwargs: dict[str, Any] = {"text": True, "check": True}
+        with subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        ) as process:
 
-        # Determine stdout handling
-        if stdout_file is not None:
-            stdout_stream = stdout_file.open("a")
-            kwargs["stdout"] = stdout_stream
-        else:
-            kwargs["stdout"] = subprocess.PIPE
+            # Use threads to read both streams concurrently
+            t_out = threading.Thread(
+                target=stream_reader,
+                args=(process.stdout, out_f, logger.info, captured_stdout),
+            )
+            t_err = threading.Thread(
+                target=stream_reader,
+                args=(process.stderr, err_f, logger.error, captured_stderr),
+            )
 
-        # Determine stderr handling
-        if stderr_file is not None:
-            stderr_stream = stderr_file.open("a")
-            kwargs["stderr"] = stderr_stream
-        else:
-            kwargs["stderr"] = subprocess.PIPE
+            t_out.start()
+            t_err.start()
 
-        result = subprocess.run(cmd, **kwargs)
+            t_out.join()
+            t_err.join()
+            process.wait()
 
-        # Close files if opened
-        if stdout_stream is not None:
-            stdout_stream.close()
-        if stderr_stream is not None:
-            stderr_stream.close()
+            if process.returncode != 0:
+                # If it failed, bundle the stderr into the exception
+                err_msg = (
+                    "\n".join(captured_stderr)
+                    if not stderr_file
+                    else f"Check {stderr_file}."
+                )
+                raise subprocess.CalledProcessError(
+                    process.returncode, cmd, stderr=err_msg
+                )
 
-        # Return stdout if captured
-        if stdout_file is None:
-            return result.stdout
-        return None
+        return "\n".join(captured_stdout) if stdout_file is None else None
 
     except subprocess.CalledProcessError as e:
         logger.error(f"Command failed: {' '.join(cmd)}")
-        if stderr_file is None:
+        if e.stderr:
             logger.error(f"Standard Error output:\n{e.stderr}")
-        else:
-            logger.error(f"Check {stderr_file} for detailed error logs.")
-
-        # Ensure we close file streams on error
-        if stdout_stream is not None and not stdout_stream.closed:
-            stdout_stream.close()
-        if stderr_stream is not None and not stderr_stream.closed:
-            stderr_stream.close()
-
         raise ToolExecutionError(f"Tool failed with exit code {e.returncode}") from e
+
+    finally:
+        if out_f:
+            out_f.close()
+        if err_f:
+            err_f.close()
 
 
 def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
