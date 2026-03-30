@@ -2,6 +2,7 @@ import logging
 import shutil
 from pathlib import Path
 
+from parmmosahn.constants import step_banner
 from parmmosahn.curation import (
     apply_curations,
     evaluate_final_models,
@@ -21,19 +22,25 @@ def run_pan(
     label: str,
     threads: int = 14,
     add_unique: bool = False,
+    soft_core_override: float | None = None,
 ):
     """Executes Step 1 & 2: Pangenome and Pan-model."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- STEP 1: Pangenome ---
-    logger.info("=== STEP 1: Building Pangenome ===")
+    logger.info(step_banner(1))
     pangenome_out = output_dir / "01-pangenome"
     softcore_fasta = build_pangenome(
-        genomes_dir, pangenome_out, label, threads=threads, add_unique=add_unique
+        genomes_dir,
+        pangenome_out,
+        label,
+        threads=threads,
+        add_unique=add_unique,
+        soft_core_override=soft_core_override,
     )
 
     # --- STEP 2: Pan-model ---
-    logger.info("=== STEP 2: Building Pan-model ===")
+    logger.info(step_banner(2))
     panmodel_out = output_dir / "02-panmodel"
     build_pan_model(softcore_fasta, panmodel_out, threads=threads)
 
@@ -56,11 +63,11 @@ def run_downstream(
     curated_out.mkdir(exist_ok=True)
 
     if curation_db and curation_db.exists():
-        logger.info("=== STEP 4: Applying Automatic Curations ===")
+        logger.info(step_banner(4))
         for draft_model in draft_models_dir.rglob("*.xml"):
             apply_curations(draft_model, curation_db, curated_out)
     else:
-        logger.info("=== STEP 4: Automatic Curation (SKIPPED - No DB provided) ===")
+        logger.info(step_banner(4, "SKIPPED - No DB provided"))
         # Safely copy draft models forward so the pipeline doesn't break
         for draft_model in draft_models_dir.rglob("*.xml"):
             shutil.copy(draft_model, curated_out / draft_model.name)
@@ -69,20 +76,18 @@ def run_downstream(
 
     # --- STEP 5: ModelPolisher via Docker (Optional) ---
     if no_polish:
-        logger.info("=== STEP 5: ModelPolisher (SKIPPED by user) ===")
+        logger.info(step_banner(5, "SKIPPED by user"))
     elif not shutil.which(engine):
-        logger.warning(
-            f"=== STEP 5: ModelPolisher (SKIPPED - {engine} is not installed) ==="
-        )
+        logger.warning(step_banner(5, f"SKIPPED - {engine} is not installed"))
     else:
-        logger.info(f"=== STEP 5: ModelPolisher ({engine}) ===")
+        logger.info(step_banner(5, engine))
         polished_out = output_dir / "05-polished"
         current_models_dir = run_model_polisher(
             current_models_dir, polished_out, engine=engine
         )
 
     # --- STEP 6: Gather & Convert ---
-    logger.info("=== STEP 6: Gathering Final Results ===")
+    logger.info(step_banner(6))
     final_out = output_dir / "06-final_results"
     gather_and_convert_models(current_models_dir, final_out)
 
