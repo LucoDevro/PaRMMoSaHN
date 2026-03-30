@@ -3,7 +3,7 @@ import re
 import shutil
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 from parmmosahn.utils import ToolExecutionError, extract_proteome_from_gbff, run_command
 
@@ -97,64 +97,66 @@ def filter_blast_table(
     pan_reaction_table_file: Path, strain_blast_hits_file: Path, output_file: Path
 ) -> None:
     """
-    Filters the panmodel reaction table based on DIAMOND blast hits.
+    Filters the panmodel reaction table based on DIAMOND blast hits using Polars LazyFrames
     """
-
-    def format_number(num):
-        return "{:.0f}".format(num) if num.is_integer() else str(num)
-
     logger.debug(f"Filtering reactions based on {strain_blast_hits_file.name}")
 
-    # Read diamond output
-    strain_blast_hits = pd.read_table(
-        strain_blast_hits_file,
-        header=None,
-        usecols=[0, 1, 11],
-        names=["Query", "Target", "Repr. bitscore"],
+    # 1. Setup LazyFrame for Blast Hits
+    blast_cols = [
+        "Query",
+        "Target",
+        "drop1",
+        "drop2",
+        "drop3",
+        "drop4",
+        "drop5",
+        "drop6",
+        "drop7",
+        "drop8",
+        "drop9",
+        "Repr. bitscore",
+    ]
+
+    # FIX: Added quote_char=None to prevent stray quotes from breaking chunk parsing
+    lf_blast = (
+        pl.scan_csv(
+            strain_blast_hits_file,
+            separator="\t",
+            has_header=False,
+            new_columns=blast_cols,
+            quote_char=None,
+        )
+        .select(["Query", "Target", "Repr. bitscore"])
+        .unique(subset=["Query"], keep="first")
     )
 
-    # Take the best hit
-    strain_blast_hits.drop_duplicates(
-        subset = ['Query'], keep='first', inplace=True
+    # 2. Setup LazyFrame for Pan-model Reactions
+    # FIX: Added quote_char=None, truncate_ragged_lines, and increased infer_schema_length
+    df_pan = pl.read_csv(
+        pan_reaction_table_file,
+        separator="\t",
+        comment_prefix="#",
+        quote_char=None,
+        truncate_ragged_lines=True,
+        infer_schema_length=10000,
+    )
+    lf_pan = df_pan.lazy()
+
+    # 3. Perform the joins and complex filtering lazily
+    lf_filtered = (
+        lf_blast.join(lf_pan, left_on="Target", right_on="stitle", how="inner")
+        .unique(subset=["Query", "Target", "rxn", "pathway"], keep="first")
+        .sort("Repr. bitscore", descending=True)
+        .unique(subset=["Query", "pathway", "dbhit"], keep="first")
+        .sort("Query")
+        .with_columns(pl.col("Query").alias("stitle"))
+        .drop(["Query", "Target", "Repr. bitscore"])
     )
 
-    # Read pan-model reactions
-    pan_reaction_table = pd.read_table(pan_reaction_table_file, comment="#")
-
-    # Merge and filter
-    strain_reaction_table = pd.merge(
-        strain_blast_hits,
-        pan_reaction_table,
-        how="inner",
-        left_on="Target",
-        right_on="stitle",
-    )
-
-    # TODO check biological relevance of dropping duplicates. What happens if a gene is involved in multiple reactions in the same pathway?
-    strain_reaction_table.drop_duplicates(
-        inplace=True, ignore_index=True, subset=["Query", "Target", "rxn", "pathway"]
-    )
-    strain_reaction_table.sort_values(
-        by="Repr. bitscore", ascending=False, inplace=True
-    )
-    # Change pathway to 'rxn' here?
-    strain_reaction_table.drop_duplicates(
-        subset=["Query", "pathway", "dbhit"], keep="first", inplace=True
-    )
-
-    strain_reaction_table.sort_index(inplace=True)
-    strain_reaction_table["stitle"] = strain_reaction_table["Query"]
-    strain_reaction_table.drop(
-        columns=["Query", "Target", "Repr. bitscore"], inplace=True
-    )
-
-    # Save output
-    strain_reaction_table.to_csv(
-        output_file,
-        sep="\t",
-        index=False,
-        na_rep="NA",
-        float_format=format_number,
+    # 4. Trigger execution graph and stream to disk
+    # FIX: Added quote_style="never" to ensure safe output for gapseq
+    lf_filtered.collect().write_csv(
+        output_file, separator="\t", null_value="NA", quote_style="never"
     )
 
 
@@ -261,9 +263,9 @@ def derive_strain_models(
                 str(threads),
                 "-b",
                 str(gapseq_bits),
-                "-f",
                 "-M",
                 "prot",
+                "-f",
                 str(strain_dir),
                 str(genome),
             ],
