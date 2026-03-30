@@ -201,24 +201,32 @@ def derive_strain_models(
     # 1. Prepare Genomes (Extract GBFFs and isolate FAAs)
     logger.info("Preparing input genomes for DIAMOND mapping...")
 
+    processed_genomes_map = {}
     for gbff in gbff_files:
         out_faa = proteomes_dir / f"{gbff.stem}.faa"
         extract_proteome_from_gbff(gbff, out_faa)
-        clean_fasta_file(out_faa)  # Clean the safe, isolated file
-        processed_genomes.append(out_faa)
+        clean_fasta_file(out_faa)
+        processed_genomes_map[gbff.stem] = out_faa
 
     for faa in faa_files:
-        out_faa = proteomes_dir / faa.name
-        if not out_faa.exists():
-            shutil.copy(faa, out_faa)  # Protect read-only original inputs
-        clean_fasta_file(out_faa)
-        processed_genomes.append(out_faa)
+        if faa.stem not in processed_genomes_map:
+            out_faa = proteomes_dir / faa.name
+            if not out_faa.exists():
+                shutil.copy(faa, out_faa)
+            clean_fasta_file(out_faa)
+            processed_genomes_map[faa.stem] = out_faa
+        else:
+            logger.warning(
+                f"Ignoring {faa.name} as {faa.stem}.gbff was already processed."
+            )
+
+    processed_genomes = list(processed_genomes_map.values())
 
     # Step 2: Build Diamond DB
     logger.info("Building Diamond database from pangenome...")
     db_path = output_dir / pangenome_fasta.stem
     run_command(["diamond", "makedb", "--in", str(pangenome_fasta), "-d", str(db_path)])
-    db_file = str(db_path) + ".dmnd"
+    db_file = db_path.with_suffix(".dmnd")
 
     # Step 3: Iterate through strains
     for genome in processed_genomes:
@@ -238,7 +246,7 @@ def derive_strain_models(
                 "diamond",
                 "blastp",
                 "-d",
-                db_file,
+                str(db_file),
                 "-q",
                 str(genome),
                 "-o",
@@ -325,27 +333,18 @@ def derive_strain_models(
 
         if xml_file.exists():
             xml_content = xml_file.read_text(encoding="utf-8")
-
-            # 1. Fix the exchange reaction tags
-            if "R_EX_" in xml_content:
-                xml_content = xml_content.replace("R_EX_", "EX_")
-
-            # 2. Fix the internal SBML Model ID (Sanitize for SBML SId rules)
-            # Replace any character that is NOT a letter, number, or underscore with an underscore
+            xml_content = xml_content.replace("R_EX_", "EX_")
             safe_model_id = re.sub(r"[^a-zA-Z0-9_]", "_", strain_name)
-
-            # SBML IDs also cannot start with a number. Catch that edge case just in case.
             if safe_model_id and safe_model_id[0].isdigit():
                 safe_model_id = f"M_{safe_model_id}"
 
-            xml_content = xml_content.replace(
-                'id="filtered_Reactions_tbl"', f'id="{safe_model_id}"'
-            )
-            xml_content = xml_content.replace(
-                'id="filtered-Reactions.tbl"', f'id="{safe_model_id}"'
+            # Fix: Catch variations of "filtered-Reactions.tbl" using regex
+            xml_content = re.sub(
+                r'id="filtered[-_]Reactions\.?tbl"',
+                f'id="{safe_model_id}"',
+                xml_content,
             )
 
-            # Write to the new properly named file and delete the old gapseq one
             final_xml.write_text(xml_content, encoding="utf-8")
             xml_file.unlink()
             logger.debug(
