@@ -50,6 +50,11 @@ def cli():
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
+@click.option(
+    "--add-unique",
+    is_flag=True,
+    help="Whether to add unique genes (those not in soft-core) to the pan-model. This can increase coverage but may add noise.",
+)
 def pan(genomes, output, label, threads):
     """Step 1 & 2: Construct the partitioned pangenome and build the pan-model."""
     from parmmosahn.pipeline import run_pan
