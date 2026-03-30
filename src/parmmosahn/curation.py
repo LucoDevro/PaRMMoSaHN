@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple, cast
 
 import cobra as cb
-import pandas as pd
+import polars as pl
 from cobra.core import Model, Reaction
 
 # Import memote API directly
@@ -129,7 +129,7 @@ def extract_memote_problems(
                 _loaded_models[model_name] = None
         return _loaded_models[model_name]
 
-    def get_duplicates_df() -> pd.DataFrame:
+    def get_duplicates_df() -> pl.DataFrame:
         df_rows = []
         id_regex = re.compile(r"\d{5}")
         for rxn_pair, model_name in first_encounter_dupl.items():
@@ -141,10 +141,20 @@ def extract_memote_problems(
                     cast(Reaction, network.reactions.get_by_id(str(r)))
                     for r in rxn_pair
                 ]
-                rxn_ids = [
-                    int(match[0]) if (match := id_regex.findall(r.id)) else 99999
-                    for r in rxn_pair_obj
-                ]
+
+                # Supervisor fix: No 99999 fallback. Warn if pattern doesn't match!
+                rxn_ids: list[float] = []
+                for r in rxn_pair_obj:
+                    match = id_regex.findall(r.id)
+                    if match:
+                        rxn_ids.append(float(match[0]))
+                    else:
+                        logger.warning(
+                            f"Reaction ID '{r.id}' does not contain a 5-digit number for duplicate sorting."
+                        )
+                        rxn_ids.append(
+                            float("inf")
+                        )  # Ensure it sorts to the back safely without faking an ID
 
                 min_idx = rxn_ids.index(min(rxn_ids))
                 r1 = cast(Reaction, rxn_pair_obj.pop(min_idx))
@@ -153,7 +163,7 @@ def extract_memote_problems(
                 df_rows.append(
                     {
                         "Pair": str(rxn_pair),
-                        "Decision": "",  # Leave empty for human input
+                        "Decision": "",
                         "ID 1": r1.id,
                         "Name 1": r1.name,
                         "Equation 1": r1.build_reaction_string(),
@@ -168,9 +178,16 @@ def extract_memote_problems(
                 )
             except Exception as e:
                 logger.debug(f"Skipping duplicate pair {rxn_pair}: {e}")
-        return pd.DataFrame(df_rows)
 
-    def get_imbalance_df() -> pd.DataFrame:
+        return (
+            pl.DataFrame(df_rows)
+            if df_rows
+            else pl.DataFrame(
+                schema=["Pair", "Decision", "ID 1", "Name 1", "Equation 1"]
+            )
+        )
+
+    def get_imbalance_df() -> pl.DataFrame:
         df_rows = []
         combined = [(r, m, "charge") for r, m in first_encounter_charge.items()] + [
             (r, m, "mass") for r, m in first_encounter_mass.items()
@@ -194,41 +211,41 @@ def extract_memote_problems(
                 )
             except Exception as e:
                 logger.debug(f"Skipping imbalanced reaction {rxn_id}: {e}")
-        return pd.DataFrame(df_rows)
+        return pl.DataFrame(df_rows)
 
     # Write DataFrames to Excel
     logger.info(f"Writing curation template to {output_excel.name}...")
-    with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
-        df_dupl = get_duplicates_df()
-        if df_dupl.empty:
-            df_dupl = pd.DataFrame(
-                columns=["Pair", "Decision", "ID 1", "Name 1", "Equation 1"]
-            )
-        df_dupl.to_excel(writer, sheet_name="duplicate_reactions", index=False)
 
-        df_imb = get_imbalance_df()
-        if df_imb.empty:
-            df_imb = pd.DataFrame(
-                columns=[
-                    "reaction_id",
-                    "name",
-                    "new_formula",
-                    "balance_type",
-                    "modification",
-                    "Comment",
-                ]
-            )
-        df_imb.to_excel(writer, sheet_name="curated_imbalances", index=False)
+    df_dupl = get_duplicates_df()
+    if df_dupl.is_empty():
+        df_dupl = pl.DataFrame(
+            schema=["Pair", "Decision", "ID 1", "Name 1", "Equation 1"]
+        )
 
-        pd.DataFrame(
-            columns=[
+    df_imb = get_imbalance_df()
+    if df_imb.is_empty():
+        df_imb = pl.DataFrame(
+            schema=[
                 "reaction_id",
                 "name",
-                "Imbalance",
-                "Reason to leave intact",
+                "new_formula",
+                "balance_type",
+                "modification",
                 "Comment",
             ]
-        ).to_excel(writer, sheet_name="ignored_imbalances", index=False)
+        )
+
+    df_ign = pl.DataFrame(
+        schema=["reaction_id", "name", "Imbalance", "Reason to leave intact", "Comment"]
+    )
+
+    # Using xlsxwriter engine in Polars to write multiple sheets efficiently
+    with pl.Config(tbl_rows=10):  # Just safe formatting
+        # write_excel returns the workbook object, allowing us to append sheets
+        wb = df_dupl.write_excel(workbook=output_excel, worksheet="duplicate_reactions")
+        df_imb.write_excel(workbook=wb, worksheet="curated_imbalances")
+        df_ign.write_excel(workbook=wb, worksheet="ignored_imbalances")
+        wb.close()
 
 
 # ==========================================
@@ -243,11 +260,14 @@ def apply_curations(
 ) -> Path | None:
     """
     Reads the curation database and applies fixes to a specific strain model.
-    Drops duplicate reactions based on 'Decision' and updates formulas based on 'new_formula'.
+    Decision Logic:
+      0: Drop both
+      1: Keep ID 1 (Drop ID 2)
+      2: Keep ID 2 (Drop ID 1)
+      3: Keep both (Drop neither)
     """
     out_file = output_dir / model_path.name
 
-    # Check if we've already curated this file to save time on pipeline restarts
     if out_file.exists():
         return out_file
 
@@ -257,11 +277,10 @@ def apply_curations(
         logger.error(f"Failed to load {model_path.name} for curation: {e}")
         return None
 
-    # Load Excel DB
     try:
-        # Sheet 0 = Duplicates (Tab 1), Sheet 1 = Curations (Tab 2)
-        df_dupl = pd.read_excel(curation_db_path, sheet_name=0)
-        df_cur = pd.read_excel(curation_db_path, sheet_name=1)
+        # Load sheets lazily or eagerly via Polars
+        df_dupl = pl.read_excel(curation_db_path, sheet_name="duplicate_reactions")
+        df_cur = pl.read_excel(curation_db_path, sheet_name="curated_imbalances")
     except Exception as e:
         logger.error(f"Could not read curation database {curation_db_path}: {e}")
         return None
@@ -269,44 +288,52 @@ def apply_curations(
     changes_made = 0
 
     # 1. Apply Duplicate Fixes
-    for _, row in df_dupl.iterrows():
+    for row in df_dupl.iter_rows(named=True):
         decision = row.get("Decision")
         id1 = row.get("ID 1")
         id2 = row.get("ID 2")
 
-        # Skip if human hasn't made a decision
-        if pd.isna(decision) or not str(decision).strip():
+        if decision is None or str(decision).strip() == "":
             continue
 
-        decision = str(decision).strip()
-        to_drop = id2 if decision == "1" else id1 if decision == "2" else None
+        decision_str = str(decision).strip()
+        to_drop = []
 
-        if to_drop and to_drop in model.reactions:
-            # Cast to Reaction before interacting with it
-            rxn_to_drop = cast(Reaction, model.reactions.get_by_id(to_drop))
-            rxn_to_drop.remove_from_model(remove_orphans=True)
-            changes_made += 1
+        # The new decision map
+        if decision_str == "0":
+            to_drop = [id1, id2]  # Drop both
+        elif decision_str == "1":
+            to_drop = [id2]  # Keep 1, drop 2
+        elif decision_str == "2":
+            to_drop = [id1]  # Keep 2, drop 1
+        elif decision_str == "3":
+            continue  # Keep both (do nothing)
+        else:
+            logger.warning(
+                f"Unknown decision '{decision_str}' for pair {id1}/{id2}. Skipping."
+            )
+            continue
+
+        # Process the deletions
+        for rxn_id in to_drop:
+            if rxn_id and rxn_id in model.reactions:
+                rxn_to_drop = cast(Reaction, model.reactions.get_by_id(rxn_id))
+                rxn_to_drop.remove_from_model(remove_orphans=True)
+                changes_made += 1
 
     # 2. Apply Formula Fixes
-    for _, row in df_cur.iterrows():
+    for row in df_cur.iter_rows(named=True):
         rxn_id = row.get("reaction_id")
         new_formula = row.get("new_formula")
 
-        # Skip if no reaction ID, no formula, or reaction not in this specific strain model
-        if (
-            pd.isna(rxn_id)
-            or pd.isna(new_formula)
-            or str(rxn_id) not in model.reactions
-        ):
+        if rxn_id is None or new_formula is None or str(rxn_id) not in model.reactions:
             continue
 
         rxn = cast(Reaction, model.reactions.get_by_id(str(rxn_id)))
         old_formula = rxn.build_reaction_string()
 
-        # Only apply if the formula actually changed
         if str(new_formula).strip() != old_formula:
             try:
-                # Cobrapy method to safely overwrite stoichiometry
                 rxn.build_reaction_from_string(str(new_formula).strip())
                 changes_made += 1
             except Exception as e:
@@ -314,7 +341,6 @@ def apply_curations(
                     f"Could not apply new formula for {rxn_id} in {model_path.name}: {e}"
                 )
 
-    # 3. Save the model
     cb.io.write_sbml_model(model, str(out_file))
     logger.debug(f"Applied {changes_made} curations to {model_path.name}")
 
@@ -483,7 +509,7 @@ def generate_curation_template(model_dir: Path, output_dir: Path) -> Path:
 
 def evaluate_final_models(model_dir: Path, output_dir: Path) -> None:
     """Hidden Evaluator: Runs memote on final models to prove FAIR compliance."""
-    reports_dir = output_dir / "08-final_reports"
+    reports_dir = output_dir / "07-final_reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     models = list(model_dir.rglob("*.xml"))
@@ -491,7 +517,7 @@ def evaluate_final_models(model_dir: Path, output_dir: Path) -> None:
         logger.warning("No final XML models found to evaluate.")
         return
 
-    logger.info(f"=== STEP 8: Final Memote Evaluation ===")
+    logger.info(f"=== STEP 7: Final Memote Evaluation ===")
     logger.info(f"Running final memote evaluation on {len(models)} polished models...")
     for model in models:
         out_json = reports_dir / f"{model.stem}.json"
