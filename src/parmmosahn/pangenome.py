@@ -1,15 +1,12 @@
 import logging
 import math
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 from parmmosahn.utils import ToolExecutionError, run_command
 
-# Configure basic logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 
@@ -133,8 +130,9 @@ def build_pangenome(
     if info_out:
         for line in info_out.splitlines():
             if "Genomes" in line:
-                # E.g., extracts 205 from "Genomes : 205"
-                no_genomes = int("".join(filter(str.isdigit, line)))
+                match = re.search(r"\d+", line)
+                if match:
+                    no_genomes = int(match.group())
                 break
 
     if no_genomes == 0:
