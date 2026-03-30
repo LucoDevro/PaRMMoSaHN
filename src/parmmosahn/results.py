@@ -35,6 +35,7 @@ def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path) -> 
 
     logger.info(f"Gathering and converting {len(xml_models)} models...")
 
+    failed_models = []
     for xml_path in xml_models:
         strain_name = xml_path.stem
         logger.info(f"Processing final model: {strain_name}")
@@ -57,8 +58,14 @@ def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path) -> 
 
         except Exception as e:
             logger.error(f"Failed to convert model {strain_name}: {e}")
-            # We don't raise here, so one corrupted model doesn't stop the batch conversion
+            failed_models.append(strain_name)
             continue
 
-    logger.info(f"All models successfully gathered and converted in {output_dir}")
+    if failed_models:
+        logger.warning(
+            f"Conversion failed for {len(failed_models)} models: {', '.join(failed_models)}"
+        )
+    else:
+        logger.info(f"All models successfully gathered and converted in {output_dir}")
+
     return output_dir
