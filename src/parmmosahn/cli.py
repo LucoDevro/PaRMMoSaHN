@@ -1,15 +1,18 @@
+import logging
 from pathlib import Path
 
 import click
 
-from parmmosahn.curation import (
-    apply_curations,
-    extract_memote_problems,
-    run_memote_snapshot,
-)
+from parmmosahn.curation import apply_curations
 from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.pangenome import build_pangenome
 from parmmosahn.results import gather_and_convert_models
+
+# Set up logging globally here in the CLI entrypoint
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
 @click.group(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -55,12 +58,12 @@ def cli():
     is_flag=True,
     help="Whether to add unique genes (those not in soft-core) to the pan-model. This can increase coverage but may add noise.",
 )
-def pan(genomes, output, label, threads):
+def pan(genomes, output, label, threads, add_unique):
     """Step 1 & 2: Construct the partitioned pangenome and build the pan-model."""
     from parmmosahn.pipeline import run_pan
 
     click.echo(f"Building pangenome and pan-model '{label}'...")
-    run_pan(Path(genomes), Path(output), label, threads=threads)
+    run_pan(Path(genomes), Path(output), label, threads=threads, add_unique=add_unique)
 
 
 @cli.command()
@@ -105,8 +108,6 @@ def pan(genomes, output, label, threads):
 )
 def strains(genomes, fasta, panmodel_rxns, output, medium, threads):
     """Step 3: Derive strain-specific models using diamond and gapseq."""
-    if not all([genomes, fasta, panmodel_rxns, medium]):
-        raise click.UsageError("Missing required arguments for strain derivation.")
     click.echo("Deriving strain models...")
     derive_strain_models(genomes, fasta, panmodel_rxns, output, medium, threads=threads)
 
@@ -136,7 +137,7 @@ def strains(genomes, fasta, panmodel_rxns, output, medium, threads):
 def curate(source_model, curated_model, db):
     """Step 4: Apply curation database rules to a specific model."""
     click.echo(f"Curating model {Path(source_model).name}...")
-    apply_curations(Path(source_model), Path(curated_model), Path(db))
+    apply_curations(Path(source_model), Path(db), Path(curated_model))
 
 
 @cli.command()
@@ -249,7 +250,7 @@ def gather(models, output):
     help="Container engine to use for running tools like ModelPolisher.",
 )
 @click.option(
-    "--curate",
+    "--pause_for_curation",
     is_flag=True,
     help="Pause the pipeline before automatic curation to allow manual evaluation/edits.",
 )
@@ -274,7 +275,7 @@ def project(
     threads,
     no_polish,
     engine,
-    curate,
+    pause_for_curation,
     resume,
     drafts,
 ):
@@ -341,7 +342,7 @@ def project(
         threads=threads,
     )
 
-    if curate:
+    if pause_for_curation:
         click.echo("=== Preparing Human-in-the-Loop Curation (running memote) ===")
         generate_curation_template(draft_models_dir, out_path)
         click.echo("=== Pipeline paused for Human-in-the-Loop Curation ===")
