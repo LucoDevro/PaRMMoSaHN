@@ -1,8 +1,6 @@
 import logging
-import math
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 from parmmosahn.utils import ToolExecutionError, run_command
@@ -61,6 +59,7 @@ def build_pangenome(
     threads: int = 1,
     tmp_dir: str | Path | None = None,
     add_unique: bool = False,
+    soft_core_override: float | None = None,
 ) -> Path:
     """
     Executes the PPanGGOLiN pipeline to build a pangenome and extract the soft-core.
@@ -141,11 +140,17 @@ def build_pangenome(
         )
 
     # Calculate soft core threshold exactly as bash `echo "scale=5; 2/$no_genomes" | bc`
-    # TODO check if this is biologically relevant
-    soft_core_threshold = round(2 / no_genomes, 5)
-    logger.info(
-        f"Calculated soft_core threshold: {soft_core_threshold} for {no_genomes} genomes."
-    )
+    # Users can override this via soft_core_override if they want a different fraction.
+    if soft_core_override is not None:
+        soft_core_threshold = round(soft_core_override, 5)
+        logger.info(
+            f"Using user-provided soft_core threshold: {soft_core_threshold} (override)."
+        )
+    else:
+        soft_core_threshold = round(2 / no_genomes, 5)
+        logger.info(
+            f"Calculated soft_core threshold: {soft_core_threshold} for {no_genomes} genomes."
+        )
 
     # Option to include unique/cloud genes
     partitions = "all" if add_unique else "softcore"

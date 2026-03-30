@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -152,3 +153,71 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
         raise
 
     return output_faa_path
+
+
+def load_config(config_path: Path) -> dict:
+    """Load a YAML configuration file.
+
+    Requires PyYAML (install with ``pip install 'parmmosahn[config]'``).
+
+    Args:
+        config_path: Path to the YAML config file.
+
+    Returns:
+        Dictionary of configuration values. Empty dict if the file is empty.
+
+    Raises:
+        ImportError: If PyYAML is not installed.
+    """
+    try:
+        import yaml  # type: ignore[import]
+    except ImportError as exc:
+        raise ImportError(
+            "PyYAML is required for config file support. "
+            "Install it with: pip install 'parmmosahn[config]'  or  pip install pyyaml"
+        ) from exc
+
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    return data if isinstance(data, dict) else {}
+
+
+def check_environment() -> dict[str, dict[str, str | bool | None]]:
+    """Check for required external tools and container engines.
+
+    Probes each tool with its ``--version`` flag (5 s timeout).
+
+    Returns:
+        Nested dict of ``{tool_name: {found: bool, version: str | None, path: str | None}}``.
+    """
+    tools: dict[str, list[str]] = {
+        "ppanggolin": ["ppanggolin", "--version"],
+        "gapseq": ["gapseq", "--version"],
+        "diamond": ["diamond", "--version"],
+        "docker": ["docker", "--version"],
+        "podman": ["podman", "--version"],
+        "apptainer": ["apptainer", "--version"],
+    }
+
+    results: dict[str, dict[str, str | bool | None]] = {}
+
+    for name, version_cmd in tools.items():
+        path = shutil.which(name)
+        if path is None:
+            results[name] = {"found": False, "version": None, "path": None}
+            continue
+        try:
+            proc = subprocess.run(
+                version_cmd,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            raw = (proc.stdout + proc.stderr).strip().splitlines()
+            version: str | None = raw[0] if raw else "unknown"
+        except Exception:
+            version = "unknown"
+        results[name] = {"found": True, "version": version, "path": path}
+
+    return results

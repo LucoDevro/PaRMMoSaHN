@@ -38,6 +38,9 @@ dev = [
     "mypy>=0.910",
     "isort>=5.10.0",
 ]
+config = [
+    "pyyaml>=6.0",   # Required for YAML config file support (--config / init-config)
+]
 
 [project.scripts]
 # This exposes the command 'parmmosahn' to the terminal

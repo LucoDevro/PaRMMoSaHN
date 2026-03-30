@@ -3,6 +3,7 @@ from pathlib import Path
 
 import click
 
+from parmmosahn.constants import STEPS, step_banner
 from parmmosahn.curation import apply_curations
 from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.pangenome import build_pangenome
@@ -15,11 +16,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-@click.group(context_settings=dict(help_option_names=["-h", "--help"]))
+@click.group(
+    context_settings=dict(
+        help_option_names=["-h", "--help"],
+        auto_envvar_prefix="PARMMOSAHN",
+    )
+)
 @click.version_option()
 def cli():
     """
     PaRMMoSaHN: Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks.
+
+    All options can also be set via environment variables prefixed with PARMMOSAHN_.
+    For example: PARMMOSAHN_THREADS=32, PARMMOSAHN_BIOMASS=neg.
     """
     pass
 
@@ -58,12 +67,48 @@ def cli():
     is_flag=True,
     help="Whether to add unique genes (those not in soft-core) to the pan-model. This can increase coverage but may add noise.",
 )
-def pan(genomes, output, label, threads, add_unique):
+@click.option(
+    "--soft-core",
+    default=None,
+    type=float,
+    show_default=True,
+    help=(
+        "Override the soft-core frequency threshold (fraction 0–1). "
+        "Defaults to 2/n_genomes, the biologically motivated formula. "
+        "Only change this if you have a specific reason."
+    ),
+)
+@click.option(
+    "-c",
+    "--config",
+    type=click.Path(exists=True),
+    help="Path to a YAML config file. CLI arguments override config values. Requires pyyaml (pip install 'parmmosahn[config]').",
+)
+def pan(genomes, output, label, threads, add_unique, soft_core, config):
     """Step 1 & 2: Construct the partitioned pangenome and build the pan-model."""
     from parmmosahn.pipeline import run_pan
 
+    if config:
+        from parmmosahn.utils import load_config
+
+        cfg = load_config(Path(config))
+        genomes = genomes or cfg.get("genomes")
+        output = output or cfg.get("output", "00-pan_results")
+        label = label or cfg.get("label")
+        threads = threads if threads != 14 else cfg.get("threads", 14)
+        add_unique = add_unique or cfg.get("add_unique", False)
+        if soft_core is None:
+            soft_core = cfg.get("soft_core")
+
     click.echo(f"Building pangenome and pan-model '{label}'...")
-    run_pan(Path(genomes), Path(output), label, threads=threads, add_unique=add_unique)
+    run_pan(
+        Path(genomes),
+        Path(output),
+        label,
+        threads=threads,
+        add_unique=add_unique,
+        soft_core_override=soft_core,
+    )
 
 
 @cli.command()
@@ -106,10 +151,48 @@ def pan(genomes, output, label, threads, add_unique):
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
-def strains(genomes, fasta, panmodel_rxns, output, medium, threads):
+@click.option(
+    "--diamond-bits",
+    default=150,
+    show_default=True,
+    help="Minimum bitscore threshold for DIAMOND blastp alignment.",
+)
+@click.option(
+    "--gapseq-bits",
+    default=150,
+    show_default=True,
+    help="Minimum bitscore threshold for gapseq pathway/transport searches.",
+)
+@click.option(
+    "--biomass",
+    default="pos",
+    show_default=True,
+    help="Biomass reaction type for gapseq draft model generation (e.g. 'pos', 'neg').",
+)
+def strains(
+    genomes,
+    fasta,
+    panmodel_rxns,
+    output,
+    medium,
+    threads,
+    diamond_bits,
+    gapseq_bits,
+    biomass,
+):
     """Step 3: Derive strain-specific models using diamond and gapseq."""
     click.echo("Deriving strain models...")
-    derive_strain_models(genomes, fasta, panmodel_rxns, output, medium, threads=threads)
+    derive_strain_models(
+        genomes,
+        fasta,
+        panmodel_rxns,
+        output,
+        medium,
+        threads=threads,
+        diamond_bits=diamond_bits,
+        gapseq_bits=gapseq_bits,
+        biomass=biomass,
+    )
 
 
 @cli.command()
@@ -239,6 +322,24 @@ def gather(models, output):
     help="Number of CPU threads to allocate.",
 )
 @click.option(
+    "--diamond-bits",
+    default=150,
+    show_default=True,
+    help="Minimum bitscore threshold for DIAMOND blastp alignment.",
+)
+@click.option(
+    "--gapseq-bits",
+    default=150,
+    show_default=True,
+    help="Minimum bitscore threshold for gapseq pathway/transport searches.",
+)
+@click.option(
+    "--biomass",
+    default="pos",
+    show_default=True,
+    help="Biomass reaction type for gapseq draft model generation (e.g. 'pos', 'neg').",
+)
+@click.option(
     "--no-polish", is_flag=True, help="Skip the ModelPolisher execution step."
 )
 @click.option(
@@ -265,6 +366,12 @@ def gather(models, output):
     type=click.Path(exists=True, path_type=Path),
     help="Optional path to draft models for zooming/resuming. Defaults to <output>/03-strains/models.",
 )
+@click.option(
+    "--config",
+    "config_file",
+    type=click.Path(exists=True),
+    help="Path to a YAML config file. CLI arguments override config values. Requires pyyaml (pip install 'parmmosahn[config]').",
+)
 def project(
     genomes,
     fasta,
@@ -273,11 +380,15 @@ def project(
     output,
     curation_db,
     threads,
+    diamond_bits,
+    gapseq_bits,
+    biomass,
     no_polish,
     engine,
     pause_for_curation,
     resume,
     drafts,
+    config_file,
 ):
     """
     Rapidly project new strains (.faa or .gbff format) onto an existing pan-model and continue with downstream curation.
@@ -287,6 +398,22 @@ def project(
     from parmmosahn.curation import generate_curation_template
     from parmmosahn.models import derive_strain_models
     from parmmosahn.pipeline import run_downstream
+
+    if config_file:
+        from parmmosahn.utils import load_config
+
+        cfg = load_config(Path(config_file))
+        genomes = genomes or cfg.get("genomes")
+        fasta = fasta or cfg.get("fasta")
+        panmodel_rxns = panmodel_rxns or cfg.get("panmodel_rxns")
+        medium = medium or cfg.get("medium")
+        threads = threads if threads != 14 else cfg.get("threads", 14)
+        diamond_bits = (
+            diamond_bits if diamond_bits != 150 else cfg.get("diamond_bits", 150)
+        )
+        gapseq_bits = gapseq_bits if gapseq_bits != 150 else cfg.get("gapseq_bits", 150)
+        biomass = biomass if biomass != "pos" else cfg.get("biomass", "pos")
+        engine = engine if engine != "docker" else cfg.get("engine", "docker")
 
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -331,7 +458,7 @@ def project(
         )
 
     # 1. Run Strain Derivation (Step 3)
-    click.echo("=== STEP 3: Deriving Strain Models ===")
+    click.echo(step_banner(3))
     strains_out = out_path / "03-strains"
     draft_models_dir = derive_strain_models(
         genomes_dir=genomes,
@@ -340,6 +467,9 @@ def project(
         output_dir=strains_out,
         medium_file=medium,
         threads=threads,
+        diamond_bits=diamond_bits,
+        gapseq_bits=gapseq_bits,
+        biomass=biomass,
     )
 
     if pause_for_curation:
@@ -347,7 +477,7 @@ def project(
         generate_curation_template(draft_models_dir, out_path)
         click.echo("=== Pipeline paused for Human-in-the-Loop Curation ===")
         click.echo(
-            f"ACTION REQUIRED: Please fill out the curation template at {out_path}/curation_template.xlsx"
+            f"ACTION REQUIRED: Please fill out the curation template at {(out_path / 'curation_template.xlsx').resolve()}"
         )
         click.echo(
             f"When finished, resume using: parmmosahn project --resume -o {out_path.resolve()}"
@@ -362,6 +492,102 @@ def project(
         no_polish=no_polish,
         engine=engine,
     )
+
+
+_INIT_CONFIG_TEMPLATE = """\
+# PaRMMoSaHN configuration file
+# Generated by: parmmosahn init-config
+# All values shown are defaults. Remove or comment out any you don't need.
+# CLI flags always override values set here.
+# You can also use environment variables: PARMMOSAHN_THREADS=32, etc.
+
+# --- Input paths ---
+# genomes: /path/to/genomes          # Directory of genome files (.gbff or .faa)
+# fasta: /path/to/softcore.faa       # Existing soft-core FASTA (project command)
+# panmodel_rxns: /path/to/rxns.tbl   # Existing pan-model reaction table (project command)
+# medium: /path/to/medium.csv        # Media CSV file for gapfilling
+
+# --- Output ---
+# output: 00-pan_results             # Base output directory
+
+# --- Pangenome (pan command) ---
+# label: myproject                   # Label for the pangenome
+# add_unique: false                  # Include unique/cloud genes in pan-model
+# soft_core: null                    # Override soft-core threshold (fraction 0-1).
+#                                    # Default: 2/n_genomes (biologically motivated).
+
+# --- Performance ---
+threads: 14
+diamond_bits: 150
+gapseq_bits: 150
+biomass: pos                         # Biomass reaction type: 'pos' or 'neg'
+
+# --- Downstream ---
+engine: docker                       # Container engine: docker, podman, or apptainer
+"""
+
+
+@cli.command(name="init-config")
+@click.option(
+    "-o",
+    "--output",
+    default="parmmosahn_config.yml",
+    show_default=True,
+    type=click.Path(),
+    help="Path to write the default configuration file.",
+)
+def init_config(output: str):
+    """Generate a default YAML configuration file for reproducible runs."""
+    out_path = Path(output)
+    if out_path.exists():
+        click.confirm(f"{out_path} already exists. Overwrite?", abort=True)
+    out_path.write_text(_INIT_CONFIG_TEMPLATE, encoding="utf-8")
+    click.echo(f"Configuration template written to {out_path.resolve()}")
+    click.echo("Edit the file, then run: parmmosahn project --config " + str(out_path))
+
+
+@cli.command()
+def doctor():
+    """Check for required external tools and report their versions."""
+    from parmmosahn.utils import check_environment
+
+    REQUIRED = {"ppanggolin", "gapseq", "diamond"}
+    ENGINES = {"docker", "podman", "apptainer"}
+
+    click.echo("PaRMMoSaHN Environment Check")
+    click.echo("=" * 40)
+
+    results = check_environment()
+
+    click.echo("\nRequired tools:")
+    all_required_ok = True
+    for name in sorted(REQUIRED):
+        info = results[name]
+        if info["found"]:
+            click.echo(f"  [OK]      {name}: {info['version']}  ({info['path']})")
+        else:
+            click.echo(f"  [MISSING] {name}: not found in PATH")
+            all_required_ok = False
+
+    click.echo("\nContainer engines (at least one needed for ModelPolisher, Step 5):")
+    any_engine_ok = False
+    for name in sorted(ENGINES):
+        info = results[name]
+        if info["found"]:
+            click.echo(f"  [OK]  {name}: {info['version']}  ({info['path']})")
+            any_engine_ok = True
+        else:
+            click.echo(f"  [--]  {name}: not found")
+
+    click.echo()
+    if all_required_ok:
+        click.echo("All required tools are available.")
+    else:
+        click.echo("WARNING: Some required tools are missing. The pipeline will fail.")
+    if not any_engine_ok:
+        click.echo(
+            "WARNING: No container engine found. ModelPolisher (Step 5) will be skipped."
+        )
 
 
 def main():
