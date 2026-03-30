@@ -28,7 +28,7 @@ def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path) -> 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Find all XML models
-    xml_models = list(model_dir.glob("*.xml"))
+    xml_models = list(model_dir.rglob("*.xml"))
     if not xml_models:
         logger.warning(f"No .xml models found in {model_dir} to gather.")
         return output_dir
