@@ -17,6 +17,7 @@ from cobra.core import Model, Reaction
 from memote.suite import api as memote_api
 from memote.suite.reporting import ReportConfiguration
 
+from parmmosahn.constants import step_banner
 from parmmosahn.utils import ToolExecutionError, run_command
 
 logger = logging.getLogger(__name__)
@@ -253,41 +254,20 @@ def extract_memote_problems(
 # ==========================================
 
 
-# TODO consider splitting this function into two: one for applying duplicates and one for applying formula fixes, since they are conceptually separate and might be done by different people in the future. The duplicate fixing could even be automated based on the reaction IDs, while the formula fixes would always require manual review and input. For now, I'll keep them together since they both rely on loading the same model and it avoids redundant file I/O, but it's something to consider for future refactoring.
-# TODO implement the desicion logic: if decision == "1", drop ID 2; if decision == "2", drop ID 1; if decision 0, throw both away; if decision 3, keep both. Need to decide how to handle the "keep both" case since that would mean both reactions are technically duplicates. If blank, need to decide what to do as well, maybe skip and log for manual review later?
-def apply_curations(
-    model_path: Path, curation_db_path: Path, output_dir: Path
-) -> Path | None:
+def _apply_duplicate_decisions(model: "Model", df_dupl: "pl.DataFrame") -> int:
+    """Apply duplicate reaction removal decisions from the curation DB.
+
+    Decision logic:
+      0: Drop both reactions
+      1: Keep ID 1, drop ID 2
+      2: Keep ID 2, drop ID 1
+      3: Keep both (do nothing)
+      blank: Skip and continue
+
+    Returns:
+        Number of reactions removed.
     """
-    Reads the curation database and applies fixes to a specific strain model.
-    Decision Logic:
-      0: Drop both
-      1: Keep ID 1 (Drop ID 2)
-      2: Keep ID 2 (Drop ID 1)
-      3: Keep both (Drop neither)
-    """
-    out_file = output_dir / model_path.name
-
-    if out_file.exists():
-        return out_file
-
-    try:
-        model = cast(Model, cb.io.read_sbml_model(str(model_path)))
-    except Exception as e:
-        logger.error(f"Failed to load {model_path.name} for curation: {e}")
-        return None
-
-    try:
-        # Load sheets lazily or eagerly via Polars
-        df_dupl = pl.read_excel(curation_db_path, sheet_name="duplicate_reactions")
-        df_cur = pl.read_excel(curation_db_path, sheet_name="curated_imbalances")
-    except Exception as e:
-        logger.error(f"Could not read curation database {curation_db_path}: {e}")
-        return None
-
     changes_made = 0
-
-    # 1. Apply Duplicate Fixes
     for row in df_dupl.iter_rows(named=True):
         decision = row.get("Decision")
         id1 = row.get("ID 1")
@@ -297,31 +277,40 @@ def apply_curations(
             continue
 
         decision_str = str(decision).strip()
-        to_drop = []
+        to_drop: list = []
 
-        # The new decision map
         if decision_str == "0":
-            to_drop = [id1, id2]  # Drop both
+            to_drop = [id1, id2]
         elif decision_str == "1":
-            to_drop = [id2]  # Keep 1, drop 2
+            to_drop = [id2]
         elif decision_str == "2":
-            to_drop = [id1]  # Keep 2, drop 1
+            to_drop = [id1]
         elif decision_str == "3":
-            continue  # Keep both (do nothing)
+            continue
         else:
             logger.warning(
                 f"Unknown decision '{decision_str}' for pair {id1}/{id2}. Skipping."
             )
             continue
 
-        # Process the deletions
         for rxn_id in to_drop:
             if rxn_id and rxn_id in model.reactions:
                 rxn_to_drop = cast(Reaction, model.reactions.get_by_id(rxn_id))
                 rxn_to_drop.remove_from_model(remove_orphans=True)
                 changes_made += 1
 
-    # 2. Apply Formula Fixes
+    return changes_made
+
+
+def _apply_formula_fixes(
+    model: "Model", df_cur: "pl.DataFrame", model_name: str
+) -> int:
+    """Apply stoichiometric formula corrections from the curated_imbalances sheet.
+
+    Returns:
+        Number of reactions updated.
+    """
+    changes_made = 0
     for row in df_cur.iter_rows(named=True):
         rxn_id = row.get("reaction_id")
         new_formula = row.get("new_formula")
@@ -338,8 +327,42 @@ def apply_curations(
                 changes_made += 1
             except Exception as e:
                 logger.warning(
-                    f"Could not apply new formula for {rxn_id} in {model_path.name}: {e}"
+                    f"Could not apply new formula for {rxn_id} in {model_name}: {e}"
                 )
+
+    return changes_made
+
+
+def apply_curations(
+    model_path: Path, curation_db_path: Path, output_dir: Path
+) -> Path | None:
+    """Read the curation database and apply all fixes to a specific strain model.
+
+    Orchestrates duplicate-reaction decisions and formula corrections. The public
+    signature is unchanged; internal logic is delegated to
+    :func:`_apply_duplicate_decisions` and :func:`_apply_formula_fixes`.
+    """
+    out_file = output_dir / model_path.name
+
+    if out_file.exists():
+        return out_file
+
+    try:
+        model = cast(Model, cb.io.read_sbml_model(str(model_path)))
+    except Exception as e:
+        logger.error(f"Failed to load {model_path.name} for curation: {e}")
+        return None
+
+    try:
+        df_dupl = pl.read_excel(curation_db_path, sheet_name="duplicate_reactions")
+        df_cur = pl.read_excel(curation_db_path, sheet_name="curated_imbalances")
+    except Exception as e:
+        logger.error(f"Could not read curation database {curation_db_path}: {e}")
+        return None
+
+    changes_made = 0
+    changes_made += _apply_duplicate_decisions(model, df_dupl)
+    changes_made += _apply_formula_fixes(model, df_cur, model_path.name)
 
     cb.io.write_sbml_model(model, str(out_file))
     logger.debug(f"Applied {changes_made} curations to {model_path.name}")
@@ -517,7 +540,7 @@ def evaluate_final_models(model_dir: Path, output_dir: Path) -> None:
         logger.warning("No final XML models found to evaluate.")
         return
 
-    logger.info(f"=== STEP 7: Final Memote Evaluation ===")
+    logger.info(step_banner(7))
     logger.info(f"Running final memote evaluation on {len(models)} polished models...")
     for model in models:
         out_json = reports_dir / f"{model.stem}.json"
