@@ -20,6 +20,7 @@ def run_pan(
     output_dir: Path,
     label: str,
     threads: int = 14,
+    add_unique: bool = False,
 ):
     """Executes Step 1 & 2: Pangenome and Pan-model."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -27,7 +28,9 @@ def run_pan(
     # --- STEP 1: Pangenome ---
     logger.info("=== STEP 1: Building Pangenome ===")
     pangenome_out = output_dir / "01-pangenome"
-    softcore_fasta = build_pangenome(genomes_dir, pangenome_out, label, threads=threads)
+    softcore_fasta = build_pangenome(
+        genomes_dir, pangenome_out, label, threads=threads, add_unique=add_unique
+    )
 
     # --- STEP 2: Pan-model ---
     logger.info("=== STEP 2: Building Pan-model ===")
