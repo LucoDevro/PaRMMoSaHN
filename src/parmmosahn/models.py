@@ -229,9 +229,10 @@ def derive_strain_models(
     db_file = db_path.with_suffix(".dmnd")
 
     # Step 3: Iterate through strains
-    for genome in processed_genomes:
+    total_strains = len(processed_genomes)
+    for idx, genome in enumerate(processed_genomes, start=1):
         strain_name = genome.stem
-        logger.info(f"--- Processing strain: {strain_name} ---")
+        logger.info(f"[{idx}/{total_strains}] --- Processing strain: {strain_name} ---")
 
         strain_dir = models_dir / strain_name
         strain_dir.mkdir(exist_ok=True)
