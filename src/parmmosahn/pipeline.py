@@ -57,12 +57,12 @@ def run_downstream(
 
     if curation_db and curation_db.exists():
         logger.info("=== STEP 4: Applying Automatic Curations ===")
-        for draft_model in draft_models_dir.glob("*/*.xml"):
+        for draft_model in draft_models_dir.rglob("*.xml"):
             apply_curations(draft_model, curation_db, curated_out)
     else:
         logger.info("=== STEP 4: Automatic Curation (SKIPPED - No DB provided) ===")
         # Safely copy draft models forward so the pipeline doesn't break
-        for draft_model in draft_models_dir.glob("*/*.xml"):
+        for draft_model in draft_models_dir.rglob("*.xml"):
             shutil.copy(draft_model, curated_out / draft_model.name)
 
     current_models_dir = curated_out
@@ -70,7 +70,7 @@ def run_downstream(
     # --- STEP 5: ModelPolisher via Docker (Optional) ---
     if no_polish:
         logger.info("=== STEP 5: ModelPolisher (SKIPPED by user) ===")
-    elif not shutil.which(engine if engine != "podman" else "podman-compose"):
+    elif not shutil.which(engine):
         logger.warning(
             f"=== STEP 5: ModelPolisher (SKIPPED - {engine} is not installed) ==="
         )
