@@ -339,10 +339,17 @@ def derive_strain_models(
             if safe_model_id and safe_model_id[0].isdigit():
                 safe_model_id = f"M_{safe_model_id}"
 
-            # Fix: Catch variations of "filtered-Reactions.tbl" using regex
+            # Fix: Replace the generic model identifiers gapseq generates.
+            # gapseq produces id/metaid="filtered_Reactions_tbl" (SBML SId)
+            # and name="filtered-Reactions.tbl" (human-readable).
             xml_content = re.sub(
-                r'id="filtered[-_]Reactions\.?tbl"',
-                f'id="{safe_model_id}"',
+                r'((?:id|metaid)=")filtered[-_]Reactions[._]?tbl"',
+                rf"\1{safe_model_id}\"",
+                xml_content,
+            )
+            xml_content = re.sub(
+                r'(name=")filtered[-.]Reactions[._]?tbl"',
+                rf"\1{strain_name}\"",
                 xml_content,
             )
 
