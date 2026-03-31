@@ -72,6 +72,11 @@ pythonpath = [
 testpaths = [
   "tests"
 ]
+markers = [
+  "biological: tests against real pipeline data (require test_run/ artifacts)",
+  "slow: tests that execute actual pipeline steps (require external tools)",
+]
+addopts = "-m 'not biological'"
 
 [tool.setuptools.package-data]
 parmmosahn = ["data/*.yml"]
