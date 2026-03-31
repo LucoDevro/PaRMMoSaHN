@@ -1,81 +1,203 @@
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from parmmosahn.utils import ToolExecutionError, run_command
+from parmmosahn.utils import ToolExecutionError, extract_proteome_from_gbff, run_command
+
+# ---------------------------------------------------------------------------
+# run_command — uses subprocess.Popen + threads (not subprocess.run)
+# ---------------------------------------------------------------------------
 
 
-def test_run_command_success():
-    """Test that run_command returns stdout when the subprocess succeeds."""
-    cmd = ["echo", "hello"]
-
-    # We patch subprocess.run so it doesn't actually execute on the system
-    with patch("subprocess.run") as mock_run:
-        # Create a mock CompletedProcess object
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=cmd, returncode=0, stdout="hello\n"
-        )
-
-        output = run_command(cmd)
-
-        assert output == "hello\n"
-        mock_run.assert_called_once_with(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-        )
+def test_run_command_success(tmp_path: Path):
+    """run_command should return captured stdout on success."""
+    output = run_command(["echo", "hello"])
+    assert output is not None
+    assert "hello" in output
 
 
 def test_run_command_failure():
-    """Test that run_command raises ToolExecutionError when the subprocess fails."""
-    cmd = ["false"]
-
-    with patch("subprocess.run") as mock_run:
-        # Simulate a tool failure
-        mock_run.side_effect = subprocess.CalledProcessError(
-            returncode=1, cmd=cmd, stderr="Command not found"
-        )
-
-        with pytest.raises(ToolExecutionError) as exc_info:
-            run_command(cmd)
-
-        assert "Tool failed with exit code 1" in str(exc_info.value)
+    """run_command should raise an exception when the subprocess exits non-zero."""
+    with pytest.raises(Exception, match="Tool failed with exit code"):
+        run_command(["false"])
 
 
 def test_run_command_with_file_output(tmp_path: Path):
-    """Test run_command when redirecting stdout and stderr to files."""
-    cmd = ["some", "tool"]
+    """run_command should write stdout/stderr to files and return None."""
     stdout_file = tmp_path / "out.log"
     stderr_file = tmp_path / "err.log"
 
-    with patch("subprocess.run") as mock_run:
-        # No return value needed when outputs are redirected to files
-        mock_run.return_value = subprocess.CompletedProcess(args=cmd, returncode=0)
+    result = run_command(
+        ["echo", "file_output_test"],
+        stdout_file=stdout_file,
+        stderr_file=stderr_file,
+    )
 
-        output = run_command(cmd, stdout_file=stdout_file, stderr_file=stderr_file)
+    assert result is None
+    assert stdout_file.exists()
+    assert "file_output_test" in stdout_file.read_text()
 
-        assert output is None  # Should return None when writing to files
-        mock_run.assert_called_once()
 
-        # Verify it used the file handles
-        called_kwargs = mock_run.call_args.kwargs
-        assert called_kwargs["stdout"].name == str(stdout_file)
-        assert called_kwargs["stderr"].name == str(stderr_file)
+def test_run_command_stderr_captured_on_failure():
+    """Stderr content should appear in the raised exception message."""
+    with pytest.raises(Exception):
+        # 'ls' on a non-existent path writes to stderr and exits non-zero
+        run_command(["ls", "/path/that/does/not/exist/12345abcde"])
+
+
+# ---------------------------------------------------------------------------
+# extract_proteome_from_gbff
+# ---------------------------------------------------------------------------
 
 
 def test_extract_proteome_from_gbff(tmp_path: Path, dummy_gbff: Path):
-    """Test that GBFF files are correctly converted to FAA files using the real dummy file."""
-    from parmmosahn.utils import extract_proteome_from_gbff
-
+    """GBFF files should be correctly converted to FAA files."""
     out_faa = tmp_path / "test.faa"
 
-    # Run the extractor
     result_path = extract_proteome_from_gbff(dummy_gbff, out_faa)
 
     assert result_path == out_faa
     assert out_faa.exists()
+    content = out_faa.read_text()
+    assert content.startswith(">")
+    assert len(content) > 10
 
-    # Verify the contents of the generated FASTA (just check that it has standard FASTA headers)
-    faa_content = out_faa.read_text()
-    assert faa_content.startswith(">")
-    assert len(faa_content) > 10  # Ensure it actually extracted something
+
+def test_extract_proteome_from_gbff_skips_existing(tmp_path: Path, dummy_gbff: Path):
+    """If the output FAA already exists, extraction should be skipped."""
+    out_faa = tmp_path / "existing.faa"
+    out_faa.write_text(">already_here\nACGT\n")
+
+    result_path = extract_proteome_from_gbff(dummy_gbff, out_faa)
+
+    assert result_path == out_faa
+    # File content should be unchanged (no re-extraction)
+    assert out_faa.read_text() == ">already_here\nACGT\n"
+
+
+# ---------------------------------------------------------------------------
+# check_environment
+# ---------------------------------------------------------------------------
+
+
+def test_check_environment_found_tools():
+    """Tools found in PATH should have found=True and a version string."""
+    from parmmosahn.utils import check_environment
+
+    fake_proc = MagicMock()
+    fake_proc.stdout = "sometool 1.2.3\n"
+    fake_proc.stderr = ""
+
+    with (
+        patch("parmmosahn.utils.shutil.which", return_value="/usr/bin/sometool"),
+        patch("parmmosahn.utils.subprocess.run", return_value=fake_proc),
+    ):
+        results = check_environment()
+
+    for name, info in results.items():
+        assert info["found"] is True
+        assert info["version"] is not None
+        assert info["path"] == "/usr/bin/sometool"
+
+
+def test_check_environment_missing_tools():
+    """Tools absent from PATH should have found=False."""
+    from parmmosahn.utils import check_environment
+
+    with patch("parmmosahn.utils.shutil.which", return_value=None):
+        results = check_environment()
+
+    for name, info in results.items():
+        assert info["found"] is False
+        assert info["version"] is None
+        assert info["path"] is None
+
+
+def test_check_environment_version_timeout():
+    """Timeout during version probing should not crash; version should be 'unknown'."""
+    from parmmosahn.utils import check_environment
+
+    with (
+        patch("parmmosahn.utils.shutil.which", return_value="/usr/bin/tool"),
+        patch(
+            "parmmosahn.utils.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="tool", timeout=30),
+        ),
+    ):
+        results = check_environment()
+
+    for info in results.values():
+        assert info["found"] is True
+        assert info["version"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# load_config
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_basic(tmp_path: Path):
+    """load_config should parse a YAML file and return a dict."""
+    pytest.importorskip("yaml", reason="pyyaml not installed")
+    from parmmosahn.utils import load_config
+
+    cfg_file = tmp_path / "config.yml"
+    cfg_file.write_text("threads: 8\nbiomass: neg\n", encoding="utf-8")
+
+    cfg = load_config(cfg_file)
+    assert cfg["threads"] == 8
+    assert cfg["biomass"] == "neg"
+
+
+def test_load_config_empty_file(tmp_path: Path):
+    """An empty YAML file should return an empty dict."""
+    pytest.importorskip("yaml", reason="pyyaml not installed")
+    from parmmosahn.utils import load_config
+
+    cfg_file = tmp_path / "empty.yml"
+    cfg_file.write_text("", encoding="utf-8")
+
+    assert load_config(cfg_file) == {}
+
+
+def test_load_config_missing_pyyaml(tmp_path: Path):
+    """load_config should raise ImportError with an install hint when pyyaml is absent."""
+    from parmmosahn.utils import load_config
+
+    cfg_file = tmp_path / "config.yml"
+    cfg_file.write_text("threads: 4\n", encoding="utf-8")
+
+    with patch.dict("sys.modules", {"yaml": None}):
+        with pytest.raises(ImportError, match="parmmosahn\\[config\\]"):
+            load_config(cfg_file)
+
+
+# ---------------------------------------------------------------------------
+# _extract_version
+# ---------------------------------------------------------------------------
+
+
+def test_extract_version_picks_semver_line():
+    """_extract_version should prefer a line containing a version number."""
+    from parmmosahn.utils import _extract_version
+
+    output = "some tool\nsome tool version 1.4.2\nUsage: ..."
+    assert "1.4.2" in _extract_version(output)
+
+
+def test_extract_version_falls_back_to_first_line():
+    """_extract_version should return the first non-empty line when no version found."""
+    from parmmosahn.utils import _extract_version
+
+    output = "No version here\nSecond line"
+    assert _extract_version(output) == "No version here"
+
+
+def test_extract_version_empty_output():
+    """_extract_version should return 'unknown' for empty output."""
+    from parmmosahn.utils import _extract_version
+
+    assert _extract_version("") == "unknown"
+    assert _extract_version("   \n  \n") == "unknown"

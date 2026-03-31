@@ -183,17 +183,31 @@ def load_config(config_path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _extract_version(output: str) -> str:
+    """Return the first line that looks like a version string, else the first non-empty line."""
+    import re
+
+    lines = [l.strip() for l in output.splitlines() if l.strip()]
+    # Prefer a line that contains a semver-like pattern (e.g. '2.2.6', 'v1.4.2')
+    version_pattern = re.compile(r"\bv?\d+\.\d+")
+    for line in lines:
+        if version_pattern.search(line):
+            return line
+    return lines[0] if lines else "unknown"
+
+
 def check_environment() -> dict[str, dict[str, str | bool | None]]:
     """Check for required external tools and container engines.
 
-    Probes each tool with its ``--version`` flag (5 s timeout).
+    Probes each tool with its ``--version`` flag (30 s timeout to accommodate
+    Python-based tools like PPanGGOLiN that have slow startup import times).
 
     Returns:
         Nested dict of ``{tool_name: {found: bool, version: str | None, path: str | None}}``.
     """
     tools: dict[str, list[str]] = {
         "ppanggolin": ["ppanggolin", "--version"],
-        "gapseq": ["gapseq", "--version"],
+        "gapseq": ["gapseq", "-v"],
         "diamond": ["diamond", "--version"],
         "docker": ["docker", "--version"],
         "podman": ["podman", "--version"],
@@ -212,10 +226,10 @@ def check_environment() -> dict[str, dict[str, str | bool | None]]:
                 version_cmd,
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=30,
             )
-            raw = (proc.stdout + proc.stderr).strip().splitlines()
-            version: str | None = raw[0] if raw else "unknown"
+            combined = proc.stdout + proc.stderr
+            version: str | None = _extract_version(combined)
         except Exception:
             version = "unknown"
         results[name] = {"found": True, "version": version, "path": path}
