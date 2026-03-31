@@ -4,6 +4,99 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+# ---------------------------------------------------------------------------
+# Biological test fixtures (session-scoped, point to test_run/ artifacts)
+# ---------------------------------------------------------------------------
+
+_TEST_RUN = Path(__file__).resolve().parent.parent / "test_run"
+
+EXPECTED_STRAINS = [
+    "GCA_000227485.1",
+    "GCF_000009045.1",
+    "GCF_000146565.1",
+    "GCF_000209795.2",
+]
+
+
+@pytest.fixture(scope="session")
+def test_run_dir() -> Path:
+    if not _TEST_RUN.is_dir():
+        pytest.skip("test_run/ directory not present")
+    return _TEST_RUN
+
+
+@pytest.fixture(scope="session")
+def precomputed_pan_fasta(test_run_dir: Path) -> Path:
+    p = test_run_dir / "00-pan_results" / "01-pangenome" / "test_run.faa"
+    if not p.exists():
+        pytest.skip("Pre-computed pan FASTA not found")
+    return p
+
+
+@pytest.fixture(scope="session")
+def precomputed_pan_rxn_table(test_run_dir: Path) -> Path:
+    p = test_run_dir / "00-pan_results" / "02-panmodel" / "test_run-all-Reactions.tbl"
+    if not p.exists():
+        pytest.skip("Pre-computed pan reaction table not found")
+    return p
+
+
+@pytest.fixture(scope="session")
+def precomputed_strain_dirs(test_run_dir: Path) -> dict[str, Path]:
+    models_root = test_run_dir / "output" / "03-strains" / "models"
+    dirs = {}
+    for strain in EXPECTED_STRAINS:
+        d = models_root / strain
+        if not d.is_dir():
+            pytest.skip(f"Strain directory missing: {strain}")
+        dirs[strain] = d
+    return dirs
+
+
+@pytest.fixture(scope="session")
+def loaded_cobra_models(precomputed_strain_dirs: dict[str, Path]):
+    import cobra as cb
+
+    models = {}
+    for strain, d in precomputed_strain_dirs.items():
+        xml = d / f"{strain}.xml"
+        if not xml.exists():
+            pytest.skip(f"XML model missing: {xml}")
+        models[strain] = cb.io.read_sbml_model(str(xml))
+    return models
+
+
+@pytest.fixture(scope="session")
+def strain_genomes_dir(test_run_dir: Path) -> Path:
+    d = test_run_dir / "genomes"
+    if not d.is_dir():
+        pytest.skip("test_run/genomes/ not found")
+    return d
+
+
+@pytest.fixture(scope="session")
+def medium_file(test_run_dir: Path) -> Path:
+    p = test_run_dir / "M9_glc_aerobic.csv"
+    if not p.exists():
+        pytest.skip("Medium file not found")
+    return p
+
+
+@pytest.fixture(scope="session")
+def require_pipeline_tools():
+    """Skip tests if external pipeline tools are not installed."""
+    from parmmosahn.utils import check_environment
+
+    results = check_environment()
+    missing = [t for t in ["diamond", "gapseq"] if not results[t]["found"]]
+    if missing:
+        pytest.skip(f"External tools not available: {', '.join(missing)}")
+
+
+# ---------------------------------------------------------------------------
+# Unit test fixtures
+# ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def test_data_dir() -> Path:
