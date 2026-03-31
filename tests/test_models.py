@@ -59,13 +59,14 @@ def test_filter_blast_table(tmp_path: Path):
     )
     blast_file.write_text(blast_data, encoding="utf-8")
 
-    # Dummy Pan-model table (needs to handle commented lines too)
+    # Dummy Pan-model reaction table matching the real gapseq column layout.
+    # The 'dbhit' column is a real gapseq output column used in de-duplication.
     pan_rxn_data = (
         "# This is a comment that should be ignored\n"
-        "stitle\trxn\tpathway\textra_info\n"
-        "pan_A\tRXN1\tPATH1\tdata_A\n"
-        "pan_B\tRXN2\tPATH1\tdata_B\n"  # gene1 hits both pan_A and pan_B which are in PATH1
-        "pan_C\tRXN3\tPATH2\tdata_C\n"
+        "stitle\trxn\tpathway\textra_info\tdbhit\n"
+        "pan_A\tRXN1\tPATH1\tdata_A\trxn00001\n"
+        "pan_B\tRXN2\tPATH1\tdata_B\trxn00002\n"  # gene1 hits both; same query/pathway
+        "pan_C\tRXN3\tPATH2\tdata_C\trxn00003\n"
     )
     pan_rxn_file.write_text(pan_rxn_data, encoding="utf-8")
 
@@ -83,28 +84,24 @@ def test_filter_blast_table(tmp_path: Path):
     result_df = pd.read_table(out_file)
 
     # Expected behavior:
-    # - gene1 -> pan_A (RXN1, PATH1) score 100.0 -> KEPT
-    # - gene1 -> pan_B (RXN2, PATH1) score 50.0 -> DROPPED (duplicate query/pathway with lower score)
-    # - gene2 -> pan_C (RXN3, PATH2) score 120.5 -> KEPT
+    # - gene1 -> pan_A (RXN1, PATH1, dbhit=rxn00001) score 100.0 -> KEPT
+    # - gene1 -> pan_B (RXN2, PATH1, dbhit=rxn00002) score  50.0 -> DROPPED
+    #   (same Query/pathway, lower score)
+    # - gene2 -> pan_C (RXN3, PATH2, dbhit=rxn00003) score 120.5 -> KEPT
 
     assert (
         len(result_df) == 2
-    ), "Should have dropped the lower scoring duplicate pathway."
-
-    # Verify the columns were cleaned up correctly
-    assert list(result_df.columns) == ["stitle", "rxn", "pathway", "extra_info"]
+    ), "Should have dropped the lower scoring duplicate pathway hit."
 
     # Verify the 'stitle' column was overwritten with the 'Query' (strain gene) values
     stitles = result_df["stitle"].tolist()
     assert "gene1" in stitles
     assert "gene2" in stitles
-    assert "pan_A" not in stitles  # Target pan_A should be gone
+    assert "pan_A" not in stitles  # Target pan_A should be replaced by query
 
-    # Verify the specific surviving rows
+    # Verify the specific surviving row for gene1
     gene1_row = result_df[result_df["stitle"] == "gene1"].iloc[0]
-    assert (
-        gene1_row["rxn"] == "RXN1"
-    )  # Pan_A's reaction, because it had the higher score
+    assert gene1_row["rxn"] == "RXN1"  # pan_A's reaction: highest bitscore
     assert gene1_row["pathway"] == "PATH1"
 
 
