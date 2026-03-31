@@ -1,0 +1,44 @@
+# PaRMMoSaHN example configuration file
+#
+# Copy this file and fill in your paths, then run:
+#   parmmosahn project --config my_config.yml
+#   parmmosahn pan      --config my_config.yml
+#
+# CLI flags always override values set here.
+# Environment variables (PARMMOSAHN_THREADS=32, etc.) also override config values.
+# Generate a fresh copy at any time with: parmmosahn init-config
+
+# ---------------------------------------------------------------------------
+# Input paths
+# ---------------------------------------------------------------------------
+genomes: data/00_fasta/subset           # Directory of genome files (.gbff or .faa)
+# fasta: results/01-pangenome/mypan.faa   # Existing soft-core FASTA  (project command)
+# panmodel_rxns: results/02-panmodel/mypan-all-Reactions.tbl  # (project command)
+medium: data/media/M9_glc_medium_an.csv # Media CSV file for gapfilling
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output: results/myproject               # Base output directory
+
+# ---------------------------------------------------------------------------
+# Pangenome  (pan command)
+# ---------------------------------------------------------------------------
+label: mypan                            # Label for the pangenome (e.g. organism name)
+# add_unique: false                     # Include unique/cloud genes in pan-model
+# soft_core: null                       # Override soft-core threshold (fraction 0–1).
+#                                       # Default: 2/n_genomes (biologically motivated).
+#                                       # Lower = more inclusive; higher = stricter core.
+
+# ---------------------------------------------------------------------------
+# Performance
+# ---------------------------------------------------------------------------
+threads: 14                             # CPU threads (used by diamond, gapseq, ppanggolin)
+diamond_bits: 150                       # DIAMOND min bitscore for blastp hits
+gapseq_bits: 150                        # gapseq min bitscore for pathway/transporter search
+biomass: pos                            # Biomass reaction type: 'pos' (gram+) or 'neg' (gram-)
+
+# ---------------------------------------------------------------------------
+# Downstream
+# ---------------------------------------------------------------------------
+engine: docker                          # Container engine for ModelPolisher: docker | podman | apptainer
