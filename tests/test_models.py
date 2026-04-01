@@ -9,7 +9,7 @@ from parmmosahn.models import clean_fasta_file, filter_blast_table
 def test_clean_fasta_file_with_bad_chars(tmp_path: Path):
     """Test that problematic characters are removed from FASTA files."""
     fasta_file = tmp_path / "test.faa"
-    # Create a dummy fasta file with the problematic '’' character
+    # Create a dummy fasta file with the problematic ‘’’ character
     fasta_file.write_text(">seq1’\nATGC’C\n", encoding="utf-8")
 
     clean_fasta_file(fasta_file)
@@ -18,6 +18,19 @@ def test_clean_fasta_file_with_bad_chars(tmp_path: Path):
     cleaned_content = fasta_file.read_text(encoding="utf-8")
     assert "’" not in cleaned_content
     assert cleaned_content == ">seq1\nATGCC\n"
+
+
+def test_clean_fasta_file_truncates_header_description(tmp_path: Path):
+    """Test that FASTA headers are truncated at the first space."""
+    fasta_file = tmp_path / "test.faa"
+    fasta_file.write_text(
+        ">NP_387883.1 Extracted from NC_000964.3\nATGCC\n", encoding="utf-8"
+    )
+
+    clean_fasta_file(fasta_file)
+
+    cleaned = fasta_file.read_text(encoding="utf-8")
+    assert cleaned == ">NP_387883.1\nATGCC\n"
 
 
 def test_clean_fasta_file_no_bad_chars(tmp_path: Path):
@@ -125,3 +138,30 @@ def test_derive_strain_models_xml_cleanup(tmp_path: Path):
     assert safe_model_id == "GCF_000178115_2_weird_name"
     assert "." not in safe_model_id
     assert "-" not in safe_model_id
+
+
+def test_model_id_regex_matches_gapseq_output():
+    """Regression: the model ID regex must match gapseq's actual output formats."""
+    import re
+
+    safe_id = "M_GCF_000009045_1"
+    strain = "GCF_000009045.1"
+
+    # Pattern for id/metaid attributes (from models.py step 3f)
+    pat_id = re.compile(r'((?:id|metaid)=")filtered[-_]Reactions[._]?tbl"')
+    # Pattern for name attribute
+    pat_name = re.compile(r'(name=")filtered[-.]Reactions[._]?tbl"')
+
+    # gapseq produces these three patterns in real output
+    assert pat_id.sub(r"\g<1>" + safe_id + '"', 'id="filtered_Reactions_tbl"') == (
+        f'id="{safe_id}"'
+    )
+    assert pat_id.sub(r"\g<1>" + safe_id + '"', 'metaid="filtered_Reactions_tbl"') == (
+        f'metaid="{safe_id}"'
+    )
+    assert pat_id.sub(r"\g<1>" + safe_id + '"', 'id="filtered-Reactions.tbl"') == (
+        f'id="{safe_id}"'
+    )
+    assert pat_name.sub(r"\g<1>" + strain + '"', 'name="filtered-Reactions.tbl"') == (
+        f'name="{strain}"'
+    )

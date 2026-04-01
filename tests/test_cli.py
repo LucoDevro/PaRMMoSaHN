@@ -308,6 +308,55 @@ def test_cli_project_pause_for_curation(tmp_path: Path):
     assert str(out.resolve()) in result.output
 
 
+def test_cli_evaluate(tmp_path: Path):
+    """'evaluate' should run memote on each XML model."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "strain_A.xml").touch()
+    (models_dir / "strain_B.xml").touch()
+    out_dir = tmp_path / "reports"
+    runner = CliRunner()
+
+    with patch("parmmosahn.curation.run_memote_snapshot") as mock_memote:
+        result = runner.invoke(
+            cli,
+            ["evaluate", "-M", str(models_dir), "-o", str(out_dir)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert mock_memote.call_count == 2
+    assert "Evaluating 2 model(s)" in result.output
+
+
+def test_cli_evaluate_with_curation_template(tmp_path: Path):
+    """'evaluate --curation-template' should also generate the Excel file."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "strain_A.xml").touch()
+    out_dir = tmp_path / "reports"
+    runner = CliRunner()
+
+    with (
+        patch("parmmosahn.curation.run_memote_snapshot"),
+        patch("parmmosahn.curation.extract_memote_problems") as mock_extract,
+    ):
+        result = runner.invoke(
+            cli,
+            [
+                "evaluate",
+                "-M",
+                str(models_dir),
+                "-o",
+                str(out_dir),
+                "--curation-template",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_extract.assert_called_once()
+    assert "Curation template saved" in result.output
+
+
 def test_cli_doctor():
     """'doctor' should report OK/MISSING and print a summary."""
     runner = CliRunner()

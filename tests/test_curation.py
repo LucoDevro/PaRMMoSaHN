@@ -334,6 +334,40 @@ def test_apply_curations(mock_write, mock_read, tmp_path: Path):
     mock_write.assert_called_once_with(mock_model, str(result_path))
 
 
+@patch("parmmosahn.curation.cb.io.read_sbml_model")
+@patch("parmmosahn.curation.cb.io.write_sbml_model")
+def test_apply_curations_empty_curation_db(mock_write, mock_read, tmp_path: Path):
+    """apply_curations should pass model through unchanged when curation DB has empty sheets."""
+    import polars as pl
+
+    model_path = tmp_path / "model.xml"
+    model_path.touch()
+    db_path = tmp_path / "empty_db.xlsx"
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    mock_model = MagicMock()
+    mock_read.return_value = mock_model
+
+    # Empty DataFrames with correct column schemas
+    df_dupl = pl.DataFrame({"Decision": [], "ID 1": [], "ID 2": []}).cast(
+        {"Decision": pl.Utf8, "ID 1": pl.Utf8, "ID 2": pl.Utf8}
+    )
+    df_cur = pl.DataFrame({"reaction_id": [], "new_formula": []}).cast(
+        {"reaction_id": pl.Utf8, "new_formula": pl.Utf8}
+    )
+
+    with patch("parmmosahn.curation.pl.read_excel", side_effect=[df_dupl, df_cur]):
+        result_path = apply_curations(
+            model_path=model_path, curation_db_path=db_path, output_dir=out_dir
+        )
+
+    assert result_path == out_dir / "model.xml"
+    mock_write.assert_called_once_with(mock_model, str(result_path))
+    # No reactions should have been modified
+    mock_model.reactions.get_by_id.assert_not_called()
+
+
 def test_apply_curations_skips_existing_output(tmp_path: Path):
     """apply_curations should return early if the output file already exists."""
     model_path = tmp_path / "model.xml"
