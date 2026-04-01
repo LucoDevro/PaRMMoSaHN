@@ -42,15 +42,34 @@ def precomputed_pan_rxn_table(test_run_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="session")
-def precomputed_strain_dirs(test_run_dir: Path) -> dict[str, Path]:
-    models_root = test_run_dir / "output" / "03-strains" / "models"
-    dirs = {}
-    for strain in EXPECTED_STRAINS:
-        d = models_root / strain
-        if not d.is_dir():
-            pytest.skip(f"Strain directory missing: {strain}")
-        dirs[strain] = d
-    return dirs
+def strain_output_root(test_run_dir: Path) -> Path:
+    """Return the root directory containing matches/, proteomes/, models/."""
+    for candidate in ["03-strain_models", "output/03-strains"]:
+        root = test_run_dir / candidate
+        if (root / "models").is_dir():
+            return root
+    pytest.skip("No strain output directory found in test_run/")
+    # Satisfy static type checkers: pytest.skip raises, but type checkers
+    # may not recognise that as a NoReturn. Return a Path as a fallback.
+    return test_run_dir
+
+
+@pytest.fixture(scope="session")
+def available_strains(strain_output_root: Path) -> list[str]:
+    """Return strains that have completed model directories."""
+    models_root = strain_output_root / "models"
+    present = [s for s in EXPECTED_STRAINS if (models_root / s).is_dir()]
+    if not present:
+        pytest.skip("No completed strain models found")
+    return present
+
+
+@pytest.fixture(scope="session")
+def precomputed_strain_dirs(
+    strain_output_root: Path, available_strains: list[str]
+) -> dict[str, Path]:
+    models_root = strain_output_root / "models"
+    return {s: models_root / s for s in available_strains}
 
 
 @pytest.fixture(scope="session")
@@ -60,9 +79,10 @@ def loaded_cobra_models(precomputed_strain_dirs: dict[str, Path]):
     models = {}
     for strain, d in precomputed_strain_dirs.items():
         xml = d / f"{strain}.xml"
-        if not xml.exists():
-            pytest.skip(f"XML model missing: {xml}")
-        models[strain] = cb.io.read_sbml_model(str(xml))
+        if xml.exists():
+            models[strain] = cb.io.read_sbml_model(str(xml))
+    if not models:
+        pytest.skip("No XML models found to load")
     return models
 
 
