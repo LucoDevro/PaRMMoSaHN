@@ -99,6 +99,10 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
         add_unique = add_unique or cfg.get("add_unique", False)
         if soft_core is None:
             soft_core = cfg.get("soft_core")
+    # Ensure the required values are available (may be provided via config)
+    assert (
+        genomes is not None and label is not None
+    ), "Missing required arguments: genomes and label must be provided either via CLI or config"
 
     click.echo(f"Building pangenome and pan-model '{label}'...")
     run_pan(
@@ -182,12 +186,21 @@ def strains(
 ):
     """Step 3: Derive strain-specific models using diamond and gapseq."""
     click.echo("Deriving strain models...")
+
+    # Narrow types for static checkers: ensure required args are present
+    assert (
+        genomes is not None
+        and fasta is not None
+        and panmodel_rxns is not None
+        and medium is not None
+    ), "Missing required arguments: genomes, fasta, panmodel_rxns, and medium must be provided"
+
     derive_strain_models(
-        genomes,
-        fasta,
-        panmodel_rxns,
-        output,
-        medium,
+        genomes_dir=Path(genomes),
+        pangenome_fasta=Path(fasta),
+        panmodel_rxn_table=Path(panmodel_rxns),
+        output_dir=Path(output),
+        medium_file=Path(medium),
         threads=threads,
         diamond_bits=diamond_bits,
         gapseq_bits=gapseq_bits,
@@ -460,12 +473,22 @@ def project(
     # 1. Run Strain Derivation (Step 3)
     click.echo(step_banner(3))
     strains_out = out_path / "03-strains"
+
+    # Narrow types for the static type checker: ensure required CLI args are present
+    assert (
+        genomes is not None
+        and fasta is not None
+        and panmodel_rxns is not None
+        and medium is not None
+    ), "Missing required arguments: genomes, fasta, panmodel_rxns, and medium must be provided"
+
+    # Convert to Path objects before passing to the implementation (expects str | Path)
     draft_models_dir = derive_strain_models(
-        genomes_dir=genomes,
-        pangenome_fasta=fasta,
-        panmodel_rxn_table=panmodel_rxns,
+        genomes_dir=Path(genomes),
+        pangenome_fasta=Path(fasta),
+        panmodel_rxn_table=Path(panmodel_rxns),
         output_dir=strains_out,
-        medium_file=medium,
+        medium_file=Path(medium),
         threads=threads,
         diamond_bits=diamond_bits,
         gapseq_bits=gapseq_bits,
@@ -544,6 +567,172 @@ def init_config(output: str):
     out_path.write_text(_INIT_CONFIG_TEMPLATE, encoding="utf-8")
     click.echo(f"Configuration template written to {out_path.resolve()}")
     click.echo("Edit the file, then run: parmmosahn project --config " + str(out_path))
+
+
+@cli.group()
+def analyze():
+    """Optional analysis extensions: FBA summaries, auxotrophy screening, heatmaps."""
+    pass
+
+
+@analyze.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path.",
+)
+@click.option(
+    "-m",
+    "--medium",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional medium CSV (cols: exchange_id, flux) to override model media.",
+)
+def fba(models, output, medium):
+    """Run FBA on each model and produce a comparative growth summary."""
+    from parmmosahn.analysis import fba_summary
+
+    click.echo(f"Running FBA summary on models in {models}...")
+    fba_summary(
+        models_dir=Path(models),
+        output_path=Path(output),
+        medium_path=Path(medium) if medium else None,
+    )
+    click.echo(f"FBA summary saved to {output}")
+
+
+@analyze.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path.",
+)
+@click.option(
+    "-m",
+    "--medium",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional medium CSV (cols: exchange_id, flux) to override model media.",
+)
+@click.option(
+    "--threshold",
+    default=1e-3,
+    show_default=True,
+    help="Growth rate below this is flagged as auxotrophic.",
+)
+def auxotrophy(models, output, medium, threshold):
+    """Screen for auxotrophies by single-component medium knockouts."""
+    from parmmosahn.analysis import auxotrophy_screen
+
+    click.echo(f"Running auxotrophy screen on models in {models}...")
+    auxotrophy_screen(
+        models_dir=Path(models),
+        output_path=Path(output),
+        medium_path=Path(medium) if medium else None,
+        threshold=threshold,
+    )
+    click.echo(f"Auxotrophy screen saved to {output}")
+
+
+@analyze.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path.",
+)
+@click.option(
+    "--plot",
+    is_flag=True,
+    help="Also generate a clustered heatmap PNG (requires pip install 'parmmosahn[viz]').",
+)
+def heatmap(models, output, plot):
+    """Build a reaction presence/absence matrix across strains."""
+    from parmmosahn.analysis import reaction_heatmap
+
+    click.echo(f"Building reaction heatmap from models in {models}...")
+    reaction_heatmap(
+        models_dir=Path(models),
+        output_path=Path(output),
+        plot=plot,
+    )
+    click.echo(f"Reaction matrix saved to {output}")
+
+
+@cli.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml) to evaluate.",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Directory for memote reports (HTML + JSON).",
+)
+@click.option(
+    "--curation-template",
+    is_flag=True,
+    help="Also generate the curation Excel template from memote results.",
+)
+def evaluate(models, output, curation_template):
+    """Run memote evaluation on a directory of SBML models."""
+    from parmmosahn.curation import (
+        extract_memote_problems,
+        run_memote_snapshot,
+    )
+
+    models_path = Path(models)
+    output_path = Path(output)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    xml_files = list(models_path.rglob("*.xml"))
+    if not xml_files:
+        click.echo(f"No XML models found in {models_path}")
+        return
+
+    click.echo(f"Evaluating {len(xml_files)} model(s) with memote...")
+    for xml in xml_files:
+        out_json = output_path / f"{xml.stem}.json"
+        out_html = output_path / f"{xml.stem}.html"
+        run_memote_snapshot(xml, out_json, out_html)
+
+    if curation_template:
+        out_excel = output_path / "curation_template.xlsx"
+        extract_memote_problems(output_path, models_path, out_excel)
+        click.echo(f"Curation template saved to {out_excel}")
+
+    click.echo(f"Memote reports saved to {output_path}")
 
 
 @cli.command()
