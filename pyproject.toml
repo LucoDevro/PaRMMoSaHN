@@ -28,6 +28,7 @@ dependencies = [
     "memote>=0.13.0",    # For automated model curation
     "biopython>=1.79",   # For parsing GenBank files
     "polars>=1.0.0",      # For efficient data manipulation in curation
+    "xlsxwriter>=3.0.0",  # Required by polars write_excel (curation template generation)
 ]
 
 [project.optional-dependencies]
