@@ -41,6 +41,10 @@ dev = [
 config = [
     "pyyaml>=6.0",   # Required for YAML config file support (--config / init-config)
 ]
+viz = [
+    "matplotlib>=3.5.0",  # Clustered heatmap plotting (analyze heatmap --plot)
+    "seaborn>=0.12.0",    # Statistical data visualization
+]
 
 [project.scripts]
 # This exposes the command 'parmmosahn' to the terminal
