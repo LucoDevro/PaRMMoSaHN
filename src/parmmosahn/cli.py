@@ -221,7 +221,7 @@ def strains(
     "--curated-model",
     required=True,
     type=click.Path(),
-    help="Output path for the curated SBML model.",
+    help="Output directory for the curated SBML model.",
 )
 @click.option(
     "-d",
@@ -233,7 +233,11 @@ def strains(
 def curate(source_model, curated_model, db):
     """Step 4: Apply curation database rules to a specific model."""
     click.echo(f"Curating model {Path(source_model).name}...")
-    apply_curations(Path(source_model), Path(db), Path(curated_model))
+    out = Path(curated_model)
+    # apply_curations expects an output *directory* and derives the filename
+    # from the source model. The CLI exposes -c as a directory path.
+    out.mkdir(parents=True, exist_ok=True)
+    apply_curations(Path(source_model), Path(db), out)
 
 
 @cli.command()

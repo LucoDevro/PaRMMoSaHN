@@ -101,11 +101,11 @@ def test_cli_strains(tmp_path: Path):
 
     assert result.exit_code == 0, result.output
     mock_derive.assert_called_once_with(
-        str(genomes_dir),
-        str(fasta),
-        str(rxns),
-        "03-strain_models",
-        str(medium),
+        genomes_dir=genomes_dir,
+        pangenome_fasta=fasta,
+        panmodel_rxn_table=rxns,
+        output_dir=Path("03-strain_models"),
+        medium_file=medium,
         threads=8,
         diamond_bits=200,
         gapseq_bits=180,
