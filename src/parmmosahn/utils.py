@@ -65,7 +65,7 @@ def run_command(
                 )
                 t_err = threading.Thread(
                     target=stream_reader,
-                    args=(process.stderr, err_f, logger.error, captured_stderr),
+                    args=(process.stderr, err_f, logger.debug, captured_stderr),
                 )
 
                 t_out.start()
