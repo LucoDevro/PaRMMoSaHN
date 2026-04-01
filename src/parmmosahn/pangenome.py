@@ -152,7 +152,11 @@ def build_pangenome(
             f"Calculated soft_core threshold: {soft_core_threshold} for {no_genomes} genomes."
         )
 
-    # Option to include unique/cloud genes
+    # Option to include unique/cloud genes.
+    # ppanggolin --prot_families accepts: all, persistent, shell, cloud, softcore, core.
+    # "all" = persistent + shell + cloud (superset of softcore + cloud).
+    # There is no single ppanggolin value for "softcore + cloud only", so "all" is
+    # the pragmatic choice when the user wants to include unique/cloud genes.
     partitions = "all" if add_unique else "softcore"
 
     # Step 5: Export Soft-core FASTA
