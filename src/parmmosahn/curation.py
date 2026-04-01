@@ -354,8 +354,12 @@ def apply_curations(
         return None
 
     try:
-        df_dupl = pl.read_excel(curation_db_path, sheet_name="duplicate_reactions")
-        df_cur = pl.read_excel(curation_db_path, sheet_name="curated_imbalances")
+        df_dupl = pl.read_excel(
+            curation_db_path, sheet_name="duplicate_reactions", engine="openpyxl"
+        )
+        df_cur = pl.read_excel(
+            curation_db_path, sheet_name="curated_imbalances", engine="openpyxl"
+        )
     except Exception as e:
         logger.error(f"Could not read curation database {curation_db_path}: {e}")
         return None
