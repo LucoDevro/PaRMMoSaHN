@@ -120,26 +120,27 @@ def test_extract_memote_problems(mock_read_sbml, tmp_path: Path):
     mock_model.reactions.get_by_id.return_value = mock_rxn
     mock_read_sbml.return_value = mock_model
 
-    # Capture the DataFrames that would be written to Excel without needing xlsxwriter
+    # Capture the DataFrames that would be written to Excel.
+    # The code creates an xlsxwriter.Workbook and passes it to write_excel,
+    # so we mock the Workbook context manager and intercept write_excel calls.
     written_sheets: dict = {}
-
-    class _FakeWorkbook:
-        """Minimal workbook stub that records written DataFrames by sheet name."""
-
-        def close(self):
-            pass
-
-    def fake_write_excel(df, workbook, worksheet, **kwargs):
-        if isinstance(workbook, Path):
-            written_sheets[worksheet] = df
-            return _FakeWorkbook()
-        elif isinstance(workbook, _FakeWorkbook):
-            written_sheets[worksheet] = df
-            return workbook
 
     import polars as pl
 
-    with patch.object(pl.DataFrame, "write_excel", fake_write_excel):
+    original_write_excel = pl.DataFrame.write_excel
+
+    def fake_write_excel(df, workbook, worksheet, **kwargs):
+        written_sheets[worksheet] = df
+        return workbook
+
+    mock_wb = MagicMock()
+    mock_wb.__enter__ = MagicMock(return_value=mock_wb)
+    mock_wb.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch("xlsxwriter.Workbook", return_value=mock_wb),
+        patch.object(pl.DataFrame, "write_excel", fake_write_excel),
+    ):
         out_excel = tmp_path / "curation_template.xlsx"
         extract_memote_problems(report_dir, model_dir, out_excel)
 

@@ -240,13 +240,15 @@ def extract_memote_problems(
         schema=["reaction_id", "name", "Imbalance", "Reason to leave intact", "Comment"]
     )
 
-    # Using xlsxwriter engine in Polars to write multiple sheets efficiently
-    with pl.Config(tbl_rows=10):  # Just safe formatting
-        # write_excel returns the workbook object, allowing us to append sheets
-        wb = df_dupl.write_excel(workbook=output_excel, worksheet="duplicate_reactions")
+    # Using xlsxwriter engine in Polars to write multiple sheets efficiently.
+    # The Workbook must be created explicitly; passing a path to write_excel
+    # can auto-close the workbook after the first sheet.
+    from xlsxwriter import Workbook
+
+    with Workbook(str(output_excel)) as wb:
+        df_dupl.write_excel(workbook=wb, worksheet="duplicate_reactions")
         df_imb.write_excel(workbook=wb, worksheet="curated_imbalances")
         df_ign.write_excel(workbook=wb, worksheet="ignored_imbalances")
-        wb.close()
 
 
 # ==========================================
@@ -400,7 +402,10 @@ def run_model_polisher(
     models_out.mkdir(parents=True, exist_ok=True)
     logs_out.mkdir(parents=True, exist_ok=True)
 
-    xml_models = list(model_dir.glob("*.xml"))
+    xml_models = list(model_dir.rglob("*.xml"))
+    if not xml_models:
+        logger.warning(f"No XML models found in {model_dir} — skipping polish.")
+        return models_out
     logger.info(f"Polishing {len(xml_models)} models with ModelPolisher ({engine})...")
 
     run_env = os.environ.copy()
