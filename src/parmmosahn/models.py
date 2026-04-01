@@ -12,15 +12,27 @@ logger = logging.getLogger(__name__)
 
 def clean_fasta_file(fasta_path: Path) -> None:
     """
-    Removes problematic characters (like '’') from FASTA files to prevent gapseq errors.
+    Cleans FASTA files by:
+    1. Removing problematic characters (like '’')
+    2. Truncating headers at the first space to remove descriptions that break gapseq regex.
     """
-    logger.info(f"Cleaning problematic characters from {fasta_path.name}...")
+    logger.info(f"Cleaning formatting for {fasta_path.name}...")
     try:
-        content = fasta_path.read_text(encoding="utf-8")
-        if "’" in content:
-            clean_content = content.replace("’", "")
-            fasta_path.write_text(clean_content, encoding="utf-8")
-            logger.debug(f"Cleaned {fasta_path.name}.")
+        lines = fasta_path.read_text(encoding="utf-8").splitlines()
+        cleaned_lines = []
+        for line in lines:
+            if line.startswith(">"):
+                # Truncate at the first space to keep only the pure ID (e.g. >AEP89073.1)
+                line = line.split()[0]
+
+            # Remove problematic characters from previous tools
+            if "’" in line:
+                line = line.replace("’", "")
+
+            cleaned_lines.append(line)
+
+        fasta_path.write_text("\n".join(cleaned_lines) + "\n", encoding="utf-8")
+        logger.debug(f"Cleaned {fasta_path.name}.")
     except UnicodeDecodeError:
         logger.error(
             f"Encoding error reading {fasta_path}. Ensure it is a valid text file."
@@ -344,12 +356,12 @@ def derive_strain_models(
             # and name="filtered-Reactions.tbl" (human-readable).
             xml_content = re.sub(
                 r'((?:id|metaid)=")filtered[-_]Reactions[._]?tbl"',
-                rf"\1{safe_model_id}\"",
+                r"\g<1>" + safe_model_id + '"',
                 xml_content,
             )
             xml_content = re.sub(
                 r'(name=")filtered[-.]Reactions[._]?tbl"',
-                rf"\1{strain_name}\"",
+                r"\g<1>" + strain_name + '"',
                 xml_content,
             )
 
