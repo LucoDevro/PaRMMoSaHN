@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import time
+from concurrent.futures import ProcessPoolExecutor
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Dict, Tuple, cast
@@ -27,17 +28,13 @@ logger = logging.getLogger(__name__)
 # ==========================================
 
 
-def run_memote_snapshot(model_path: Path, output_json: Path, output_html: Path) -> None:
-    """
-    Runs memote report snapshot on a single model via the native Python API.
-    Saves both the JSON test results and the rendered HTML report.
-    """
-    logger.info(f"Running memote snapshot on {model_path.name}...")
-
+def _run_memote_snapshot_inprocess(
+    model_path: Path, output_json: Path, output_html: Path
+) -> None:
+    """Run memote snapshot in the current process (high memory usage)."""
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Validate and load model via memote's parser
     model_obj, sbml_ver, notifications = memote_api.validate_model(str(model_path))
     if model_obj is None:
         logger.error(
@@ -45,7 +42,6 @@ def run_memote_snapshot(model_path: Path, output_json: Path, output_html: Path) 
         )
         return
 
-    # 2. Test model (suppress stdout to avoid pytest polluting the console)
     pytest_args = ["--tb", "no", "-q"]
 
     with open(os.devnull, "w") as devnull:
@@ -55,22 +51,62 @@ def run_memote_snapshot(model_path: Path, output_json: Path, output_html: Path) 
             )
             code, results = cast(Tuple[int, Any], output)
 
-    # 3. Generate and save the reports
     config = ReportConfiguration.load()
 
-    # Save HTML report
     html_report = memote_api.snapshot_report(results, config=config, html=True)
     if html_report:
         with output_html.open("w", encoding="utf-8") as f:
             f.write(cast(str, html_report))
 
-    # Save JSON report (test data)
     json_report = memote_api.snapshot_report(results, config=config, html=False)
     if json_report:
         with output_json.open("w", encoding="utf-8") as f:
             f.write(cast(str, json_report))
 
-    logger.info(f"Memote snapshot completed for {model_path.name}.")
+
+def run_memote_snapshot(
+    model_path: Path,
+    output_json: Path,
+    output_html: Path,
+    subprocess_mode: bool = True,
+    timeout: int = 900,
+) -> None:
+    """
+    Runs memote report snapshot on a single model.
+
+    Parameters
+    ----------
+    subprocess_mode : bool
+        If True (default), run memote in a separate process so that memory
+        is fully reclaimed between models. This prevents OOM kills when
+        evaluating multiple large models sequentially.
+    timeout : int
+        Maximum seconds to wait for memote per model (default: 900 = 15 min).
+    """
+    logger.info(f"Running memote snapshot on {model_path.name}...")
+
+    if not subprocess_mode:
+        _run_memote_snapshot_inprocess(model_path, output_json, output_html)
+        logger.info(f"Memote snapshot completed for {model_path.name}.")
+        return
+
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_json.parent.mkdir(parents=True, exist_ok=True)
+
+    with ProcessPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            _run_memote_snapshot_inprocess,
+            model_path,
+            output_json,
+            output_html,
+        )
+        try:
+            future.result(timeout=timeout)
+            logger.info(f"Memote snapshot completed for {model_path.name}.")
+        except TimeoutError:
+            logger.error(f"Memote timed out after {timeout}s for {model_path.name}.")
+        except Exception as e:
+            logger.error(f"Memote failed for {model_path.name}: {e}")
 
 
 def extract_memote_problems(
@@ -454,9 +490,10 @@ def run_model_polisher(
 
         try:
             # STEP 2: Process the models
-            for xml in xml_models:
+            n_models = len(xml_models)
+            for i, xml in enumerate(xml_models, 1):
                 strain_name = xml.stem
-                logger.info(f"Polishing {strain_name}...")
+                logger.info(f"[{i}/{n_models}] Polishing {strain_name}...")
 
                 cmd = base_cmd + [
                     "-f",
@@ -474,7 +511,7 @@ def run_model_polisher(
                 ]
 
                 try:
-                    subprocess.run(
+                    result = subprocess.run(
                         cmd,
                         cwd=str(compose_dir),
                         env=run_env,
@@ -482,6 +519,12 @@ def run_model_polisher(
                         stderr=subprocess.PIPE,
                         text=True,
                         check=True,
+                    )
+                    # Write per-model log even on success
+                    log_file = logs_out / f"{strain_name}.log"
+                    log_file.write_text(
+                        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
+                        encoding="utf-8",
                     )
                     success_count += 1
 
@@ -522,36 +565,39 @@ def run_model_polisher(
 
 def generate_curation_template(model_dir: Path, output_dir: Path) -> Path:
     """Hidden Evaluator: Runs memote on drafts and generates the Excel template."""
-    # Hide the raw reports in the strains folder to keep the root directory clean
-    reports_dir = output_dir / "03-strains" / "reports_pre_curation"
+    reports_dir = output_dir / "07-memote_reports" / "draft"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    models = list(model_dir.rglob("*.xml"))
-    logger.info(f"Running automated memote evaluation on {len(models)} draft models...")
+    models = sorted(model_dir.rglob("*.xml"))
+    n = len(models)
+    logger.info(f"Running automated memote evaluation on {n} draft models...")
 
-    for model in models:
+    for i, model in enumerate(models, 1):
+        logger.info(f"  [{i}/{n}] Evaluating {model.stem}...")
         out_json = reports_dir / f"{model.stem}.json"
         out_html = reports_dir / f"{model.stem}.html"
         run_memote_snapshot(model, out_json, out_html)
 
-    out_excel = output_dir / "curation_template.xlsx"
+    out_excel = reports_dir / "curation_template.xlsx"
     extract_memote_problems(reports_dir, model_dir, out_excel)
     return out_excel
 
 
 def evaluate_final_models(model_dir: Path, output_dir: Path) -> None:
     """Hidden Evaluator: Runs memote on final models to prove FAIR compliance."""
-    reports_dir = output_dir / "07-final_reports"
+    reports_dir = output_dir / "07-memote_reports" / "final"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    models = list(model_dir.rglob("*.xml"))
+    models = sorted(model_dir.rglob("*.xml"))
     if not models:
         logger.warning("No final XML models found to evaluate.")
         return
 
+    n = len(models)
     logger.info(step_banner(7))
-    logger.info(f"Running final memote evaluation on {len(models)} polished models...")
-    for model in models:
+    logger.info(f"Running final memote evaluation on {n} polished models...")
+    for i, model in enumerate(models, 1):
+        logger.info(f"  [{i}/{n}] Evaluating {model.stem}...")
         out_json = reports_dir / f"{model.stem}.json"
         out_html = reports_dir / f"{model.stem}.html"
         run_memote_snapshot(model, out_json, out_html)
