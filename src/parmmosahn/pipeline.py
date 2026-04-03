@@ -1,7 +1,12 @@
+import json
 import logging
 import shutil
+import time
+from datetime import datetime, timezone
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 
+from parmmosahn.annotation import enrich_models_directory
 from parmmosahn.constants import step_banner
 from parmmosahn.curation import (
     apply_curations,
@@ -14,6 +19,48 @@ from parmmosahn.pangenome import build_pangenome
 from parmmosahn.results import gather_and_convert_models
 
 logger = logging.getLogger(__name__)
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds into a human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m, s = divmod(int(seconds), 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m {s}s"
+
+
+def _count_xml(directory: Path) -> int:
+    """Count XML files recursively in a directory."""
+    if not directory.exists():
+        return 0
+    return len(list(directory.rglob("*.xml")))
+
+
+def write_pipeline_summary(
+    output_dir: Path,
+    steps: dict,
+    parameters: dict,
+    command: str = "",
+    started_at: str = "",
+    total_elapsed: float = 0.0,
+) -> Path:
+    """Write a pipeline_summary.json file summarizing the run."""
+    summary = {
+        "parmmosahn_version": pkg_version("parmmosahn"),
+        "command": command,
+        "started_at": started_at,
+        "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "elapsed": _format_elapsed(total_elapsed),
+        "steps": steps,
+        "parameters": parameters,
+    }
+    summary_path = output_dir / "pipeline_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    logger.info(f"Pipeline summary written to {summary_path}")
+    return summary_path
 
 
 def run_pan(
@@ -58,19 +105,21 @@ def run_downstream(
     """Executes Steps 4-7: Curation, Polishing, and Export."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- STEP 4: Automatic Curation ---
+    # --- STEP 4a: Generate curation template if none provided ---
+    if curation_db and Path(curation_db).exists():
+        logger.info("Using provided curation database: %s", curation_db)
+    else:
+        logger.info("=== STEP 4a: Generating curation template (memote on drafts) ===")
+        curation_db = generate_curation_template(draft_models_dir, output_dir)
+        logger.info(f"Curation template generated: {curation_db}")
+
+    # --- STEP 4b: Automatic Curation ---
     curated_out = output_dir / "04-curated_models"
     curated_out.mkdir(exist_ok=True)
 
-    if curation_db and curation_db.exists():
-        logger.info(step_banner(4))
-        for draft_model in draft_models_dir.rglob("*.xml"):
-            apply_curations(draft_model, curation_db, curated_out)
-    else:
-        logger.info(step_banner(4, "SKIPPED - No DB provided"))
-        # Safely copy draft models forward so the pipeline doesn't break
-        for draft_model in draft_models_dir.rglob("*.xml"):
-            shutil.copy(draft_model, curated_out / draft_model.name)
+    logger.info(step_banner(4))
+    for draft_model in draft_models_dir.rglob("*.xml"):
+        apply_curations(draft_model, curation_db, curated_out)
 
     current_models_dir = curated_out
 
@@ -81,14 +130,19 @@ def run_downstream(
         logger.warning(step_banner(5, f"SKIPPED - {engine} is not installed"))
     else:
         logger.info(step_banner(5, engine))
-        polished_out = output_dir / "05-polished"
+        polished_out = output_dir / "05-polished_models"
         current_models_dir = run_model_polisher(
             current_models_dir, polished_out, engine=engine
         )
 
+    # --- STEP 5b: Annotation Enrichment ---
+    logger.info("=== STEP 5b: Annotation Enrichment ===")
+    annotated_out = output_dir / "05b-annotated_models"
+    current_models_dir = enrich_models_directory(current_models_dir, annotated_out)
+
     # --- STEP 6: Gather & Convert ---
     logger.info(step_banner(6))
-    final_out = output_dir / "06-final_results"
+    final_out = output_dir / "06-final_models"
     gather_and_convert_models(current_models_dir, final_out)
 
     # --- STEP 7: Final Evaluation ---
