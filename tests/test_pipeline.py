@@ -1,122 +1,185 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from parmmosahn.pipeline import run_all
+import pytest
+
+from parmmosahn.pipeline import run_downstream, run_pan
 
 
 @patch("parmmosahn.pipeline.evaluate_final_models")
 @patch("parmmosahn.pipeline.gather_and_convert_models")
 @patch("parmmosahn.pipeline.apply_curations")
-@patch("parmmosahn.pipeline.derive_strain_models")
 @patch("parmmosahn.pipeline.build_pan_model")
 @patch("parmmosahn.pipeline.build_pangenome")
-def test_pipeline_run_all_integration(
+def test_run_pan(
     mock_build_pangenome,
     mock_build_pan_model,
-    mock_derive_strains,
-    mock_apply_curations,
+    mock_evaluate,
     mock_gather,
-    mock_evaluate_final,
+    mock_curations,
     tmp_path: Path,
 ):
-    """
-    Integration test for the main pipeline orchestrator.
-    Verifies that the outputs of early steps are correctly routed to later steps.
-    """
-    # 1. Setup Dummy Input Directories & Files
-    genomes_dir = tmp_path / "inputs" / "genomes"
-    genomes_dir.mkdir(parents=True)
+    """run_pan should call build_pangenome then build_pan_model and return correct paths."""
+    label = "clostridiales"
+    genomes_dir = tmp_path / "genomes"
+    genomes_dir.mkdir()
+    output_dir = tmp_path / "pan_out"
 
-    medium_file = tmp_path / "inputs" / "medium.csv"
-    medium_file.touch()
-
-    curation_db = tmp_path / "inputs" / "curation_db.xlsx"
-    curation_db.touch()
-
-    output_dir = tmp_path / "pipeline_out"
-    label = "integration_test"
-
-    # 2. Configure Mocks to simulate file creation
-    dummy_fasta = tmp_path / "dummy_softcore.faa"
+    dummy_fasta = tmp_path / "dummy.faa"
+    dummy_fasta.touch()
     mock_build_pangenome.return_value = dummy_fasta
 
-    def mock_derive_side_effect(genomes, fasta, rxns, out_dir, medium, threads):
-        strain_dir = out_dir / "models" / "strain_A"
-        strain_dir.mkdir(parents=True)
-        draft_xml = strain_dir / "strain_A.xml"
-        draft_xml.touch()
-        return out_dir / "models"
+    panmodel_rxns, softcore_fasta = run_pan(genomes_dir, output_dir, label, threads=4)
 
-    mock_derive_strains.side_effect = mock_derive_side_effect
-
-    # 3. Run the pipeline (skipping Docker polisher and SBO annotation)
-    run_all(
-        genomes_dir=genomes_dir,
-        output_dir=output_dir,
-        label=label,
-        medium_file=medium_file,
-        curation_db=curation_db,
-        threads=4,
-        skip_polisher=True,
-        stop_after_drafts=False,
-    )
-
-    # 4. Assertions: Verify the "Chain of Custody"
-    expected_pangenome_out = output_dir / "01-pangenome"
     mock_build_pangenome.assert_called_once_with(
-        genomes_dir, expected_pangenome_out, label, threads=4
-    )
-
-    expected_panmodel_out = output_dir / "02-panmodel"
-    mock_build_pan_model.assert_called_once_with(
-        dummy_fasta, expected_panmodel_out, threads=4
-    )
-
-    expected_strains_out = output_dir / "03-strains"
-    expected_panmodel_rxns = expected_panmodel_out / f"{label}-all-Reactions.tbl"
-    mock_derive_strains.assert_called_once_with(
         genomes_dir,
-        dummy_fasta,
-        expected_panmodel_rxns,
-        expected_strains_out,
-        medium_file,
+        output_dir / "01-pangenome",
+        label,
         threads=4,
+        add_unique=False,
+        soft_core_override=None,
+    )
+    mock_build_pan_model.assert_called_once_with(
+        dummy_fasta, output_dir / "02-panmodel", threads=4
     )
 
-    # FIXED: The pipeline passes (model_path, curation_db_path, output_dir)
-    expected_curated_out = output_dir / "04-curated_models"
-
-    # FIXED: Match the new directory structure and renamed XML file
-    expected_draft_xml = expected_strains_out / "models" / "strain_A" / "strain_A.xml"
-
-    mock_apply_curations.assert_called_once_with(
-        expected_draft_xml, curation_db, expected_curated_out
-    )
-
-    expected_final_out = output_dir / "07-final_results"
-    mock_gather.assert_called_once_with(expected_curated_out, expected_final_out)
-    mock_evaluate_final.assert_called_once_with(expected_curated_out, output_dir)
+    assert panmodel_rxns == output_dir / "02-panmodel" / f"{label}-all-Reactions.tbl"
+    assert softcore_fasta == dummy_fasta
 
 
-@patch("parmmosahn.pipeline.generate_curation_template")
-@patch("parmmosahn.pipeline.derive_strain_models")
+@patch("parmmosahn.pipeline.evaluate_final_models")
+@patch("parmmosahn.pipeline.gather_and_convert_models")
+@patch("parmmosahn.pipeline.apply_curations")
 @patch("parmmosahn.pipeline.build_pan_model")
 @patch("parmmosahn.pipeline.build_pangenome")
-def test_pipeline_stop_after_drafts(
-    mock_build_pangenome, mock_build_panmodel, mock_derive, mock_gen_template, tmp_path
+def test_run_pan_with_soft_core_override(
+    mock_build_pangenome,
+    mock_build_pan_model,
+    mock_evaluate,
+    mock_gather,
+    mock_curations,
+    tmp_path: Path,
 ):
-    """Test that the pipeline correctly pauses and generates the memote template."""
-    from parmmosahn.pipeline import run_all
+    """run_pan should forward soft_core_override to build_pangenome."""
+    dummy_fasta = tmp_path / "dummy.faa"
+    dummy_fasta.touch()
+    mock_build_pangenome.return_value = dummy_fasta
 
-    mock_derive.return_value = tmp_path / "drafts"
+    run_pan(tmp_path / "g", tmp_path / "out", "test", threads=2, soft_core_override=0.5)
 
-    run_all(
-        genomes_dir=tmp_path,
-        output_dir=tmp_path / "out",
-        label="test",
-        medium_file=tmp_path / "medium.csv",
-        stop_after_drafts=True,
+    _, kwargs = mock_build_pangenome.call_args
+    assert kwargs["soft_core_override"] == 0.5
+
+
+@patch("parmmosahn.pipeline.evaluate_final_models")
+@patch("parmmosahn.pipeline.gather_and_convert_models")
+@patch("parmmosahn.pipeline.enrich_models_directory", side_effect=lambda src, dst: dst)
+@patch("parmmosahn.pipeline.apply_curations")
+@patch("shutil.copy")
+def test_run_downstream_with_curation(
+    mock_copy,
+    mock_apply_curations,
+    mock_enrich,
+    mock_gather,
+    mock_evaluate,
+    tmp_path: Path,
+):
+    """run_downstream with a curation DB should call apply_curations on each draft model."""
+    draft_dir = tmp_path / "drafts"
+    draft_dir.mkdir()
+
+    # Create a nested draft model (strain-specific subdirectory layout)
+    strain_dir = draft_dir / "strain_A"
+    strain_dir.mkdir()
+    draft_xml = strain_dir / "strain_A.xml"
+    draft_xml.touch()
+
+    curation_db = tmp_path / "curation.xlsx"
+    curation_db.touch()
+
+    output_dir = tmp_path / "out"
+    run_downstream(
+        draft_models_dir=draft_dir,
+        output_dir=output_dir,
+        curation_db=curation_db,
+        no_polish=True,
     )
 
-    # Assert it called the hidden evaluator and stopped
-    mock_gen_template.assert_called_once()
+    expected_curated_out = output_dir / "04-curated_models"
+    mock_apply_curations.assert_called_once_with(
+        draft_xml, curation_db, expected_curated_out
+    )
+    mock_gather.assert_called_once()
+    mock_evaluate.assert_called_once()
+
+
+@patch("parmmosahn.pipeline.evaluate_final_models")
+@patch("parmmosahn.pipeline.gather_and_convert_models")
+@patch("parmmosahn.pipeline.enrich_models_directory", side_effect=lambda src, dst: dst)
+@patch("parmmosahn.pipeline.apply_curations")
+@patch("parmmosahn.pipeline.generate_curation_template")
+def test_run_downstream_no_curation_generates_template(
+    mock_gen_template,
+    mock_apply_curations,
+    mock_enrich,
+    mock_gather,
+    mock_evaluate,
+    tmp_path: Path,
+):
+    """Without a curation DB, the pipeline should auto-generate a template and apply curations."""
+    draft_dir = tmp_path / "drafts"
+    draft_dir.mkdir()
+    strain_dir = draft_dir / "strain_B"
+    strain_dir.mkdir()
+    draft_xml = strain_dir / "strain_B.xml"
+    draft_xml.touch()
+
+    # generate_curation_template returns the path to the generated Excel
+    fake_db = tmp_path / "out" / "curation_template.xlsx"
+    mock_gen_template.return_value = fake_db
+
+    output_dir = tmp_path / "out"
+    run_downstream(
+        draft_models_dir=draft_dir,
+        output_dir=output_dir,
+        curation_db=None,
+        no_polish=True,
+    )
+
+    mock_gen_template.assert_called_once_with(draft_dir, output_dir)
+    expected_curated_out = output_dir / "04-curated_models"
+    mock_apply_curations.assert_called_once_with(
+        draft_xml, fake_db, expected_curated_out
+    )
+    mock_gather.assert_called_once()
+
+
+@patch("parmmosahn.pipeline.run_model_polisher")
+@patch("parmmosahn.pipeline.evaluate_final_models")
+@patch("parmmosahn.pipeline.gather_and_convert_models")
+@patch("parmmosahn.pipeline.enrich_models_directory", side_effect=lambda src, dst: dst)
+@patch("shutil.copy")
+@patch("shutil.which", return_value="/usr/bin/docker")
+def test_run_downstream_polisher_called_when_engine_present(
+    mock_which,
+    mock_copy,
+    mock_enrich,
+    mock_gather,
+    mock_evaluate,
+    mock_polisher,
+    tmp_path: Path,
+):
+    """ModelPolisher should be invoked when engine is found and no_polish=False."""
+    draft_dir = tmp_path / "drafts"
+    draft_dir.mkdir()
+    polished_dir = tmp_path / "polished"
+    mock_polisher.return_value = polished_dir
+
+    run_downstream(
+        draft_models_dir=draft_dir,
+        output_dir=tmp_path / "out",
+        no_polish=False,
+        engine="docker",
+    )
+
+    mock_polisher.assert_called_once()

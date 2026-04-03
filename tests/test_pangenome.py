@@ -72,3 +72,46 @@ def test_build_pangenome_success(mock_move, mock_run_command, tmp_path: Path):
 
     # Verify the final returned path is correct
     assert result_fasta == output_dir / "test_pan.faa"
+
+
+@patch("parmmosahn.pangenome.run_command")
+@patch("shutil.move")
+def test_build_pangenome_soft_core_override(
+    mock_move, mock_run_command, tmp_path: Path
+):
+    """soft_core_override should bypass the 2/n formula and use the given value."""
+    genomes_dir = tmp_path / "genomes"
+    genomes_dir.mkdir()
+    (genomes_dir / "test1.gbff").touch()
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    def mock_run_side_effect(cmd, **kwargs):
+        if "info" in cmd:
+            return "Genomes : 10\n"
+        return ""
+
+    mock_run_command.side_effect = mock_run_side_effect
+
+    expected_fasta = output_dir / "softcore_protein_families.faa"
+    expected_fasta.touch()
+
+    # Override with a specific threshold
+    result_fasta = build_pangenome(
+        genomes_dir=genomes_dir,
+        output_dir=output_dir,
+        label="override_test",
+        threads=1,
+        soft_core_override=0.75,
+    )
+
+    # fasta and write commands should still have run
+    assert mock_run_command.call_count == 4
+
+    # The fasta command should include the overridden threshold value
+    fasta_call = [
+        call for call in mock_run_command.call_args_list if "fasta" in call[0][0]
+    ]
+    assert len(fasta_call) == 1
+    fasta_cmd = fasta_call[0][0][0]
+    assert "0.75" in " ".join(str(a) for a in fasta_cmd)

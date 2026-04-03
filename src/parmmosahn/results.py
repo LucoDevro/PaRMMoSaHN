@@ -28,16 +28,18 @@ def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path) -> 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Find all XML models
-    xml_models = list(model_dir.glob("*.xml"))
+    xml_models = list(model_dir.rglob("*.xml"))
     if not xml_models:
         logger.warning(f"No .xml models found in {model_dir} to gather.")
         return output_dir
 
     logger.info(f"Gathering and converting {len(xml_models)} models...")
 
-    for xml_path in xml_models:
+    n = len(xml_models)
+    failed_models = []
+    for i, xml_path in enumerate(xml_models, 1):
         strain_name = xml_path.stem
-        logger.info(f"Processing final model: {strain_name}")
+        logger.info(f"[{i}/{n}] Processing final model: {strain_name}")
 
         # 1. Copy the original SBML file
         dest_xml = output_dir / xml_path.name
@@ -57,8 +59,14 @@ def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path) -> 
 
         except Exception as e:
             logger.error(f"Failed to convert model {strain_name}: {e}")
-            # We don't raise here, so one corrupted model doesn't stop the batch conversion
+            failed_models.append(strain_name)
             continue
 
-    logger.info(f"All models successfully gathered and converted in {output_dir}")
+    if failed_models:
+        logger.warning(
+            f"Conversion failed for {len(failed_models)} models: {', '.join(failed_models)}"
+        )
+    else:
+        logger.info(f"All models successfully gathered and converted in {output_dir}")
+
     return output_dir

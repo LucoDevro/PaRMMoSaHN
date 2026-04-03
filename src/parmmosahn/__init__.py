@@ -1,10 +1,10 @@
 # my-python-package/src/parmmosahn/__init__.py
 
 __all__ = [
+    "constants",
     "core",
     "cli",
     "utils",
-    "config",
     "io",
     "pangenome",
     "models",

@@ -1,77 +1,53 @@
 import logging
-import math
+import re
 import shutil
-import subprocess
 from pathlib import Path
 
-# Configure basic logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+from parmmosahn.utils import ToolExecutionError, run_command
+
 logger = logging.getLogger(__name__)
 
 
-class ToolExecutionError(Exception):
-    """Custom exception raised when an external bio-tool fails."""
-
-    pass
+def get_genbank_files(genomes_dir: Path) -> list[Path]:
+    """Helper to find all genbank extensions."""
+    files: list[Path] = []
+    for ext in ["*.gbff", "*.gbk", "*.gb"]:
+        files.extend(genomes_dir.glob(ext))
+    return files
 
 
 def clean_genbank_files(genomes_dir: Path) -> None:
-    """
-    Removes problematic characters (like '’') from GenBank files.
-    """
+    """Checks for and removes problematic characters (e.g., curly apostrophes) from GenBank files."""
     logger.info(
-        f"Checking for problematic characters in GBFF files in {genomes_dir}..."
+        f"Checking for problematic characters in GenBank files in {genomes_dir}..."
     )
-    gbff_files = list(genomes_dir.glob("*.gbff"))
+    gb_files = get_genbank_files(genomes_dir)
 
-    if not gbff_files:
-        logger.warning(f"No .gbff files found in {genomes_dir}.")
+    if not gb_files:
+        logger.warning(f"No .gbff, .gbk, or .gb files found in {genomes_dir}.")
         return
 
-    for gbff_path in gbff_files:
+    for gb_path in gb_files:
         try:
-            content = gbff_path.read_text(encoding="utf-8")
+            content = gb_path.read_text(encoding="utf-8")
             if "’" in content:
-                logger.info(f"Cleaning problematic characters from {gbff_path.name}")
+                logger.info(f"Cleaning problematic characters from {gb_path.name}")
                 clean_content = content.replace("’", "")
-                gbff_path.write_text(clean_content, encoding="utf-8")
+                gb_path.write_text(clean_content, encoding="utf-8")
         except UnicodeDecodeError:
             logger.error(
-                f"Encoding error reading {gbff_path}. Ensure it is a valid text file."
+                f"Encoding error reading {gb_path}. Ensure it is a valid text file."
             )
 
 
 def create_annotations_list(genomes_dir: Path, output_list: Path) -> None:
-    """
-    Creates a tab-separated list mapping filenames to their absolute paths.
-    This is the format expected by PPanGGOLiN for its annotation step.
-    """
+    """Generates the annotations.list file required by PPanGGOLiN, listing all GenBank files."""
     logger.info(f"Generating annotations list at {output_list}...")
-    gbff_files = list(genomes_dir.glob("*.gbff"))
+    gb_files = get_genbank_files(genomes_dir)
 
     with output_list.open("w", encoding="utf-8") as f:
-        for gbff in gbff_files:
-            # PPanGGOLiN expects: "filename \t absolute_filepath"
-            f.write(f"{gbff.name}\t{gbff.resolve()}\n")
-
-
-def run_command(cmd: list[str]) -> str:
-    """
-    Helper function to run external commands robustly.
-    Captures stdout and stderr, raising an informative error on failure.
-    """
-    logger.debug(f"Running command: {' '.join(cmd)}")
-    try:
-        result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-        )
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed: {' '.join(cmd)}")
-        logger.error(f"Standard Error output:\n{e.stderr}")
-        raise ToolExecutionError(f"Tool failed with exit code {e.returncode}") from e
+        for gb in gb_files:
+            f.write(f"{gb.name}\t{gb.resolve()}\n")
 
 
 def build_pangenome(
@@ -82,6 +58,8 @@ def build_pangenome(
     cluster_cov: float = 0.60,
     threads: int = 1,
     tmp_dir: str | Path | None = None,
+    add_unique: bool = False,
+    soft_core_override: float | None = None,
 ) -> Path:
     """
     Executes the PPanGGOLiN pipeline to build a pangenome and extract the soft-core.
@@ -148,11 +126,13 @@ def build_pangenome(
     info_out = run_command(["ppanggolin", "info", "-p", str(h5_db), "--content"])
 
     no_genomes = 0
-    for line in info_out.splitlines():
-        if "Genomes" in line:
-            # E.g., extracts 205 from "Genomes : 205"
-            no_genomes = int("".join(filter(str.isdigit, line)))
-            break
+    if info_out:
+        for line in info_out.splitlines():
+            if "Genomes" in line:
+                match = re.search(r"\d+", line)
+                if match:
+                    no_genomes = int(match.group())
+                break
 
     if no_genomes == 0:
         raise ToolExecutionError(
@@ -160,11 +140,24 @@ def build_pangenome(
         )
 
     # Calculate soft core threshold exactly as bash `echo "scale=5; 2/$no_genomes" | bc`
-    # TODO check if this is biologically relevant
-    soft_core_threshold = round(2 / no_genomes, 5)
-    logger.info(
-        f"Calculated soft_core threshold: {soft_core_threshold} for {no_genomes} genomes."
-    )
+    # Users can override this via soft_core_override if they want a different fraction.
+    if soft_core_override is not None:
+        soft_core_threshold = round(soft_core_override, 5)
+        logger.info(
+            f"Using user-provided soft_core threshold: {soft_core_threshold} (override)."
+        )
+    else:
+        soft_core_threshold = round(2 / no_genomes, 5)
+        logger.info(
+            f"Calculated soft_core threshold: {soft_core_threshold} for {no_genomes} genomes."
+        )
+
+    # Option to include unique/cloud genes.
+    # ppanggolin --prot_families accepts: all, persistent, shell, cloud, softcore, core.
+    # "all" = persistent + shell + cloud (superset of softcore + cloud).
+    # There is no single ppanggolin value for "softcore + cloud only", so "all" is
+    # the pragmatic choice when the user wants to include unique/cloud genes.
+    partitions = "all" if add_unique else "softcore"
 
     # Step 5: Export Soft-core FASTA
     logger.info("Extracting soft-core protein families...")
@@ -177,14 +170,14 @@ def build_pangenome(
         "-o",
         str(output_dir),
         "--prot_families",
-        "softcore",
+        partitions,
         "--soft_core",
         str(soft_core_threshold),
     ]
     run_command(fasta_cmd)
 
     # Step 6: Rename final output file
-    extracted_fasta = output_dir / "softcore_protein_families.faa"
+    extracted_fasta = output_dir / f"{partitions}_protein_families.faa"
     final_fasta = output_dir / f"{label}.faa"
 
     if extracted_fasta.exists():

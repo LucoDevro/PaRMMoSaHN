@@ -288,9 +288,24 @@ test_reports/
 test_genomes/
 test_results/
 
+test_*/
+output*/
+notebook*/
+presentation*/
+
+run_pipeline.sh
+data_pipeline/
+project_test/
+
 # commands md
 commands.md
+CLAUDE.md
+CLI_UX_IMPROVEMENTS.md
 
+#Other docker compose files
+!src/parmmosahn/data/docker-compose.yml
+!src/parmmosahn/data/*.tsv
+src/parmmosahn/data/docker-compose*.yml
 
 # Helper scripts
 get_excel.py
@@ -299,20 +314,9 @@ test_results_copy/
 test_results_M_flag/
 
 
-# Can we ignore all the files in the root directory except for the ones we want to keep?
-# List all the files to not ignore in the root directory
-!.gitignore
-!.pre-commit-config.yaml
-!CHANGELOG.md
-!CONTRIBUTING.md
-!environment.yml
-!LICENSE
-!MANIFEST.in
-!pyproject.toml
-!README.md
-!src/*
-!tests/*
-!.github/*
+pipeline_runs/
 
-# Ignore all other files in the root directory
-*
+# Output tables
+*.tbl
+
+src/parmmosahn.egg-info/

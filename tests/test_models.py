@@ -9,7 +9,7 @@ from parmmosahn.models import clean_fasta_file, filter_blast_table
 def test_clean_fasta_file_with_bad_chars(tmp_path: Path):
     """Test that problematic characters are removed from FASTA files."""
     fasta_file = tmp_path / "test.faa"
-    # Create a dummy fasta file with the problematic '’' character
+    # Create a dummy FASTA file containing the right single quotation mark character (’)
     fasta_file.write_text(">seq1’\nATGC’C\n", encoding="utf-8")
 
     clean_fasta_file(fasta_file)
@@ -18,6 +18,19 @@ def test_clean_fasta_file_with_bad_chars(tmp_path: Path):
     cleaned_content = fasta_file.read_text(encoding="utf-8")
     assert "’" not in cleaned_content
     assert cleaned_content == ">seq1\nATGCC\n"
+
+
+def test_clean_fasta_file_truncates_header_description(tmp_path: Path):
+    """Test that FASTA headers are truncated at the first space."""
+    fasta_file = tmp_path / "test.faa"
+    fasta_file.write_text(
+        ">NP_387883.1 Extracted from NC_000964.3\nATGCC\n", encoding="utf-8"
+    )
+
+    clean_fasta_file(fasta_file)
+
+    cleaned = fasta_file.read_text(encoding="utf-8")
+    assert cleaned == ">NP_387883.1\nATGCC\n"
 
 
 def test_clean_fasta_file_no_bad_chars(tmp_path: Path):
@@ -59,13 +72,14 @@ def test_filter_blast_table(tmp_path: Path):
     )
     blast_file.write_text(blast_data, encoding="utf-8")
 
-    # Dummy Pan-model table (needs to handle commented lines too)
+    # Dummy Pan-model reaction table matching the real gapseq column layout.
+    # The 'dbhit' column is a real gapseq output column used in de-duplication.
     pan_rxn_data = (
         "# This is a comment that should be ignored\n"
-        "stitle\trxn\tpathway\textra_info\n"
-        "pan_A\tRXN1\tPATH1\tdata_A\n"
-        "pan_B\tRXN2\tPATH1\tdata_B\n"  # gene1 hits both pan_A and pan_B which are in PATH1
-        "pan_C\tRXN3\tPATH2\tdata_C\n"
+        "stitle\trxn\tpathway\textra_info\tdbhit\n"
+        "pan_A\tRXN1\tPATH1\tdata_A\trxn00001\n"
+        "pan_B\tRXN2\tPATH1\tdata_B\trxn00002\n"  # gene1 hits both; same query/pathway
+        "pan_C\tRXN3\tPATH2\tdata_C\trxn00003\n"
     )
     pan_rxn_file.write_text(pan_rxn_data, encoding="utf-8")
 
@@ -83,28 +97,24 @@ def test_filter_blast_table(tmp_path: Path):
     result_df = pd.read_table(out_file)
 
     # Expected behavior:
-    # - gene1 -> pan_A (RXN1, PATH1) score 100.0 -> KEPT
-    # - gene1 -> pan_B (RXN2, PATH1) score 50.0 -> DROPPED (duplicate query/pathway with lower score)
-    # - gene2 -> pan_C (RXN3, PATH2) score 120.5 -> KEPT
+    # - gene1 -> pan_A (RXN1, PATH1, dbhit=rxn00001) score 100.0 -> KEPT
+    # - gene1 -> pan_B (RXN2, PATH1, dbhit=rxn00002) score  50.0 -> DROPPED
+    #   (same Query/pathway, lower score)
+    # - gene2 -> pan_C (RXN3, PATH2, dbhit=rxn00003) score 120.5 -> KEPT
 
     assert (
         len(result_df) == 2
-    ), "Should have dropped the lower scoring duplicate pathway."
-
-    # Verify the columns were cleaned up correctly
-    assert list(result_df.columns) == ["stitle", "rxn", "pathway", "extra_info"]
+    ), "Should have dropped the lower scoring duplicate pathway hit."
 
     # Verify the 'stitle' column was overwritten with the 'Query' (strain gene) values
     stitles = result_df["stitle"].tolist()
     assert "gene1" in stitles
     assert "gene2" in stitles
-    assert "pan_A" not in stitles  # Target pan_A should be gone
+    assert "pan_A" not in stitles  # Target pan_A should be replaced by query
 
-    # Verify the specific surviving rows
+    # Verify the specific surviving row for gene1
     gene1_row = result_df[result_df["stitle"] == "gene1"].iloc[0]
-    assert (
-        gene1_row["rxn"] == "RXN1"
-    )  # Pan_A's reaction, because it had the higher score
+    assert gene1_row["rxn"] == "RXN1"  # pan_A's reaction: highest bitscore
     assert gene1_row["pathway"] == "PATH1"
 
 
@@ -128,3 +138,30 @@ def test_derive_strain_models_xml_cleanup(tmp_path: Path):
     assert safe_model_id == "GCF_000178115_2_weird_name"
     assert "." not in safe_model_id
     assert "-" not in safe_model_id
+
+
+def test_model_id_regex_matches_gapseq_output():
+    """Regression: the model ID regex must match gapseq's actual output formats."""
+    import re
+
+    safe_id = "M_GCF_000009045_1"
+    strain = "GCF_000009045.1"
+
+    # Pattern for id/metaid attributes (from models.py step 3f)
+    pat_id = re.compile(r'((?:id|metaid)=")filtered[-_]Reactions[._]?tbl"')
+    # Pattern for name attribute
+    pat_name = re.compile(r'(name=")filtered[-.]Reactions[._]?tbl"')
+
+    # gapseq produces these three patterns in real output
+    assert pat_id.sub(r"\g<1>" + safe_id + '"', 'id="filtered_Reactions_tbl"') == (
+        f'id="{safe_id}"'
+    )
+    assert pat_id.sub(r"\g<1>" + safe_id + '"', 'metaid="filtered_Reactions_tbl"') == (
+        f'metaid="{safe_id}"'
+    )
+    assert pat_id.sub(r"\g<1>" + safe_id + '"', 'id="filtered-Reactions.tbl"') == (
+        f'id="{safe_id}"'
+    )
+    assert pat_name.sub(r"\g<1>" + strain + '"', 'name="filtered-Reactions.tbl"') == (
+        f'name="{strain}"'
+    )

@@ -1,7 +1,13 @@
+import json
 import logging
 import shutil
+import time
+from datetime import datetime, timezone
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 
+from parmmosahn.annotation import enrich_models_directory
+from parmmosahn.constants import step_banner
 from parmmosahn.curation import (
     apply_curations,
     evaluate_final_models,
@@ -15,113 +21,139 @@ from parmmosahn.results import gather_and_convert_models
 logger = logging.getLogger(__name__)
 
 
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds into a human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m, s = divmod(int(seconds), 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m {s}s"
+
+
+def _count_xml(directory: Path) -> int:
+    """Count XML files recursively in a directory."""
+    if not directory.exists():
+        return 0
+    return len(list(directory.rglob("*.xml")))
+
+
+def write_pipeline_summary(
+    output_dir: Path,
+    steps: dict,
+    parameters: dict,
+    command: str = "",
+    started_at: str = "",
+    total_elapsed: float = 0.0,
+) -> Path:
+    """Write a pipeline_summary.json file summarizing the run."""
+    summary = {
+        "parmmosahn_version": pkg_version("parmmosahn"),
+        "command": command,
+        "started_at": started_at,
+        "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "elapsed": _format_elapsed(total_elapsed),
+        "steps": steps,
+        "parameters": parameters,
+    }
+    summary_path = output_dir / "pipeline_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    logger.info(f"Pipeline summary written to {summary_path}")
+    return summary_path
+
+
+def run_pan(
+    genomes_dir: Path,
+    output_dir: Path,
+    label: str,
+    threads: int = 14,
+    add_unique: bool = False,
+    soft_core_override: float | None = None,
+):
+    """Executes Step 1 & 2: Pangenome and Pan-model."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- STEP 1: Pangenome ---
+    logger.info(step_banner(1))
+    pangenome_out = output_dir / "01-pangenome"
+    softcore_fasta = build_pangenome(
+        genomes_dir,
+        pangenome_out,
+        label,
+        threads=threads,
+        add_unique=add_unique,
+        soft_core_override=soft_core_override,
+    )
+
+    # --- STEP 2: Pan-model ---
+    logger.info(step_banner(2))
+    panmodel_out = output_dir / "02-panmodel"
+    build_pan_model(softcore_fasta, panmodel_out, threads=threads)
+
+    logger.info(f"Pan-tasks complete! Pan-model saved to {panmodel_out}")
+    return panmodel_out / f"{label}-all-Reactions.tbl", softcore_fasta
+
+
 def run_downstream(
     draft_models_dir: Path,
     output_dir: Path,
     curation_db: Path | None = None,
-    skip_polisher: bool = False,
+    no_polish: bool = False,
     engine: str = "docker",
 ):
     """Executes Steps 4-7: Curation, Polishing, and Export."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- STEP 4: Automatic Curation ---
+    # --- STEP 4a: Generate curation template if none provided ---
+    if curation_db and Path(curation_db).exists():
+        logger.info("Using provided curation database: %s", curation_db)
+    else:
+        logger.info("=== STEP 4a: Generating curation template (memote on drafts) ===")
+        curation_db = generate_curation_template(draft_models_dir, output_dir)
+        logger.info(f"Curation template generated: {curation_db}")
+
+    # --- STEP 4b: Automatic Curation ---
     curated_out = output_dir / "04-curated_models"
     curated_out.mkdir(exist_ok=True)
 
-    if curation_db and curation_db.exists():
-        logger.info("=== STEP 4: Applying Automatic Curations ===")
-        for draft_model in draft_models_dir.glob("*/*.xml"):
-            apply_curations(draft_model, curation_db, curated_out)
-    else:
-        logger.info("=== STEP 4: Automatic Curation (SKIPPED - No DB provided) ===")
-        # Safely copy draft models forward so the pipeline doesn't break
-        for draft_model in draft_models_dir.glob("*/*.xml"):
-            shutil.copy(draft_model, curated_out / draft_model.name)
+    logger.info(step_banner(4))
+    for draft_model in draft_models_dir.rglob("*.xml"):
+        apply_curations(draft_model, curation_db, curated_out)
 
     current_models_dir = curated_out
 
     # --- STEP 5: ModelPolisher via Docker (Optional) ---
-    if skip_polisher:
-        logger.info("=== STEP 5: ModelPolisher (SKIPPED by user) ===")
-    elif not shutil.which(engine if engine != "podman" else "podman-compose"):
-        logger.warning(
-            f"=== STEP 5: ModelPolisher (SKIPPED - {engine} is not installed) ==="
-        )
+    # Map engine name to the actual binary used by run_model_polisher so the
+    # availability check reflects the real command (e.g. podman -> podman-compose).
+    engine_binary_map = {
+        "docker": "docker",
+        "podman": "podman-compose",
+        "apptainer": "apptainer",
+    }
+    engine_bin = engine_binary_map.get(engine, engine)
+    if no_polish:
+        logger.info(step_banner(5, "SKIPPED by user"))
+    elif not shutil.which(engine_bin):
+        logger.warning(step_banner(5, f"SKIPPED - {engine_bin} is not installed"))
     else:
-        logger.info(f"=== STEP 5: ModelPolisher ({engine}) ===")
-        polished_out = output_dir / "05-polished"
+        logger.info(step_banner(5, engine))
+        polished_out = output_dir / "05-polished_models"
         current_models_dir = run_model_polisher(
             current_models_dir, polished_out, engine=engine
         )
 
+    # --- STEP 5b: Annotation Enrichment ---
+    logger.info("=== STEP 5b: Annotation Enrichment ===")
+    annotated_out = output_dir / "05b-annotated_models"
+    current_models_dir = enrich_models_directory(current_models_dir, annotated_out)
+
     # --- STEP 6: Gather & Convert ---
-    logger.info("=== STEP 6: Gathering Final Results ===")
-    final_out = output_dir / "06-final_results"
+    logger.info(step_banner(6))
+    final_out = output_dir / "06-final_models"
     gather_and_convert_models(current_models_dir, final_out)
 
     # --- STEP 7: Final Evaluation ---
-    # current_models_dir holds the final XMLs right before they were gathered
     evaluate_final_models(current_models_dir, output_dir)
 
     logger.info(f"Pipeline complete! All results saved to {final_out}")
-
-
-def run_all(
-    genomes_dir: Path,
-    output_dir: Path,
-    label: str,
-    medium_file: Path,
-    curation_db: Path | None = None,
-    threads: int = 14,
-    skip_polisher: bool = False,
-    engine: str = "docker",
-    stop_after_drafts: bool = False,
-):
-    """Executes the entire PaRMMoSaHN pipeline from end to end."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # --- STEP 1: Pangenome ---
-    logger.info("=== STEP 1: Building Pangenome ===")
-    pangenome_out = output_dir / "01-pangenome"
-    softcore_fasta = build_pangenome(genomes_dir, pangenome_out, label, threads=threads)
-
-    # --- STEP 2: Pan-model ---
-    logger.info("=== STEP 2: Building Pan-model ===")
-    panmodel_out = output_dir / "02-panmodel"
-    build_pan_model(softcore_fasta, panmodel_out, threads=threads)
-    panmodel_rxns = panmodel_out / f"{label}-all-Reactions.tbl"
-
-    # --- STEP 3: Strain Derivation ---
-    logger.info("=== STEP 3: Deriving Strain Models ===")
-    strains_out = output_dir / "03-strains"
-    draft_models_dir = derive_strain_models(
-        genomes_dir,
-        softcore_fasta,
-        panmodel_rxns,
-        strains_out,
-        medium_file,
-        threads=threads,
-    )
-
-    if stop_after_drafts:
-        logger.info("=== Preparing Human-in-the-Loop Curation (running memote) ===")
-        template_path = generate_curation_template(draft_models_dir, output_dir)
-        logger.info("=== Pipeline paused for Human-in-the-Loop Curation ===")
-        logger.info(f"Draft models are ready in: {draft_models_dir}")
-        logger.info(
-            f"ACTION REQUIRED: Please fill out the curation template at {template_path.resolve()}"
-        )
-        logger.info(
-            f"When finished, resume using: parmmosahn resume -o {output_dir.resolve()}"
-        )
-        return
-
-    # Pass everything to the downstream runner
-    run_downstream(
-        draft_models_dir=draft_models_dir,
-        output_dir=output_dir,
-        curation_db=curation_db,
-        skip_polisher=skip_polisher,
-        engine=engine,
-    )

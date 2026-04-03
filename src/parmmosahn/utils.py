@@ -1,9 +1,11 @@
+import contextlib
 import logging
-import os
+import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Any, Generator, Optional
 
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -13,8 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class ToolExecutionError(Exception):
-    """Custom exception raised when an external bio-tool fails."""
-
     pass
 
 
@@ -22,37 +22,85 @@ def run_command(
     cmd: list[str], stdout_file: Path | None = None, stderr_file: Path | None = None
 ) -> str | None:
     """
-    Runs an external command robustly.
-    If stdout_file and stderr_file are provided, outputs are written to them instead of captured.
+    Runs an external command robustly with REAL-TIME logging.
+    Separates stdout and stderr completely to avoid stream pollution.
     """
     logger.debug(f"Running command: {' '.join(cmd)}")
-    try:
-        # Check if BOTH files are provided for file-based output
-        if stdout_file is not None and stderr_file is not None:
-            with stdout_file.open("a") as out, stderr_file.open("a") as err:
-                subprocess.run(cmd, stdout=out, stderr=err, text=True, check=True)
-            return None
 
-        # In all other cases (including if only one file is provided), capture to string
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
-        )
-        return result.stdout
+    captured_stdout: list[str] = []
+    captured_stderr: list[str] = []
 
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed: {' '.join(cmd)}")
-        if not (stdout_file and stderr_file):
-            logger.error(f"Standard Error output:\n{e.stderr}")
-        else:
-            logger.error(f"Check {stderr_file} for detailed error logs.")
-        raise ToolExecutionError(f"Tool failed with exit code {e.returncode}") from e
+    def stream_reader(pipe, file_stream, log_func, capture_list):
+        """Worker thread function to read streams without blocking."""
+        for line in pipe:
+            clean_line = line.strip()
+            if clean_line:
+                if file_stream is None:
+                    log_func(f"[{cmd[0]}] {clean_line}")
+                    capture_list.append(clean_line)
+                else:
+                    file_stream.write(line)
+                    file_stream.flush()
 
+    # 1. Start the ExitStack
+    with contextlib.ExitStack() as stack:
+        out_f = stack.enter_context(stdout_file.open("a")) if stdout_file else None
+        err_f = stack.enter_context(stderr_file.open("a")) if stderr_file else None
 
-logger = logging.getLogger(__name__)
+        # 2. INDENT EVERYTHING INSIDE THE EXITSTACK
+        try:
+            with subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+            ) as process:
+
+                # Use threads to read both streams concurrently
+                t_out = threading.Thread(
+                    target=stream_reader,
+                    args=(process.stdout, out_f, logger.info, captured_stdout),
+                )
+                t_err = threading.Thread(
+                    target=stream_reader,
+                    args=(process.stderr, err_f, logger.debug, captured_stderr),
+                )
+
+                t_out.start()
+                t_err.start()
+
+                # Wait for process first, THEN wait for threads to finish reading
+                process.wait()
+                t_out.join()
+                t_err.join()
+
+                if process.returncode != 0:
+                    # If it failed, bundle the stderr into the exception
+                    err_msg = (
+                        "\n".join(captured_stderr)
+                        if not stderr_file
+                        else f"Check {stderr_file}."
+                    )
+                    raise subprocess.CalledProcessError(
+                        process.returncode, cmd, stderr=err_msg
+                    )
+
+            return "\n".join(captured_stdout) if stdout_file is None else None
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Command failed: {' '.join(cmd)}")
+            if e.stderr:
+                logger.error(f"Standard Error output:\n{e.stderr}")
+
+            error_details = [f"Tool failed with exit code {e.returncode}"]
+            if e.stderr:
+                error_details.append(f"stderr: {e.stderr.strip()}")
+            elif stderr_file is not None:
+                error_details.append(f"see stderr log at {stderr_file}")
+
+            raise ToolExecutionError("; ".join(error_details)) from e
 
 
 def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
@@ -61,7 +109,7 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
 
     Architectural notes:
     - Yields features generator-style to maintain low memory overhead.
-    - Atomic rename to prevent race conditions in HPC environments.
+    - Uses TemporaryDirectory for safe temporary file creation.
     """
     if output_faa_path.exists():
         logger.info(
@@ -69,21 +117,19 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
         )
         return output_faa_path
 
-    # Define a generator to keep memory profile flat
     def _generate_proteins() -> Generator[SeqRecord, None, None]:
         with open(gbff_path, "r") as handle:
             for record in SeqIO.parse(handle, "genbank"):
                 for feature in record.features:
                     if feature.type == "CDS":
-                        # Edge case: Pseudogenes or broken annotations might lack a translation
                         translation = feature.qualifiers.get("translation", [None])[0]
                         if not translation:
                             continue
 
-                        # Edge case: Prefer locus_tag, fallback to protein_id, then feature ID
+                        # Prefer protein_id, fallback to locus_tag, then feature ID
                         seq_id = feature.qualifiers.get(
-                            "locus_tag",
-                            feature.qualifiers.get("protein_id", ["unknown_id"]),
+                            "protein_id",
+                            feature.qualifiers.get("locus_tag", ["unknown_id"]),
                         )[0]
 
                         yield SeqRecord(
@@ -92,25 +138,106 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
                             description=f"Extracted from {record.id}",
                         )
 
-    # Atomic write pattern for HPC safety
-    fd, temp_path_str = tempfile.mkstemp(dir=output_faa_path.parent, suffix=".faa.tmp")
-    temp_path = Path(temp_path_str)
-
     try:
-        with os.fdopen(fd, "w") as temp_out:
-            count = SeqIO.write(_generate_proteins(), temp_out, "fasta")
+        with tempfile.TemporaryDirectory(dir=output_faa_path.parent) as temp_dir:
+            temp_path = Path(temp_dir) / "temp.faa"
 
-        if count == 0:
-            logger.warning(f"No CDS translations found in {gbff_path}!")
+            with open(temp_path, "w") as temp_out:
+                count = SeqIO.write(_generate_proteins(), temp_out, "fasta")
 
-        # Atomic rename to final destination
-        temp_path.replace(output_faa_path)
-        logger.debug(f"Successfully extracted {count} proteins to {output_faa_path}")
+            if count == 0:
+                logger.warning(f"No CDS translations found in {gbff_path}!")
+
+            # Move from temp dir to final target
+            temp_path.replace(output_faa_path)
+            logger.debug(
+                f"Successfully extracted {count} proteins to {output_faa_path}"
+            )
 
     except Exception as e:
-        if temp_path.exists():
-            temp_path.unlink()
         logger.error(f"Failed to extract proteome from {gbff_path}: {e}")
         raise
 
     return output_faa_path
+
+
+def load_config(config_path: Path) -> dict:
+    """Load a YAML configuration file.
+
+    Requires PyYAML (install with ``pip install 'parmmosahn[config]'``).
+
+    Args:
+        config_path: Path to the YAML config file.
+
+    Returns:
+        Dictionary of configuration values. Empty dict if the file is empty.
+
+    Raises:
+        ImportError: If PyYAML is not installed.
+    """
+    try:
+        import yaml  # type: ignore[import]
+    except ImportError as exc:
+        raise ImportError(
+            "PyYAML is required for config file support. "
+            "Install it with: pip install 'parmmosahn[config]'  or  pip install pyyaml"
+        ) from exc
+
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    return data if isinstance(data, dict) else {}
+
+
+def _extract_version(output: str) -> str:
+    """Return the first line that looks like a version string, else the first non-empty line."""
+    import re
+
+    lines = [l.strip() for l in output.splitlines() if l.strip()]
+    # Prefer a line that contains a semver-like pattern (e.g. '2.2.6', 'v1.4.2')
+    version_pattern = re.compile(r"\bv?\d+\.\d+")
+    for line in lines:
+        if version_pattern.search(line):
+            return line
+    return lines[0] if lines else "unknown"
+
+
+def check_environment() -> dict[str, dict[str, str | bool | None]]:
+    """Check for required external tools and container engines.
+
+    Probes each tool with its ``--version`` flag (30 s timeout to accommodate
+    Python-based tools like PPanGGOLiN that have slow startup import times).
+
+    Returns:
+        Nested dict of ``{tool_name: {found: bool, version: str | None, path: str | None}}``.
+    """
+    tools: dict[str, list[str]] = {
+        "ppanggolin": ["ppanggolin", "--version"],
+        "gapseq": ["gapseq", "-v"],
+        "diamond": ["diamond", "--version"],
+        "docker": ["docker", "--version"],
+        "podman": ["podman", "--version"],
+        "apptainer": ["apptainer", "--version"],
+    }
+
+    results: dict[str, dict[str, str | bool | None]] = {}
+
+    for name, version_cmd in tools.items():
+        path = shutil.which(name)
+        if path is None:
+            results[name] = {"found": False, "version": None, "path": None}
+            continue
+        try:
+            proc = subprocess.run(
+                version_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            combined = proc.stdout + proc.stderr
+            version: str | None = _extract_version(combined)
+        except Exception:
+            version = "unknown"
+        results[name] = {"found": True, "version": version, "path": path}
+
+    return results

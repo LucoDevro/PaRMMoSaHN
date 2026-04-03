@@ -3,7 +3,7 @@ import re
 import shutil
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 from parmmosahn.utils import ToolExecutionError, extract_proteome_from_gbff, run_command
 
@@ -12,15 +12,27 @@ logger = logging.getLogger(__name__)
 
 def clean_fasta_file(fasta_path: Path) -> None:
     """
-    Removes problematic characters (like '’') from FASTA files to prevent gapseq errors.
+    Cleans FASTA files by:
+    1. Removing problematic characters (like '’')
+    2. Truncating headers at the first space to remove descriptions that break gapseq regex.
     """
-    logger.info(f"Cleaning problematic characters from {fasta_path.name}...")
+    logger.info(f"Cleaning formatting for {fasta_path.name}...")
     try:
-        content = fasta_path.read_text(encoding="utf-8")
-        if "’" in content:
-            clean_content = content.replace("’", "")
-            fasta_path.write_text(clean_content, encoding="utf-8")
-            logger.debug(f"Cleaned {fasta_path.name}.")
+        lines = fasta_path.read_text(encoding="utf-8").splitlines()
+        cleaned_lines = []
+        for line in lines:
+            if line.startswith(">"):
+                # Truncate at the first space to keep only the pure ID (e.g. >AEP89073.1)
+                line = line.split()[0]
+
+            # Remove problematic characters from previous tools
+            if "’" in line:
+                line = line.replace("’", "")
+
+            cleaned_lines.append(line)
+
+        fasta_path.write_text("\n".join(cleaned_lines) + "\n", encoding="utf-8")
+        logger.debug(f"Cleaned {fasta_path.name}.")
     except UnicodeDecodeError:
         logger.error(
             f"Encoding error reading {fasta_path}. Ensure it is a valid text file."
@@ -97,64 +109,66 @@ def filter_blast_table(
     pan_reaction_table_file: Path, strain_blast_hits_file: Path, output_file: Path
 ) -> None:
     """
-    Filters the panmodel reaction table based on DIAMOND blast hits.
+    Filters the panmodel reaction table based on DIAMOND blast hits using Polars LazyFrames
     """
-
-    def format_number(num):
-        return "{:.0f}".format(num) if num.is_integer() else str(num)
-
     logger.debug(f"Filtering reactions based on {strain_blast_hits_file.name}")
 
-    # Read diamond output
-    strain_blast_hits = pd.read_table(
-        strain_blast_hits_file,
-        header=None,
-        usecols=[0, 1, 11],
-        names=["Query", "Target", "Repr. bitscore"],
+    # 1. Setup LazyFrame for Blast Hits
+    blast_cols = [
+        "Query",
+        "Target",
+        "drop1",
+        "drop2",
+        "drop3",
+        "drop4",
+        "drop5",
+        "drop6",
+        "drop7",
+        "drop8",
+        "drop9",
+        "Repr. bitscore",
+    ]
+
+    # FIX: Added quote_char=None to prevent stray quotes from breaking chunk parsing
+    lf_blast = (
+        pl.scan_csv(
+            strain_blast_hits_file,
+            separator="\t",
+            has_header=False,
+            new_columns=blast_cols,
+            quote_char=None,
+        )
+        .select(["Query", "Target", "Repr. bitscore"])
+        .unique(subset=["Query"], keep="first")
     )
 
-    # Take the best hit
-    strain_blast_hits.drop_duplicates(
-        subset = ['Query'], keep='first', inplace=True
+    # 2. Setup LazyFrame for Pan-model Reactions
+    # FIX: Added quote_char=None, truncate_ragged_lines, and increased infer_schema_length
+    df_pan = pl.read_csv(
+        pan_reaction_table_file,
+        separator="\t",
+        comment_prefix="#",
+        quote_char=None,
+        truncate_ragged_lines=True,
+        infer_schema_length=10000,
+    )
+    lf_pan = df_pan.lazy()
+
+    # 3. Perform the joins and complex filtering lazily
+    lf_filtered = (
+        lf_blast.join(lf_pan, left_on="Target", right_on="stitle", how="inner")
+        .unique(subset=["Query", "Target", "rxn", "pathway"], keep="first")
+        .sort("Repr. bitscore", descending=True)
+        .unique(subset=["Query", "pathway", "dbhit"], keep="first")
+        .sort("Query")
+        .with_columns(pl.col("Query").alias("stitle"))
+        .drop(["Query", "Target", "Repr. bitscore"])
     )
 
-    # Read pan-model reactions
-    pan_reaction_table = pd.read_table(pan_reaction_table_file, comment="#")
-
-    # Merge and filter
-    strain_reaction_table = pd.merge(
-        strain_blast_hits,
-        pan_reaction_table,
-        how="inner",
-        left_on="Target",
-        right_on="stitle",
-    )
-
-    # TODO check biological relevance of dropping duplicates. What happens if a gene is involved in multiple reactions in the same pathway?
-    strain_reaction_table.drop_duplicates(
-        inplace=True, ignore_index=True, subset=["Query", "Target", "rxn", "pathway"]
-    )
-    strain_reaction_table.sort_values(
-        by="Repr. bitscore", ascending=False, inplace=True
-    )
-    # Change pathway to 'rxn' here?
-    strain_reaction_table.drop_duplicates(
-        subset=["Query", "pathway", "dbhit"], keep="first", inplace=True
-    )
-
-    strain_reaction_table.sort_index(inplace=True)
-    strain_reaction_table["stitle"] = strain_reaction_table["Query"]
-    strain_reaction_table.drop(
-        columns=["Query", "Target", "Repr. bitscore"], inplace=True
-    )
-
-    # Save output
-    strain_reaction_table.to_csv(
-        output_file,
-        sep="\t",
-        index=False,
-        na_rep="NA",
-        float_format=format_number,
+    # 4. Trigger execution graph and stream to disk
+    # FIX: Added quote_style="never" to ensure safe output for gapseq
+    lf_filtered.collect().write_csv(
+        output_file, separator="\t", null_value="NA", quote_style="never"
     )
 
 
@@ -199,29 +213,38 @@ def derive_strain_models(
     # 1. Prepare Genomes (Extract GBFFs and isolate FAAs)
     logger.info("Preparing input genomes for DIAMOND mapping...")
 
+    processed_genomes_map = {}
     for gbff in gbff_files:
         out_faa = proteomes_dir / f"{gbff.stem}.faa"
         extract_proteome_from_gbff(gbff, out_faa)
-        clean_fasta_file(out_faa)  # Clean the safe, isolated file
-        processed_genomes.append(out_faa)
+        clean_fasta_file(out_faa)
+        processed_genomes_map[gbff.stem] = out_faa
 
     for faa in faa_files:
-        out_faa = proteomes_dir / faa.name
-        if not out_faa.exists():
-            shutil.copy(faa, out_faa)  # Protect read-only original inputs
-        clean_fasta_file(out_faa)
-        processed_genomes.append(out_faa)
+        if faa.stem not in processed_genomes_map:
+            out_faa = proteomes_dir / faa.name
+            if not out_faa.exists():
+                shutil.copy(faa, out_faa)
+            clean_fasta_file(out_faa)
+            processed_genomes_map[faa.stem] = out_faa
+        else:
+            logger.warning(
+                f"Ignoring {faa.name} as {faa.stem}.gbff was already processed."
+            )
+
+    processed_genomes = list(processed_genomes_map.values())
 
     # Step 2: Build Diamond DB
     logger.info("Building Diamond database from pangenome...")
     db_path = output_dir / pangenome_fasta.stem
     run_command(["diamond", "makedb", "--in", str(pangenome_fasta), "-d", str(db_path)])
-    db_file = str(db_path) + ".dmnd"
+    db_file = db_path.with_suffix(".dmnd")
 
     # Step 3: Iterate through strains
-    for genome in processed_genomes:
+    total_strains = len(processed_genomes)
+    for idx, genome in enumerate(processed_genomes, start=1):
         strain_name = genome.stem
-        logger.info(f"--- Processing strain: {strain_name} ---")
+        logger.info(f"[{idx}/{total_strains}] --- Processing strain: {strain_name} ---")
 
         strain_dir = models_dir / strain_name
         strain_dir.mkdir(exist_ok=True)
@@ -236,7 +259,7 @@ def derive_strain_models(
                 "diamond",
                 "blastp",
                 "-d",
-                db_file,
+                str(db_file),
                 "-q",
                 str(genome),
                 "-o",
@@ -261,9 +284,9 @@ def derive_strain_models(
                 str(threads),
                 "-b",
                 str(gapseq_bits),
-                "-f",
                 "-M",
                 "prot",
+                "-f",
                 str(strain_dir),
                 str(genome),
             ],
@@ -323,27 +346,25 @@ def derive_strain_models(
 
         if xml_file.exists():
             xml_content = xml_file.read_text(encoding="utf-8")
-
-            # 1. Fix the exchange reaction tags
-            if "R_EX_" in xml_content:
-                xml_content = xml_content.replace("R_EX_", "EX_")
-
-            # 2. Fix the internal SBML Model ID (Sanitize for SBML SId rules)
-            # Replace any character that is NOT a letter, number, or underscore with an underscore
+            xml_content = xml_content.replace("R_EX_", "EX_")
             safe_model_id = re.sub(r"[^a-zA-Z0-9_]", "_", strain_name)
-
-            # SBML IDs also cannot start with a number. Catch that edge case just in case.
             if safe_model_id and safe_model_id[0].isdigit():
                 safe_model_id = f"M_{safe_model_id}"
 
-            xml_content = xml_content.replace(
-                'id="filtered_Reactions_tbl"', f'id="{safe_model_id}"'
+            # Fix: Replace the generic model identifiers gapseq generates.
+            # gapseq produces id/metaid="filtered_Reactions_tbl" (SBML SId)
+            # and name="filtered-Reactions.tbl" (human-readable).
+            xml_content = re.sub(
+                r'((?:id|metaid)=")filtered[-_]Reactions[._]?tbl"',
+                r"\g<1>" + safe_model_id + '"',
+                xml_content,
             )
-            xml_content = xml_content.replace(
-                'id="filtered-Reactions.tbl"', f'id="{safe_model_id}"'
+            xml_content = re.sub(
+                r'(name=")filtered[-.]Reactions[._]?tbl"',
+                r"\g<1>" + strain_name + '"',
+                xml_content,
             )
 
-            # Write to the new properly named file and delete the old gapseq one
             final_xml.write_text(xml_content, encoding="utf-8")
             xml_file.unlink()
             logger.debug(
