@@ -768,13 +768,17 @@ def project(
     click.echo(step_banner(3))
     strains_out = out_path / "03-strain_models"
 
-    # Narrow types for the static type checker: ensure required CLI args are present
-    assert (
-        genomes is not None
-        and fasta is not None
-        and panmodel_rxns is not None
-        and medium is not None
-    ), "Missing required arguments: genomes, fasta, panmodel_rxns, and medium must be provided"
+    # Defensive runtime validation for required CLI args; do not use assert here,
+    # because assertions can be removed with optimized Python execution.
+    if (
+        genomes is None
+        or fasta is None
+        or panmodel_rxns is None
+        or medium is None
+    ):
+        raise click.UsageError(
+            "Missing required arguments: genomes, fasta, panmodel_rxns, and medium must be provided"
+        )
 
     # Convert to Path objects before passing to the implementation (expects str | Path)
     draft_models_dir = derive_strain_models(
