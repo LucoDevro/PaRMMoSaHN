@@ -113,20 +113,26 @@ def test_run_downstream_with_curation(
 
 @patch("parmmosahn.pipeline.evaluate_final_models")
 @patch("parmmosahn.pipeline.gather_and_convert_models")
-@patch("shutil.copy")
-def test_run_downstream_no_curation_copies_models(
-    mock_copy,
+@patch("parmmosahn.pipeline.apply_curations")
+@patch("parmmosahn.pipeline.generate_curation_template")
+def test_run_downstream_no_curation_generates_template(
+    mock_gen_template,
+    mock_apply_curations,
     mock_gather,
     mock_evaluate,
     tmp_path: Path,
 ):
-    """Without a curation DB, draft models should be copied forward unchanged."""
+    """Without a curation DB, the pipeline should auto-generate a template and apply curations."""
     draft_dir = tmp_path / "drafts"
     draft_dir.mkdir()
     strain_dir = draft_dir / "strain_B"
     strain_dir.mkdir()
     draft_xml = strain_dir / "strain_B.xml"
     draft_xml.touch()
+
+    # generate_curation_template returns the path to the generated Excel
+    fake_db = tmp_path / "out" / "curation_template.xlsx"
+    mock_gen_template.return_value = fake_db
 
     output_dir = tmp_path / "out"
     run_downstream(
@@ -136,8 +142,11 @@ def test_run_downstream_no_curation_copies_models(
         no_polish=True,
     )
 
+    mock_gen_template.assert_called_once_with(draft_dir, output_dir)
     expected_curated_out = output_dir / "04-curated_models"
-    mock_copy.assert_called_once_with(draft_xml, expected_curated_out / draft_xml.name)
+    mock_apply_curations.assert_called_once_with(
+        draft_xml, fake_db, expected_curated_out
+    )
     mock_gather.assert_called_once()
 
 

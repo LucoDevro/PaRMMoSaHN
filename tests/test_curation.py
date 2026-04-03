@@ -42,7 +42,7 @@ def test_run_memote_snapshot(tmp_path: Path):
 
         mock_snapshot.side_effect = side_effect_snapshot
 
-        run_memote_snapshot(model_path, output_json, output_html)
+        run_memote_snapshot(model_path, output_json, output_html, subprocess_mode=False)
 
         mock_validate.assert_called_once_with(str(model_path))
         mock_test.assert_called_once_with(
@@ -67,7 +67,7 @@ def test_run_memote_snapshot_invalid_model(tmp_path: Path, caplog):
 
     with patch("parmmosahn.curation.memote_api.validate_model") as mock_validate:
         mock_validate.return_value = (None, None, {"errors": ["Invalid SBML"]})
-        run_memote_snapshot(model_path, output_json, output_html)
+        run_memote_snapshot(model_path, output_json, output_html, subprocess_mode=False)
 
         assert f"Failed to load model {model_path.name}" in caplog.text
         assert not output_json.exists()

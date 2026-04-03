@@ -27,7 +27,7 @@ def test_run_dir() -> Path:
 
 @pytest.fixture(scope="session")
 def precomputed_pan_fasta(test_run_dir: Path) -> Path:
-    p = test_run_dir / "00-pan_results" / "01-pangenome" / "test_run.faa"
+    p = test_run_dir / "01-pangenome" / "test_run.faa"
     if not p.exists():
         pytest.skip("Pre-computed pan FASTA not found")
     return p
@@ -35,7 +35,7 @@ def precomputed_pan_fasta(test_run_dir: Path) -> Path:
 
 @pytest.fixture(scope="session")
 def precomputed_pan_rxn_table(test_run_dir: Path) -> Path:
-    p = test_run_dir / "00-pan_results" / "02-panmodel" / "test_run-all-Reactions.tbl"
+    p = test_run_dir / "02-panmodel" / "test_run-all-Reactions.tbl"
     if not p.exists():
         pytest.skip("Pre-computed pan reaction table not found")
     return p

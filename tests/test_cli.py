@@ -42,7 +42,7 @@ def test_cli_pan(tmp_path: Path):
     assert result.exit_code == 0, result.output
     mock_run_pan.assert_called_once_with(
         genomes_dir,
-        Path("00-pan_results"),
+        Path("."),
         "clostridiales",
         threads=4,
         add_unique=False,
@@ -164,7 +164,7 @@ def test_cli_project_normal_mode(tmp_path: Path):
         patch("parmmosahn.models.derive_strain_models") as mock_derive,
         patch("parmmosahn.pipeline.run_downstream") as mock_downstream,
     ):
-        mock_derive.return_value = out / "03-strains" / "models"
+        mock_derive.return_value = out / "03-strain_models" / "models"
         result = runner.invoke(
             cli,
             [
@@ -204,7 +204,7 @@ def test_cli_project_performance_knobs_forwarded(tmp_path: Path):
         patch("parmmosahn.models.derive_strain_models") as mock_derive,
         patch("parmmosahn.pipeline.run_downstream"),
     ):
-        mock_derive.return_value = out / "03-strains" / "models"
+        mock_derive.return_value = out / "03-strain_models" / "models"
         runner.invoke(
             cli,
             [
@@ -237,9 +237,10 @@ def test_cli_project_performance_knobs_forwarded(tmp_path: Path):
 def test_cli_project_resume_mode(tmp_path: Path):
     """'project --resume' should call run_downstream with the existing curation DB."""
     out = tmp_path / "out"
-    drafts = out / "03-strains" / "models"
+    drafts = out / "03-strain_models" / "models"
     drafts.mkdir(parents=True)
-    curation_db = out / "curation_template.xlsx"
+    curation_db = out / "07-memote_reports" / "draft" / "curation_template.xlsx"
+    curation_db.parent.mkdir(parents=True)
     curation_db.touch()
     runner = CliRunner()
 
@@ -280,10 +281,13 @@ def test_cli_project_pause_for_curation(tmp_path: Path):
 
     with (
         patch("parmmosahn.models.derive_strain_models") as mock_derive,
-        patch("parmmosahn.curation.generate_curation_template"),
+        patch("parmmosahn.curation.generate_curation_template") as mock_gen,
         patch("parmmosahn.pipeline.run_downstream") as mock_downstream,
     ):
-        mock_derive.return_value = out / "03-strains" / "models"
+        mock_derive.return_value = out / "03-strain_models" / "models"
+        mock_gen.return_value = (
+            out / "07-memote_reports" / "draft" / "curation_template.xlsx"
+        )
         result = runner.invoke(
             cli,
             [
@@ -304,7 +308,7 @@ def test_cli_project_pause_for_curation(tmp_path: Path):
 
     assert result.exit_code == 0, result.output
     mock_downstream.assert_not_called()
-    assert "curation_template.xlsx" in result.output
+    assert "curation_template" in result.output
     assert str(out.resolve()) in result.output
 
 
@@ -430,7 +434,7 @@ def test_cli_project_config_file(tmp_path: Path):
         patch("parmmosahn.models.derive_strain_models") as mock_derive,
         patch("parmmosahn.pipeline.run_downstream"),
     ):
-        mock_derive.return_value = out / "03-strains" / "models"
+        mock_derive.return_value = out / "03-strain_models" / "models"
         result = runner.invoke(
             cli,
             ["project", "-o", str(out), "--config", str(config_file)],

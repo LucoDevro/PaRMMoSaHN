@@ -63,7 +63,7 @@ class TestPanResults:
         assert len(ids) == len(set(ids)), "Duplicate sequence IDs in pan FASTA"
 
     def test_pangenome_h5_exists(self, test_run_dir: Path):
-        h5 = test_run_dir / "00-pan_results" / "01-pangenome" / "pangenome.h5"
+        h5 = test_run_dir / "01-pangenome" / "pangenome.h5"
         assert h5.exists(), "pangenome.h5 not found"
         assert h5.stat().st_size > 1_000_000, "pangenome.h5 suspiciously small (<1MB)"
 
