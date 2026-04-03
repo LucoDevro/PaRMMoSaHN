@@ -24,3 +24,44 @@ permission denied while trying to connect to the Docker daemon socket at unix://
 permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.24/containers/json?all=1&filters=%7B%22label%22%3A%7B%22com.docker.compose.config-hash%22%3Atrue%2C%22com.docker.compose.project%3Ddata%22%3Atrue%7D%7D": dial unix /var/run/docker.sock: connect: permission denied
 2026-04-03 14:36:11,918 - parmmosahn.curation - INFO - Shutting down local ModelPolisher databases...
 2026-04-03 14:36:11,975 - parmmosahn.curation - WARNING - Polishing finished with 4 failures and 0 successes.
+
+(base) r0715377@set-d-di-09006:~$ docker info
+Client: Docker Engine - Community
+ Version:    25.0.0
+ Context:    default
+ Debug Mode: false
+ Plugins:
+  buildx: Docker Buildx (Docker Inc.)
+    Version:  v0.12.0-desktop.2
+    Path:     /usr/lib/docker/cli-plugins/docker-buildx
+  compose: Docker Compose (Docker Inc.)
+    Version:  v2.23.3-desktop.2
+    Path:     /usr/lib/docker/cli-plugins/docker-compose
+  dev: Docker Dev Environments (Docker Inc.)
+    Version:  v0.1.0
+    Path:     /usr/lib/docker/cli-plugins/docker-dev
+  extension: Manages Docker extensions (Docker Inc.)
+    Version:  v0.2.21
+    Path:     /usr/lib/docker/cli-plugins/docker-extension
+  feedback: Provide feedback, right in your terminal! (Docker Inc.)
+    Version:  0.1
+    Path:     /usr/lib/docker/cli-plugins/docker-feedback
+  init: Creates Docker-related starter files for your project (Docker Inc.)
+    Version:  v0.1.0-beta.10
+    Path:     /usr/lib/docker/cli-plugins/docker-init
+  sbom: View the packaged-based Software Bill Of Materials (SBOM) for an image (Anchore Inc.)
+    Version:  0.6.0
+    Path:     /usr/lib/docker/cli-plugins/docker-sbom
+  scan: Docker Scan (Docker Inc.)
+    Version:  v0.26.0
+    Path:     /usr/lib/docker/cli-plugins/docker-scan
+  scout: Docker Scout (Docker Inc.)
+    Version:  v1.2.0
+    Path:     /usr/lib/docker/cli-plugins/docker-scout
+
+Server:
+ERROR: permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.24/info": dial unix /var/run/docker.sock: connect: permission denied
+errors pretty printing info
+
+
+
