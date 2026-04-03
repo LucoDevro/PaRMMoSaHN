@@ -93,10 +93,14 @@ def run_command(
             logger.error(f"Command failed: {' '.join(cmd)}")
             if e.stderr:
                 logger.error(f"Standard Error output:\n{e.stderr}")
-            # Ensure ToolExecutionError is defined/imported in your file, otherwise use Exception
-            raise Exception(f"Tool failed with exit code {e.returncode}") from e
 
+            error_details = [f"Tool failed with exit code {e.returncode}"]
+            if e.stderr:
+                error_details.append(f"stderr: {e.stderr.strip()}")
+            elif stderr_file is not None:
+                error_details.append(f"see stderr log at {stderr_file}")
 
+            raise ToolExecutionError("; ".join(error_details)) from e
 def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
     """
     Extracts translated CDS features from a GenBank flat file into a FASTA file.

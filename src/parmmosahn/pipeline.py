@@ -124,10 +124,14 @@ def run_downstream(
     current_models_dir = curated_out
 
     # --- STEP 5: ModelPolisher via Docker (Optional) ---
+    # Map engine name to the actual binary used by run_model_polisher so the
+    # availability check reflects the real command (e.g. podman -> podman-compose).
+    engine_binary_map = {"docker": "docker", "podman": "podman-compose", "apptainer": "apptainer"}
+    engine_bin = engine_binary_map.get(engine, engine)
     if no_polish:
         logger.info(step_banner(5, "SKIPPED by user"))
-    elif not shutil.which(engine):
-        logger.warning(step_banner(5, f"SKIPPED - {engine} is not installed"))
+    elif not shutil.which(engine_bin):
+        logger.warning(step_banner(5, f"SKIPPED - {engine_bin} is not installed"))
     else:
         logger.info(step_banner(5, engine))
         polished_out = output_dir / "05-polished_models"
