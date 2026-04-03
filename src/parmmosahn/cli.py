@@ -465,9 +465,7 @@ def strains(
     if medium is None:
         missing_args.append("medium")
     if missing_args:
-        raise click.UsageError(
-            "Missing required arguments: " + ", ".join(missing_args)
-        )
+        raise click.UsageError("Missing required arguments: " + ", ".join(missing_args))
 
     derive_strain_models(
         genomes_dir=Path(genomes),
@@ -770,12 +768,7 @@ def project(
 
     # Defensive runtime validation for required CLI args; do not use assert here,
     # because assertions can be removed with optimized Python execution.
-    if (
-        genomes is None
-        or fasta is None
-        or panmodel_rxns is None
-        or medium is None
-    ):
+    if genomes is None or fasta is None or panmodel_rxns is None or medium is None:
         raise click.UsageError(
             "Missing required arguments: genomes, fasta, panmodel_rxns, and medium must be provided"
         )
