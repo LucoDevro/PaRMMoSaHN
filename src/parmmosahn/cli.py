@@ -1,4 +1,5 @@
 import logging
+import time
 from pathlib import Path
 
 import click
@@ -9,11 +10,36 @@ from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.pangenome import build_pangenome
 from parmmosahn.results import gather_and_convert_models
 
-# Set up logging globally here in the CLI entrypoint
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds into a human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m, s = divmod(int(seconds), 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m {s}s"
+
+
+def _setup_logging(verbose: bool, quiet: bool) -> None:
+    """Configure logging level based on CLI flags."""
+    if verbose:
+        level = logging.DEBUG
+    elif quiet:
+        level = logging.WARNING
+    else:
+        level = logging.INFO
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    # Suppress noisy cobra solver warnings that clutter output
+    logging.getLogger("cobra.core.model").setLevel(logging.WARNING)
 
 
 @click.group(
@@ -22,15 +48,21 @@ logger = logging.getLogger(__name__)
         auto_envvar_prefix="PARMMOSAHN",
     )
 )
-@click.version_option()
-def cli():
+@click.version_option(None, "-v", "--version")
+@click.option("--verbose", is_flag=True, help="Show debug-level output.")
+@click.option("-q", "--quiet", is_flag=True, help="Only show warnings and errors.")
+@click.pass_context
+def cli(ctx, verbose, quiet):
     """
     PaRMMoSaHN: Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks.
 
     All options can also be set via environment variables prefixed with PARMMOSAHN_.
     For example: PARMMOSAHN_THREADS=32, PARMMOSAHN_BIOMASS=neg.
     """
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
+    ctx.obj["quiet"] = quiet
+    _setup_logging(verbose, quiet)
 
 
 @cli.command()
@@ -44,10 +76,10 @@ def cli():
 @click.option(
     "-o",
     "--output",
-    default="00-pan_results",
+    default=".",
     type=click.Path(),
     show_default=True,
-    help="Target base directory for pan-related output files.",
+    help="Target base directory for pan-related output (creates 01-pangenome/ and 02-panmodel/ inside).",
 )
 @click.option(
     "-l",
@@ -93,7 +125,7 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
 
         cfg = load_config(Path(config))
         genomes = genomes or cfg.get("genomes")
-        output = output or cfg.get("output", "00-pan_results")
+        output = output or cfg.get("output", ".")
         label = label or cfg.get("label")
         threads = threads if threads != 14 else cfg.get("threads", 14)
         add_unique = add_unique or cfg.get("add_unique", False)
@@ -113,6 +145,241 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
         add_unique=add_unique,
         soft_core_override=soft_core,
     )
+
+
+@cli.command(name="run")
+@click.option(
+    "-g",
+    "--genomes",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory of input genome files (.gbff format).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Target base directory for all pipeline output.",
+)
+@click.option(
+    "-l",
+    "--label",
+    required=True,
+    help="A descriptive label for the pangenome (e.g., 'clostridiales').",
+)
+@click.option(
+    "-m",
+    "--medium",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to the media CSV file used for gapfilling.",
+)
+@click.option(
+    "-t",
+    "--threads",
+    default=14,
+    show_default=True,
+    help="Number of CPU threads to allocate.",
+)
+@click.option(
+    "--diamond-bits",
+    default=150,
+    show_default=True,
+    help="Minimum bitscore threshold for DIAMOND blastp alignment.",
+)
+@click.option(
+    "--gapseq-bits",
+    default=150,
+    show_default=True,
+    help="Minimum bitscore threshold for gapseq pathway/transport searches.",
+)
+@click.option(
+    "--biomass",
+    default="pos",
+    show_default=True,
+    help="Biomass reaction type for gapseq draft model generation (e.g. 'pos', 'neg').",
+)
+@click.option(
+    "--add-unique",
+    is_flag=True,
+    help="Include unique genes (not in soft-core) in the pan-model.",
+)
+@click.option(
+    "--soft-core",
+    default=None,
+    type=float,
+    help="Override the soft-core frequency threshold (fraction 0-1).",
+)
+@click.option(
+    "--no-polish",
+    is_flag=True,
+    help="Skip the ModelPolisher execution step.",
+)
+@click.option(
+    "-e",
+    "--engine",
+    type=click.Choice(["docker", "podman", "apptainer"]),
+    default="docker",
+    show_default=True,
+    help="Container engine for ModelPolisher.",
+)
+@click.option(
+    "-c",
+    "--curation-db",
+    type=click.Path(exists=True),
+    help="Path to an existing Excel curation database for automated curation.",
+)
+@click.option(
+    "--pause-for-curation",
+    is_flag=True,
+    help="Pause after memote evaluation to allow manual curation edits before continuing.",
+)
+def run_pipeline(
+    genomes,
+    output,
+    label,
+    medium,
+    threads,
+    diamond_bits,
+    gapseq_bits,
+    biomass,
+    add_unique,
+    soft_core,
+    no_polish,
+    engine,
+    curation_db,
+    pause_for_curation,
+):
+    """Full pipeline: genomes -> pangenome -> pan-model -> strain models -> curated -> polished -> annotated -> final models."""
+    import sys
+    from datetime import datetime, timezone
+
+    from parmmosahn.models import derive_strain_models
+    from parmmosahn.pipeline import run_downstream, run_pan, write_pipeline_summary
+
+    out_path = Path(output)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    # Set up error log file
+    error_log = out_path / "errors.log"
+    error_handler = logging.FileHandler(str(error_log), mode="w")
+    error_handler.setLevel(logging.WARNING)
+    error_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(error_handler)
+
+    t_start = time.time()
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    command = " ".join(sys.argv)
+    steps = {}
+
+    # --- Steps 1-2: Pangenome & Pan-model ---
+    click.echo(f"Input:  {genomes}")
+    click.echo(f"Output: {out_path}")
+    click.echo(f"Label:  {label}")
+    click.echo("")
+
+    click.echo("Steps 1-2: Building pangenome and pan-model...")
+    t_step = time.time()
+    rxn_table, fasta = run_pan(
+        Path(genomes),
+        out_path,
+        label,
+        threads=threads,
+        add_unique=add_unique,
+        soft_core_override=soft_core,
+    )
+    steps["01-pangenome + 02-panmodel"] = {
+        "status": "completed",
+        "elapsed": _format_elapsed(time.time() - t_step),
+    }
+
+    # --- Step 3: Strain models ---
+    click.echo("Step 3: Deriving strain-specific models...")
+    t_step = time.time()
+    strains_out = out_path / "03-strain_models"
+    draft_models_dir = derive_strain_models(
+        genomes_dir=Path(genomes),
+        pangenome_fasta=fasta,
+        panmodel_rxn_table=rxn_table,
+        output_dir=strains_out,
+        medium_file=Path(medium),
+        threads=threads,
+        diamond_bits=diamond_bits,
+        gapseq_bits=gapseq_bits,
+        biomass=biomass,
+    )
+    steps["03-strain_models"] = {
+        "status": "completed",
+        "elapsed": _format_elapsed(time.time() - t_step),
+    }
+
+    # --- Optional pause for human-in-the-loop curation ---
+    if pause_for_curation:
+        from parmmosahn.curation import generate_curation_template
+
+        click.echo("Preparing curation template (running memote on drafts)...")
+        template_path = generate_curation_template(draft_models_dir, out_path)
+        click.echo("=== Pipeline paused for Human-in-the-Loop Curation ===")
+        click.echo(
+            f"ACTION REQUIRED: Fill out the curation template at {template_path.resolve()}"
+        )
+        click.echo(
+            f"When finished, resume with: parmmosahn project --resume -o {out_path.resolve()}"
+        )
+        return
+
+    # --- Steps 4-7: Downstream processing ---
+    click.echo(
+        "Steps 4-7: Curation, polishing, annotation, gather, final evaluation..."
+    )
+    t_step = time.time()
+    run_downstream(
+        draft_models_dir=draft_models_dir,
+        output_dir=out_path,
+        curation_db=Path(curation_db) if curation_db else None,
+        no_polish=no_polish,
+        engine=engine,
+    )
+    steps["04-07 downstream"] = {
+        "status": "completed",
+        "elapsed": _format_elapsed(time.time() - t_step),
+    }
+
+    total_elapsed = time.time() - t_start
+
+    # Write pipeline summary
+    parameters = {
+        "genomes": str(genomes),
+        "medium": str(medium),
+        "label": label,
+        "threads": threads,
+        "diamond_bits": diamond_bits,
+        "gapseq_bits": gapseq_bits,
+        "biomass": biomass,
+        "soft_core": soft_core,
+        "engine": engine,
+        "no_polish": no_polish,
+    }
+    write_pipeline_summary(
+        out_path,
+        steps,
+        parameters,
+        command=command,
+        started_at=started_at,
+        total_elapsed=total_elapsed,
+    )
+
+    # Remove empty errors.log
+    logging.getLogger().removeHandler(error_handler)
+    error_handler.close()
+    if error_log.exists() and error_log.stat().st_size == 0:
+        error_log.unlink()
+
+    click.echo(f"\nPipeline complete! ({_format_elapsed(total_elapsed)} total)")
+    click.echo(f"Results: {out_path}")
 
 
 @cli.command()
@@ -268,7 +535,15 @@ def polish(models, output, engine):
     """Step 5: Polish models using Palsson lab ModelPolisher (requires a container engine)."""
     from parmmosahn.curation import run_model_polisher
 
+    models_path = Path(models)
+    xml_count = len(list(models_path.rglob("*.xml")))
+    click.echo(f"Input:  {models_path} ({xml_count} models)")
+    click.echo(f"Output: {output}")
+    click.echo(f"Engine: {engine}")
+
+    t_start = time.time()
     run_model_polisher(models, output, engine=engine)
+    click.echo(f"Done ({_format_elapsed(time.time() - t_start)} total)")
 
 
 @cli.command()
@@ -289,8 +564,14 @@ def polish(models, output, engine):
 )
 def gather(models, output):
     """Step 6: Gather models and convert to JSON/MATLAB formats."""
-    click.echo("Gathering and converting models...")
+    models_path = Path(models)
+    xml_count = len(list(models_path.rglob("*.xml")))
+    click.echo(f"Input:  {models_path} ({xml_count} models)")
+    click.echo(f"Output: {output}")
+
+    t_start = time.time()
     gather_and_convert_models(models, output)
+    click.echo(f"Done ({_format_elapsed(time.time() - t_start)} total)")
 
 
 @cli.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -381,7 +662,7 @@ def gather(models, output):
     "-d",
     "--drafts",
     type=click.Path(exists=True, path_type=Path),
-    help="Optional path to draft models for zooming/resuming. Defaults to <output>/03-strains/models.",
+    help="Optional path to draft models for zooming/resuming. Defaults to <output>/03-strain_models/models.",
 )
 @click.option(
     "--config",
@@ -438,14 +719,16 @@ def project(
     # Handle Resume mode
     if resume:
         if not drafts:
-            drafts = out_path / "03-strains" / "models"
+            drafts = out_path / "03-strain_models" / "models"
             if not drafts.exists():
                 raise click.BadParameter(
                     f"Could not find draft models at {drafts}. Please specify --drafts manually."
                 )
 
         if not curation_db:
-            curation_db = out_path / "curation_template.xlsx"
+            curation_db = (
+                out_path / "07-memote_reports" / "draft" / "curation_template.xlsx"
+            )
         else:
             curation_db = Path(curation_db)
 
@@ -476,7 +759,7 @@ def project(
 
     # 1. Run Strain Derivation (Step 3)
     click.echo(step_banner(3))
-    strains_out = out_path / "03-strains"
+    strains_out = out_path / "03-strain_models"
 
     # Narrow types for the static type checker: ensure required CLI args are present
     assert (
@@ -501,10 +784,10 @@ def project(
 
     if pause_for_curation:
         click.echo("=== Preparing Human-in-the-Loop Curation (running memote) ===")
-        generate_curation_template(draft_models_dir, out_path)
+        template_path = generate_curation_template(draft_models_dir, out_path)
         click.echo("=== Pipeline paused for Human-in-the-Loop Curation ===")
         click.echo(
-            f"ACTION REQUIRED: Please fill out the curation template at {(out_path / 'curation_template.xlsx').resolve()}"
+            f"ACTION REQUIRED: Please fill out the curation template at {template_path.resolve()}"
         )
         click.echo(
             f"When finished, resume using: parmmosahn project --resume -o {out_path.resolve()}"
@@ -535,7 +818,7 @@ _INIT_CONFIG_TEMPLATE = """\
 # medium: /path/to/medium.csv        # Media CSV file for gapfilling
 
 # --- Output ---
-# output: 00-pan_results             # Base output directory
+# output: .                          # Base output directory (creates 01-pangenome/, 02-panmodel/ inside)
 
 # --- Pangenome (pan command) ---
 # label: myproject                   # Label for the pangenome
@@ -720,23 +1003,66 @@ def evaluate(models, output, curation_template):
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    xml_files = list(models_path.rglob("*.xml"))
+    xml_files = sorted(models_path.rglob("*.xml"))
     if not xml_files:
         click.echo(f"No XML models found in {models_path}")
         return
 
-    click.echo(f"Evaluating {len(xml_files)} model(s) with memote...")
-    for xml in xml_files:
+    n = len(xml_files)
+    click.echo(f"Input:  {models_path} ({n} models)")
+    click.echo(f"Output: {output_path}")
+    click.echo(f"Evaluating {n} model(s) with memote...")
+
+    t_start = time.time()
+    for i, xml in enumerate(xml_files, 1):
+        t_model = time.time()
+        click.echo(f"  [{i}/{n}] {xml.stem} ...", nl=False)
         out_json = output_path / f"{xml.stem}.json"
         out_html = output_path / f"{xml.stem}.html"
         run_memote_snapshot(xml, out_json, out_html)
+        click.echo(f" done ({_format_elapsed(time.time() - t_model)})")
 
     if curation_template:
         out_excel = output_path / "curation_template.xlsx"
         extract_memote_problems(output_path, models_path, out_excel)
         click.echo(f"Curation template saved to {out_excel}")
 
-    click.echo(f"Memote reports saved to {output_path}")
+    click.echo(
+        f"Memote reports saved to {output_path} ({_format_elapsed(time.time() - t_start)} total)"
+    )
+
+
+@cli.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml) to enrich.",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Directory for the annotation-enriched models.",
+)
+def annotate(models, output):
+    """Enrich model annotations for FAIR compliance (genes, reactions)."""
+    from parmmosahn.annotation import enrich_models_directory
+
+    models_path = Path(models)
+    output_path = Path(output)
+
+    xml_count = len(list(models_path.rglob("*.xml")))
+    click.echo(f"Input:  {models_path} ({xml_count} models)")
+    click.echo(f"Output: {output_path}")
+
+    t_start = time.time()
+    enrich_models_directory(models_path, output_path)
+    click.echo(
+        f"Enriched models saved to {output_path} ({_format_elapsed(time.time() - t_start)} total)"
+    )
 
 
 @cli.command()
