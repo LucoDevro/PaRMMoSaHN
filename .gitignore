@@ -293,10 +293,14 @@ output*/
 notebook*/
 presentation*/
 
+run_pipeline.sh
+data_pipeline/
+project_test/
 
 # commands md
 commands.md
 CLAUDE.md
+CLI_UX_IMPROVEMENTS.md
 
 #Other docker compose files
 !src/parmmosahn/data/docker-compose.yml
