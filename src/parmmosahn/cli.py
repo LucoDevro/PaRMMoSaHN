@@ -455,13 +455,19 @@ def strains(
     """Step 3: Derive strain-specific models using diamond and gapseq."""
     click.echo("Deriving strain models...")
 
-    # Narrow types for static checkers: ensure required args are present
-    assert (
-        genomes is not None
-        and fasta is not None
-        and panmodel_rxns is not None
-        and medium is not None
-    ), "Missing required arguments: genomes, fasta, panmodel_rxns, and medium must be provided"
+    missing_args = []
+    if genomes is None:
+        missing_args.append("genomes")
+    if fasta is None:
+        missing_args.append("fasta")
+    if panmodel_rxns is None:
+        missing_args.append("panmodel_rxns")
+    if medium is None:
+        missing_args.append("medium")
+    if missing_args:
+        raise click.UsageError(
+            "Missing required arguments: " + ", ".join(missing_args)
+        )
 
     derive_strain_models(
         genomes_dir=Path(genomes),
