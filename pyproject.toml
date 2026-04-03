@@ -84,4 +84,4 @@ markers = [
 addopts = "-m 'not biological'"
 
 [tool.setuptools.package-data]
-parmmosahn = ["data/*.yml"]
+parmmosahn = ["data/*.yml", "data/*.tsv"]

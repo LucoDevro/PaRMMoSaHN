@@ -304,7 +304,8 @@ CLI_UX_IMPROVEMENTS.md
 
 #Other docker compose files
 !src/parmmosahn/data/docker-compose.yml
-src/parmmosahn/data/*
+!src/parmmosahn/data/*.tsv
+src/parmmosahn/data/docker-compose*.yml
 
 # Helper scripts
 get_excel.py
