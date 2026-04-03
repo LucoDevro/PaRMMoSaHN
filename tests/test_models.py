@@ -9,7 +9,7 @@ from parmmosahn.models import clean_fasta_file, filter_blast_table
 def test_clean_fasta_file_with_bad_chars(tmp_path: Path):
     """Test that problematic characters are removed from FASTA files."""
     fasta_file = tmp_path / "test.faa"
-    # Create a dummy fasta file with the problematic ‘’’ character
+    # Create a dummy FASTA file containing the right single quotation mark character (’)
     fasta_file.write_text(">seq1’\nATGC’C\n", encoding="utf-8")
 
     clean_fasta_file(fasta_file)
