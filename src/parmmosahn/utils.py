@@ -101,6 +101,8 @@ def run_command(
                 error_details.append(f"see stderr log at {stderr_file}")
 
             raise ToolExecutionError("; ".join(error_details)) from e
+
+
 def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
     """
     Extracts translated CDS features from a GenBank flat file into a FASTA file.

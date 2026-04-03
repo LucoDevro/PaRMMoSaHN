@@ -126,7 +126,11 @@ def run_downstream(
     # --- STEP 5: ModelPolisher via Docker (Optional) ---
     # Map engine name to the actual binary used by run_model_polisher so the
     # availability check reflects the real command (e.g. podman -> podman-compose).
-    engine_binary_map = {"docker": "docker", "podman": "podman-compose", "apptainer": "apptainer"}
+    engine_binary_map = {
+        "docker": "docker",
+        "podman": "podman-compose",
+        "apptainer": "apptainer",
+    }
     engine_bin = engine_binary_map.get(engine, engine)
     if no_polish:
         logger.info(step_banner(5, "SKIPPED by user"))
