@@ -132,9 +132,10 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
         if soft_core is None:
             soft_core = cfg.get("soft_core")
     # Ensure the required values are available (may be provided via config)
-    assert (
-        genomes is not None and label is not None
-    ), "Missing required arguments: genomes and label must be provided either via CLI or config"
+    if genomes is None or label is None:
+        raise click.UsageError(
+            "Missing required arguments: genomes and label must be provided either via CLI or config"
+        )
 
     click.echo(f"Building pangenome and pan-model '{label}'...")
     run_pan(
