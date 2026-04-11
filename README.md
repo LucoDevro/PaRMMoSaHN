@@ -10,143 +10,306 @@
 
 **PaRMMoSaHN** is a Python-based pipeline that bridges partitioned pangenome graphs with high-fidelity metabolic reconstruction.
 
-Instead of building metabolic models for hundreds of strains from scratch (which is computationally expensive and prone to inconsistent gap-filling), PaRMMoSaHN builds a singular high-quality "pan-model" and rapidly derives strain-specific models by mapping strains to the pan-model via homology networks.
+Instead of building genome-scale metabolic models (GEMs) for hundreds of strains from scratch -- which is computationally expensive and produces inconsistently gap-filled models -- PaRMMoSaHN builds a single high-quality **pan-model** from the pangenome and rapidly derives strain-specific models by mapping individual strains to this reference via homology networks.
 
-## Features
+### Why this approach?
 
-- **Pangenome Construction:** Automated soft-core genome extraction using [PPanGGOLiN](https://github.com/labgem/PPanGGOLiN).
-- **Pan-Model Generation:** High-fidelity pangenome-scale metabolic network reconstruction via [gapseq](https://gapseq.readthedocs.io/).
-- **Rapid Strain Derivation:** Maps individual strains to the pan-model using [DIAMOND](https://github.com/bbuchfink/diamond) and gap-fills missing reactions.
-- **Automated Curation:** Handles duplicates, stoichiometry correction, and MEMOTE-driven curation via an intuitive Excel decision database using `cobrapy`.
-- **FAIR Compliance:** Optionally polishes and annotates final SBML models using the Palsson lab's [ModelPolisher](https://github.com/draeger-lab/ModelPolisher) (supports Docker, Podman, and Apptainer for HPCs).
-- **Multi-format Export:** Exports final validated models to SBML (.xml), JSON, and MATLAB formats.
+Existing tools either reconstruct each strain independently (gapseq, CarveMe) or require a manually curated species-specific reference (Bactabolize, KpSC pan). PaRMMoSaHN is the first **species-agnostic, automated pipeline** that leverages PPanGGOLiN pangenome partitioning to build a shared metabolic reference, then projects it onto strains using DIAMOND sequence homology. This produces models that are:
+
+- **Consistent** -- all strains are derived from the same metabolic reference, eliminating artificial variation from independent gap-filling
+- **Fast** -- strain projection takes minutes instead of hours per genome
+- **Scalable** -- `.done` checkpointing and isolated evaluation processes handle hundreds of strains
+
+## Pipeline
+
+```
+   Genomes (.gbff)
+        |
+        v
+  [Step 1] PPanGGOLiN pangenome construction
+        |   -> soft-core protein families FASTA
+        v
+  [Step 2] gapseq metabolic pathway prediction on pangenome
+        |   -> pan-model reaction table
+        v
+  [Step 3] Per-strain model derivation
+        |   DIAMOND blastp -> filter pan-model -> gapseq draft + gapfill
+        |   -> one SBML model per strain
+        v
+  [Step 4] Automated curation (memote evaluation + duplicate/imbalance fixes)
+        |   Optional: pause for manual curation via Excel spreadsheet
+        v
+  [Step 5] ModelPolisher (optional, requires Docker/Podman/Apptainer)
+        |
+  [Step 5b] Annotation enrichment (NCBI protein, BRENDA, RHEA)
+        |
+        v
+  [Step 6] Gather & convert (SBML, JSON, MATLAB)
+        |
+        v
+  [Step 7] Final memote FAIR-compliance evaluation
+```
+
+### Output structure
+
+```
+output/
+├── 01-pangenome/          # PPanGGOLiN pangenome + soft-core FASTA
+├── 02-panmodel/           # gapseq reaction/pathway tables
+├── 03-strain_models/      # Per-strain DIAMOND matches, proteomes, draft models
+├── 04-curated_models/     # Models after automated curation
+├── 05-polished_models/    # ModelPolisher output (if enabled)
+├── 05b-annotated_models/  # SBML enriched with NCBI/BRENDA/RHEA annotations
+├── 06-final_models/       # Final models in XML, JSON, and MATLAB formats
+├── 07-memote_reports/     # draft/ and final/ memote HTML+JSON reports
+├── curation_template.xlsx # Memote-derived spreadsheet for manual curation
+├── pipeline_summary.json  # Run metadata, timing, parameters, model statistics
+└── errors.log             # WARNING+ messages (only if errors occurred)
+```
 
 ## Installation
 
-Because PaRMMoSaHN orchestrates several complex bioinformatics binaries, **you must use Conda/Mamba** to install the environment. Standard `pip` cannot install tools like `diamond` or `gapseq`.
+PaRMMoSaHN orchestrates several bioinformatics tools that cannot be installed via pip alone. Use Conda/Mamba to set up the environment.
 
-### 1. Create the Conda Environment
-Download the `environment.yml` file from this repository. This file strictly pins the compatible versions of all external dependencies. *(Note: We highly recommend using `mamba` or `micromamba` for faster installation).*
+### 1. Create the Conda environment
 
 ```bash
-conda env create -f environment.yml
+# mamba is recommended for faster dependency resolution
+mamba env create -f environment.yml
 conda activate parmmosahn_env
-
 ```
 
 ### 2. Install PaRMMoSaHN
 
-*(Currently in Private Beta)* Install the package directly from GitHub:
+```bash
+pip install -e .
+```
+
+Or directly from GitHub:
 
 ```bash
-pip install "git+[https://github.com/robbedewin/PaRMMoSaHN.git@v0.1.0](https://github.com/robbedewin/PaRMMoSaHN.git@v0.1.0)"
-
+pip install "git+https://github.com/robbedewin/PaRMMoSaHN.git"
 ```
+
+### 3. Verify the installation
+
+```bash
+parmmosahn doctor
+```
+
+This checks that all required external tools (PPanGGOLiN, gapseq, DIAMOND) and optional container engines (Docker, Podman, Apptainer) are available.
 
 ## Quick Start
 
-PaRMMoSaHN is primarily driven through its Command Line Interface (CLI). There are three main ways to run the pipeline.
-
-### Workflow A: Fully Automated Run (No Manual Curation)
-To execute the pipeline from start to finish, automatically carrying forward draft models without manual intervention, simply run:
+### Workflow A: Full automated pipeline
 
 ```bash
 parmmosahn run \
-  --genomes-dir /path/to/gbff_files/ \
-  --output-dir ./parmmosahn_results/ \
-  --label My_Strains \
-  --medium medium_config.csv \
-  --threads 14
+  -g /path/to/genomes/ \
+  -o ./results/ \
+  -l clostridiales \
+  -m medium.csv \
+  -t 14
 ```
 
-### Required Inputs
+**Required inputs:**
+| Option | Description |
+|--------|-------------|
+| `-g, --genomes` | Directory containing annotated genomes in GenBank format (`.gbff`) |
+| `-o, --output` | Output base directory |
+| `-l, --label` | Label for the pangenome (used in filenames) |
+| `-m, --medium` | Growth medium CSV for gap-filling (gapseq format) |
 
-1. **`--genomes-dir`**: A directory containing your strain genomes in GenBank format (`.gbff`).
-2. **`--medium`**: A `.csv` file defining the growth medium for gap-filling (gapseq format).
-3. **`--label`**: A string label for the pangenome/pan-model output files (e.g., 'clostridiales').
+**Optional parameters:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-t, --threads` | 75% of CPUs | Number of CPU threads |
+| `--diamond-bits` | 150 | DIAMOND blastp bitscore threshold |
+| `--gapseq-bits` | 150 | gapseq pathway search bitscore threshold |
+| `--biomass` | `pos` | Biomass reaction type (`pos` or `neg`) |
+| `--add-unique` | off | Include unique/cloud genes in pan-model |
+| `--soft-core` | 2/N | Override soft-core frequency threshold |
+| `--no-polish` | off | Skip ModelPolisher step |
+| `-e, --engine` | `docker` | Container engine (`docker`, `podman`, `apptainer`) |
+| `-c, --curation-db` | none | Path to existing curation spreadsheet |
+| `--pause-for-curation` | off | Pause after draft evaluation for manual curation |
 
+### Workflow B: Human-in-the-loop curation
 
-### Workflow B: Human-in-the-Loop Curation
-
-For highly accurate models, PaRMMoSaHN allows you to pause the pipeline, manually evaluate the draft models using an automatically generated Excel spreadsheet, and then resume the pipeline to polish and export them.
-
-**Step 1: Generate Drafts & Auto-Evaluate**
-Use the `--stop-after-drafts` flag. The pipeline will build the pangenome, pan-model, and draft strains. It will then automatically run Memote to extract mass imbalances and duplicate reactions, generate a `curation_template.xlsx` file, and pause.
+For maximum model quality, pause the pipeline after draft model evaluation, manually review the curation spreadsheet, then resume:
 
 ```bash
+# Step 1: Run pipeline and pause for manual curation
 parmmosahn run \
-  --genomes-dir ./data \
-  --output-dir ./results \
-  --label My_Strains \
-  --medium medium.csv \
-  --stop-after-drafts
+  -g ./genomes/ -o ./results/ -l my_species -m medium.csv \
+  --pause-for-curation
 
+# -> Edit results/curation_template.xlsx in Excel
+#    Fill the 'duplicate_reactions' and 'curated_imbalances' sheets
+
+# Step 2: Resume pipeline with your curation decisions
+parmmosahn project --resume -o ./results/
 ```
 
-*Open the resulting `results/curation_template.xlsx` in Excel, make your curation decisions in the `curated_imbalances` and `duplicate_reactions` sheets, and save the file.*
+The curation template has three sheets:
+- **duplicate_reactions** -- pairs of duplicate reactions with decision options (keep 1, keep 2, drop both, keep both)
+- **curated_imbalances** -- mass/charge-imbalanced reactions with a column for corrected formulas
+- **ignored_imbalances** -- reactions to leave intact despite imbalance (with justification)
 
-**Step 2: Resume the Pipeline**
-Run the `resume` command. It will auto-detect your Excel file, apply your curations, run SBO annotation and ModelPolisher, and generate the final FAIR-compliant SBML models.
+### Workflow C: Rapid projection of new isolates
 
-```bash
-parmmosahn resume \
-  --output-dir ./results
-
-```
-
-### Workflow C: Rapid Projection (New Isolates)
-
-If you already have a curated pan-model and just sequenced a new clinical or environmental isolate, you can bypass the heavy pangenome construction and map it in minutes.
+If you already have a pan-model and sequenced new strains, bypass the pangenome construction:
 
 ```bash
 parmmosahn project \
-  --genomes-dir ./new_strain_data/ \
-  --pangenome-fasta ./results/01-pangenome/My_Strains.faa \
-  --panmodel-rxns ./results/02-panmodel/My_Strains-all-Reactions.tbl \
-  --medium medium.csv \
-  --output-dir ./projection_results/
-
+  -g ./new_strains/ \
+  -f ./results/01-pangenome/my_species.faa \
+  -r ./results/02-panmodel/my_species-all-Reactions.tbl \
+  -m medium.csv \
+  -o ./projection/
 ```
 
-*(Note: You can also pass `--stop-after-drafts` to this command to curate the new isolate before finalizing!)*
+## Analysis
 
-## Advanced Configuration & HPC Usage
+Once you have strain-specific models, PaRMMoSaHN provides built-in analysis commands under `parmmosahn analyze` to explore metabolic diversity, validate predictions, and compare strains. These analyses are what make the models scientifically useful -- raw SBML files only become insights when you interrogate them.
 
-PaRMMoSaHN exposes advanced parameters for highly diverse pangenomes and High-Performance Computing (HPC) environments.
+### Pan-reactome characterization
+
+The pan-reactome is the union of all metabolic reactions across your strains, analogous to the pangenome but at the metabolic level. Characterizing it reveals which metabolic capabilities are universally conserved (core), which are shared by subsets of strains (accessory), and which are strain-specific (unique). This is the central scientific output of a pangenome-scale metabolic study.
 
 ```bash
-parmmosahn run ... \
-  --cluster-id 0.80 \
-  --cluster-cov 0.80 \
-  --diamond-bits 150 \
-  --gapseq-bits 150
-
+parmmosahn analyze panreactome \
+  -M ./results/06-final_models/ \
+  -o ./analysis/panreactome.tsv \
+  --plot
 ```
 
-### ModelPolisher on HPC Clusters
+**Outputs:**
+- `panreactome.tsv` -- per-reaction classification (core/accessory/unique) with strain presence
+- `panreactome_summary.tsv` -- pan-reactome size, core/accessory/unique counts, model size statistics
+- `panreactome_jaccard.tsv` -- pairwise Jaccard similarity matrix between strains
+- `panreactome_accumulation.tsv` -- reaction accumulation curve (pan-reactome growth with added genomes)
+- `panreactome_dendrogram.png` -- hierarchical clustering of strains by metabolic similarity (with `--plot`)
 
-By default, Step 6 (ModelPolisher) attempts to use `docker compose`. If you are running on an HPC cluster where Docker is forbidden, you can switch the container engine to **Apptainer** or **Podman**, or skip the step entirely:
+The accumulation curve shows whether the pan-reactome is "open" (still growing) or "closed" (saturated), which has implications for how representative your strain collection is.
+
+### Phenotype validation
+
+Model predictions are only as trustworthy as their agreement with experimental data. The `validate` command compares in silico growth predictions against experimental growth phenotypes (e.g., Biolog plates, carbon source utilization assays) and computes standard classification metrics.
 
 ```bash
-# Use Apptainer (Singularity) instead of Docker
-parmmosahn run ... --container-engine apptainer
-
-# Or skip the polishing step entirely
-parmmosahn run ... --skip-polisher
-
+parmmosahn analyze validate \
+  -M ./results/06-final_models/ \
+  -p phenotypes.csv \
+  -o ./analysis/validation.tsv
 ```
 
-## Modular Usage
+The phenotype file can be in **matrix format** (rows = carbon sources, columns = strains, values = 1/0) or **long format** (columns: `strain`, `carbon_source`, `growth`). Carbon sources should be specified as exchange reaction IDs (e.g., `EX_glc__D_e0`).
 
-You can also run specific parts of the pipeline individually if you only need a pangenome or a pan-model:
+**Output metrics:** accuracy, sensitivity, specificity, and Matthews Correlation Coefficient (MCC). Per-strain per-substrate results are written to the TSV for detailed inspection.
+
+### FBA summary
+
+Run Flux Balance Analysis on all models to compare baseline growth rates and active exchange reactions:
 
 ```bash
-parmmosahn pangenome --genomes-dir ./data --label test --threads 8
-parmmosahn panmodel --fasta softcore.faa --threads 8
-
+parmmosahn analyze fba \
+  -M ./results/06-final_models/ \
+  -o ./analysis/fba_summary.tsv \
+  -m medium.csv
 ```
 
-Run `parmmosahn --help` for a full list of commands.
+### Auxotrophy screening
+
+Systematically knock out each medium component to identify predicted auxotrophies -- strains that cannot grow without a specific nutrient. This reveals metabolic dependencies that may reflect ecological niche adaptation or gene loss events.
+
+```bash
+parmmosahn analyze auxotrophy \
+  -M ./results/06-final_models/ \
+  -o ./analysis/auxotrophy.tsv \
+  -m medium.csv
+```
+
+### Gene essentiality prediction
+
+Perform single-gene deletion FBA to predict which genes are essential for growth. This can be validated against experimental transposon library (Tn-seq) data and highlights potential drug targets in pathogens.
+
+```bash
+parmmosahn analyze essentiality \
+  -M ./results/06-final_models/ \
+  -o ./analysis/essentiality.tsv
+```
+
+### Reaction heatmap
+
+Build a binary presence/absence matrix of all reactions across strains, optionally with a clustered heatmap visualization:
+
+```bash
+parmmosahn analyze heatmap \
+  -M ./results/06-final_models/ \
+  -o ./analysis/heatmap.tsv \
+  --plot
+```
+
+## Modular usage
+
+Each pipeline step can be run independently:
+
+```bash
+parmmosahn pan -g ./genomes/ -l my_label -t 8     # Steps 1-2 only
+parmmosahn strains -g ./genomes/ -f soft.faa \
+  -r rxns.tbl -m medium.csv                        # Step 3 only
+parmmosahn evaluate -M ./models/ -o ./reports/     # Memote evaluation
+parmmosahn annotate -M ./models/ -o ./annotated/   # FAIR annotation
+parmmosahn gather -M ./models/ -o ./final/         # Format conversion
+parmmosahn curate -s model.xml -c out/ -d curation.xlsx  # Apply curations
+parmmosahn polish -M ./models/ -o ./polished/      # ModelPolisher
+```
+
+Run `parmmosahn --help` for a full list of commands and options.
+
+## Configuration
+
+PaRMMoSaHN supports YAML configuration files as an alternative to CLI flags. Generate a template:
+
+```bash
+parmmosahn init-config -o my_config.yml
+```
+
+Then use it:
+
+```bash
+parmmosahn project --config my_config.yml -o ./results/
+```
+
+CLI arguments always override config file values. All options can also be set via environment variables prefixed with `PARMMOSAHN_` (e.g., `PARMMOSAHN_THREADS=32`).
+
+## ModelPolisher
+
+ModelPolisher (v2.1-beta) enriches SBML models with BiGG database annotations and standardized identifiers. It requires a container engine:
+
+```bash
+# Docker (default)
+parmmosahn run ... -e docker
+
+# Podman (rootless, HPC-friendly)
+parmmosahn run ... -e podman
+
+# Apptainer/Singularity (HPC clusters)
+parmmosahn run ... -e apptainer
+
+# Skip polishing entirely
+parmmosahn run ... --no-polish
+```
+
+> **Note:** ModelPolisher v2.1 (release) has a known bug with a broken URL pattern regex in the DataONE namespace. PaRMMoSaHN uses the v2.1-beta which works correctly. SBML headers are temporarily downgraded from L3V2 to L3V1 for beta compatibility.
+
+## Known Limitations
+
+- **Reaction pre-filtering does not evaluate GPR rules.** If a reaction requires multiple gene subunits (AND rule), it may be included even if only one subunit has a homolog. The downstream `gapseq draft` step partially mitigates this.
+- **Single medium for all strains.** Gap-filling uses one medium specification. Strains from different niches may need different media. Use `parmmosahn project` to re-derive models with alternative media.
+- **Generic biomass composition.** Biomass reactions use gapseq's default gram-positive or gram-negative templates rather than species-specific composition. This is consistent with other automated tools (CarveMe, Bactabolize).
+- **Soft-core threshold (2/N).** The default threshold excludes genes present in only one genome. For very small collections (N < 5), consider using `--add-unique` or adjusting `--soft-core`.
 
 ## Citation
 
@@ -160,12 +323,11 @@ If you use PaRMMoSaHN in your research, please cite:
   year = {2026},
   url = {https://github.com/robbedewin/PaRMMoSaHN}
 }
-
 ```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License -- see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
