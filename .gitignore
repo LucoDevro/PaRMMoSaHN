@@ -292,6 +292,7 @@ test_*/
 output*/
 notebook*/
 presentation*/
+data_clostridiales/
 
 run_pipeline.sh
 data_pipeline/
