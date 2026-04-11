@@ -39,7 +39,7 @@ def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path) -> 
     failed_models = []
     for i, xml_path in enumerate(xml_models, 1):
         strain_name = xml_path.stem
-        logger.info(f"[{i}/{n}] Processing final model: {strain_name}")
+        logger.debug(f"[{i}/{n}] Processing final model: {strain_name}")
 
         # 1. Copy the original SBML file
         dest_xml = output_dir / xml_path.name
