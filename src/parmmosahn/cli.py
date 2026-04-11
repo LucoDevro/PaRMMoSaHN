@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -11,6 +12,15 @@ from parmmosahn.pangenome import build_pangenome
 from parmmosahn.results import gather_and_convert_models
 
 logger = logging.getLogger(__name__)
+
+
+def get_default_threads() -> int:
+    """Default to 75 % of available CPU cores (minimum 1)."""
+    cpus = os.cpu_count()
+    return max(1, int(cpus * 0.75)) if cpus else 1
+
+
+_DEFAULT_THREADS = get_default_threads()
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -90,7 +100,7 @@ def cli(ctx, verbose, quiet):
 @click.option(
     "-t",
     "--threads",
-    default=14,
+    default=_DEFAULT_THREADS,
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
@@ -127,7 +137,11 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
         genomes = genomes or cfg.get("genomes")
         output = output or cfg.get("output", ".")
         label = label or cfg.get("label")
-        threads = threads if threads != 14 else cfg.get("threads", 14)
+        threads = (
+            threads
+            if threads != _DEFAULT_THREADS
+            else cfg.get("threads", _DEFAULT_THREADS)
+        )
         add_unique = add_unique or cfg.get("add_unique", False)
         if soft_core is None:
             soft_core = cfg.get("soft_core")
@@ -179,7 +193,7 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
 @click.option(
     "-t",
     "--threads",
-    default=14,
+    default=_DEFAULT_THREADS,
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
@@ -275,6 +289,11 @@ def run_pipeline(
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     command = " ".join(sys.argv)
     steps = {}
+
+    # --- Pre-flight validation ---
+    from parmmosahn.utils import validate_input_genomes
+
+    validate_input_genomes(Path(genomes))
 
     # --- Steps 1-2: Pangenome & Pan-model ---
     click.echo(f"Input:  {genomes}")
@@ -419,7 +438,7 @@ def run_pipeline(
 @click.option(
     "-t",
     "--threads",
-    default=14,
+    default=_DEFAULT_THREADS,
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
@@ -620,7 +639,7 @@ def gather(models, output):
 @click.option(
     "-t",
     "--threads",
-    default=14,
+    default=_DEFAULT_THREADS,
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
@@ -710,7 +729,11 @@ def project(
         fasta = fasta or cfg.get("fasta")
         panmodel_rxns = panmodel_rxns or cfg.get("panmodel_rxns")
         medium = medium or cfg.get("medium")
-        threads = threads if threads != 14 else cfg.get("threads", 14)
+        threads = (
+            threads
+            if threads != _DEFAULT_THREADS
+            else cfg.get("threads", _DEFAULT_THREADS)
+        )
         diamond_bits = (
             diamond_bits if diamond_bits != 150 else cfg.get("diamond_bits", 150)
         )
@@ -731,9 +754,7 @@ def project(
                 )
 
         if not curation_db:
-            curation_db = (
-                out_path / "07-memote_reports" / "draft" / "curation_template.xlsx"
-            )
+            curation_db = out_path / "curation_template.xlsx"
         else:
             curation_db = Path(curation_db)
 
@@ -974,6 +995,131 @@ def heatmap(models, output, plot):
         plot=plot,
     )
     click.echo(f"Reaction matrix saved to {output}")
+
+
+@analyze.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path (additional files written alongside).",
+)
+@click.option(
+    "--plot",
+    is_flag=True,
+    help="Also generate a dendrogram PNG (requires pip install 'parmmosahn[viz]' scipy).",
+)
+def panreactome(models, output, plot):
+    """Characterize the pan-reactome: core/accessory/unique reactions, Jaccard similarity, accumulation curve."""
+    from parmmosahn.analysis import panreactome as panreactome_fn
+
+    click.echo(f"Analyzing pan-reactome from models in {models}...")
+    panreactome_fn(
+        models_dir=Path(models),
+        output_path=Path(output),
+        plot=plot,
+    )
+    click.echo(f"Pan-reactome analysis saved alongside {output}")
+
+
+@analyze.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-p",
+    "--phenotypes",
+    required=True,
+    type=click.Path(exists=True),
+    help="CSV/TSV with experimental growth phenotypes (matrix or long format).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path.",
+)
+@click.option(
+    "-m",
+    "--medium",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional base medium CSV (cols: exchange_id, flux).",
+)
+@click.option(
+    "--threshold",
+    default=1e-3,
+    show_default=True,
+    help="Growth rate below this is predicted as 'no growth'.",
+)
+def validate(models, phenotypes, output, medium, threshold):
+    """Validate model predictions against experimental growth phenotypes."""
+    from parmmosahn.analysis import validate_phenotypes
+
+    click.echo(f"Validating models in {models} against {phenotypes}...")
+    validate_phenotypes(
+        models_dir=Path(models),
+        phenotype_path=Path(phenotypes),
+        output_path=Path(output),
+        medium_path=Path(medium) if medium else None,
+        threshold=threshold,
+    )
+    click.echo(f"Validation results saved to {output}")
+
+
+@analyze.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path.",
+)
+@click.option(
+    "-m",
+    "--medium",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional medium CSV (cols: exchange_id, flux) to override model media.",
+)
+@click.option(
+    "--threshold",
+    default=1e-3,
+    show_default=True,
+    help="Growth rate below this fraction of WT marks a gene as essential.",
+)
+def essentiality(models, output, medium, threshold):
+    """Predict essential genes via single-gene deletion FBA."""
+    from parmmosahn.analysis import gene_essentiality
+
+    click.echo(f"Running gene essentiality analysis on models in {models}...")
+    gene_essentiality(
+        models_dir=Path(models),
+        output_path=Path(output),
+        medium_path=Path(medium) if medium else None,
+        threshold=threshold,
+    )
+    click.echo(f"Gene essentiality predictions saved to {output}")
 
 
 @cli.command()
