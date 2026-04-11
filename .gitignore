@@ -302,6 +302,7 @@ project_test/
 commands.md
 CLAUDE.md
 CLI_UX_IMPROVEMENTS.md
+THESIS*.md
 
 #Other docker compose files
 !src/parmmosahn/data/docker-compose.yml
