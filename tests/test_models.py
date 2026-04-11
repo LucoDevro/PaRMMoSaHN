@@ -33,6 +33,18 @@ def test_clean_fasta_file_truncates_header_description(tmp_path: Path):
     assert cleaned == ">NP_387883.1\nATGCC\n"
 
 
+def test_clean_fasta_file_strips_stop_codons(tmp_path: Path):
+    """Test that trailing * stop codons from PPanGGOLiN are removed."""
+    fasta_file = tmp_path / "test.faa"
+    fasta_file.write_text(">seq1\nMKYLVALIK*\n>seq2\nMDTKEILN*\n", encoding="utf-8")
+
+    clean_fasta_file(fasta_file)
+
+    cleaned = fasta_file.read_text(encoding="utf-8")
+    assert "*" not in cleaned
+    assert cleaned == ">seq1\nMKYLVALIK\n>seq2\nMDTKEILN\n"
+
+
 def test_clean_fasta_file_no_bad_chars(tmp_path: Path):
     """Test that valid FASTA files are left untouched."""
     fasta_file = tmp_path / "test.faa"

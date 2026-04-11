@@ -310,3 +310,185 @@ def test_cli_analyze_auxotrophy_with_threshold(tmp_path: Path):
     assert result.exit_code == 0, result.output
     _, kwargs = mock_auxo.call_args
     assert kwargs["threshold"] == 0.01
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — panreactome
+# ---------------------------------------------------------------------------
+
+
+@patch("parmmosahn.analysis._load_models")
+def test_panreactome_classification(mock_load, tmp_path: Path):
+    """panreactome should classify reactions as core/accessory/unique."""
+    from parmmosahn.analysis import panreactome
+
+    m1 = _make_mock_model("s1", ["CORE_1", "ACC_1", "UNIQUE_S1"])
+    m2 = _make_mock_model("s2", ["CORE_1", "ACC_1", "UNIQUE_S2"])
+    m3 = _make_mock_model("s3", ["CORE_1", "UNIQUE_S3"])
+    mock_load.return_value = [("s1", m1), ("s2", m2), ("s3", m3)]
+
+    out = tmp_path / "panreactome.tsv"
+    result = panreactome(tmp_path, out)
+
+    assert result == out
+    content = out.read_text()
+    lines = content.strip().splitlines()
+
+    # Parse into dict for easier assertions
+    data = {}
+    for line in lines[1:]:
+        parts = line.split("\t")
+        data[parts[0]] = parts[3]  # category column
+
+    assert data["CORE_1"] == "core"
+    assert data["ACC_1"] == "accessory"
+    assert data["UNIQUE_S1"] == "unique"
+    assert data["UNIQUE_S2"] == "unique"
+
+    # Check summary file exists
+    summary = tmp_path / "panreactome_summary.tsv"
+    assert summary.exists()
+    summary_content = summary.read_text()
+    assert "pan_reactome_size\t5" in summary_content
+    assert "core_reactions\t1" in summary_content
+
+    # Check Jaccard file exists
+    jaccard = tmp_path / "panreactome_jaccard.tsv"
+    assert jaccard.exists()
+
+    # Check accumulation file exists
+    accum = tmp_path / "panreactome_accumulation.tsv"
+    assert accum.exists()
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — validate_phenotypes
+# ---------------------------------------------------------------------------
+
+
+@patch("parmmosahn.analysis._load_models")
+def test_validate_phenotypes_long_format(mock_load, tmp_path: Path):
+    """validate_phenotypes should compute accuracy from long-format phenotypes."""
+    from parmmosahn.analysis import validate_phenotypes
+
+    m1 = _make_mock_model("s1", ["RXN_1", "EX_glc"], growth=0.5)
+    mock_load.return_value = [("s1", m1)]
+
+    pheno = tmp_path / "pheno.csv"
+    pheno.write_text("strain,carbon_source,growth\ns1,EX_glc,1\n")
+
+    out = tmp_path / "validation.tsv"
+    validate_phenotypes(tmp_path, pheno, out)
+
+    content = out.read_text()
+    assert "Accuracy" in content
+    assert "s1" in content
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — gene_essentiality
+# ---------------------------------------------------------------------------
+
+
+@patch("parmmosahn.analysis._load_models")
+@patch("cobra.flux_analysis.single_gene_deletion")
+def test_gene_essentiality_basic(mock_deletion, mock_load, tmp_path: Path):
+    """gene_essentiality should classify genes as essential/non-essential."""
+    import pandas as pd
+
+    from parmmosahn.analysis import gene_essentiality
+
+    m1 = _make_mock_model("s1", ["RXN_1"], growth=0.5)
+    g1 = MagicMock()
+    g1.id = "gene_A"
+    m1.genes = [g1]
+    mock_load.return_value = [("s1", m1)]
+
+    # single_gene_deletion returns a DataFrame
+    mock_deletion.return_value = pd.DataFrame(
+        {
+            "ids": [frozenset({"gene_A"})],
+            "growth": [0.0],
+            "status": ["optimal"],
+        }
+    )
+
+    out = tmp_path / "essentiality.tsv"
+    gene_essentiality(tmp_path, out)
+
+    content = out.read_text()
+    assert "gene_A" in content
+    assert "1" in content  # essential
+
+
+# ---------------------------------------------------------------------------
+# CLI wiring tests — new commands
+# ---------------------------------------------------------------------------
+
+
+def test_cli_analyze_panreactome(tmp_path: Path):
+    """'analyze panreactome' should wire through to panreactome function."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "s1.xml").touch()
+    out = tmp_path / "pan.tsv"
+    runner = CliRunner()
+
+    with patch("parmmosahn.analysis.panreactome") as mock_pan:
+        mock_pan.return_value = out
+        result = runner.invoke(
+            cli,
+            ["analyze", "panreactome", "-M", str(models_dir), "-o", str(out)],
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_pan.assert_called_once()
+
+
+def test_cli_analyze_validate(tmp_path: Path):
+    """'analyze validate' should wire through to validate_phenotypes."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "s1.xml").touch()
+    pheno = tmp_path / "pheno.csv"
+    pheno.write_text("strain,carbon_source,growth\n")
+    out = tmp_path / "val.tsv"
+    runner = CliRunner()
+
+    with patch("parmmosahn.analysis.validate_phenotypes") as mock_val:
+        mock_val.return_value = out
+        result = runner.invoke(
+            cli,
+            [
+                "analyze",
+                "validate",
+                "-M",
+                str(models_dir),
+                "-p",
+                str(pheno),
+                "-o",
+                str(out),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_val.assert_called_once()
+
+
+def test_cli_analyze_essentiality(tmp_path: Path):
+    """'analyze essentiality' should wire through to gene_essentiality."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "s1.xml").touch()
+    out = tmp_path / "ess.tsv"
+    runner = CliRunner()
+
+    with patch("parmmosahn.analysis.gene_essentiality") as mock_ess:
+        mock_ess.return_value = out
+        result = runner.invoke(
+            cli,
+            ["analyze", "essentiality", "-M", str(models_dir), "-o", str(out)],
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_ess.assert_called_once()

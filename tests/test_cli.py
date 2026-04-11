@@ -239,8 +239,7 @@ def test_cli_project_resume_mode(tmp_path: Path):
     out = tmp_path / "out"
     drafts = out / "03-strain_models" / "models"
     drafts.mkdir(parents=True)
-    curation_db = out / "07-memote_reports" / "draft" / "curation_template.xlsx"
-    curation_db.parent.mkdir(parents=True)
+    curation_db = out / "curation_template.xlsx"
     curation_db.touch()
     runner = CliRunner()
 
@@ -285,9 +284,7 @@ def test_cli_project_pause_for_curation(tmp_path: Path):
         patch("parmmosahn.pipeline.run_downstream") as mock_downstream,
     ):
         mock_derive.return_value = out / "03-strain_models" / "models"
-        mock_gen.return_value = (
-            out / "07-memote_reports" / "draft" / "curation_template.xlsx"
-        )
+        mock_gen.return_value = out / "curation_template.xlsx"
         result = runner.invoke(
             cli,
             [
