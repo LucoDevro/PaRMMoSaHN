@@ -70,7 +70,7 @@ def run_memote_snapshot(
     output_html: Path,
     subprocess_mode: bool = True,
     timeout: int = 900,
-) -> None:
+) -> bool:
     """
     Runs memote report snapshot on a single model.
 
@@ -83,12 +83,12 @@ def run_memote_snapshot(
     timeout : int
         Maximum seconds to wait for memote per model (default: 900 = 15 min).
     """
-    logger.info(f"Running memote snapshot on {model_path.name}...")
+    logger.debug(f"Running memote snapshot on {model_path.name}...")
 
     if not subprocess_mode:
         _run_memote_snapshot_inprocess(model_path, output_json, output_html)
-        logger.info(f"Memote snapshot completed for {model_path.name}.")
-        return
+        logger.debug(f"Memote snapshot completed for {model_path.name}.")
+        return True
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -102,11 +102,14 @@ def run_memote_snapshot(
         )
         try:
             future.result(timeout=timeout)
-            logger.info(f"Memote snapshot completed for {model_path.name}.")
+            logger.debug(f"Memote snapshot completed for {model_path.name}.")
+            return True
         except TimeoutError:
             logger.error(f"Memote timed out after {timeout}s for {model_path.name}.")
+            return False
         except Exception as e:
             logger.error(f"Memote failed for {model_path.name}: {e}")
+            return False
 
 
 def extract_memote_problems(
@@ -572,13 +575,18 @@ def generate_curation_template(model_dir: Path, output_dir: Path) -> Path:
     n = len(models)
     logger.info(f"Running automated memote evaluation on {n} draft models...")
 
+    failed = []
     for i, model in enumerate(models, 1):
         logger.info(f"  [{i}/{n}] Evaluating {model.stem}...")
         out_json = reports_dir / f"{model.stem}.json"
         out_html = reports_dir / f"{model.stem}.html"
-        run_memote_snapshot(model, out_json, out_html)
+        if not run_memote_snapshot(model, out_json, out_html):
+            failed.append(model.stem)
 
-    out_excel = reports_dir / "curation_template.xlsx"
+    if failed:
+        logger.warning(f"Memote failed for {len(failed)}/{n} models: {failed}")
+
+    out_excel = output_dir / "curation_template.xlsx"
     extract_memote_problems(reports_dir, model_dir, out_excel)
     return out_excel
 
@@ -596,10 +604,14 @@ def evaluate_final_models(model_dir: Path, output_dir: Path) -> None:
     n = len(models)
     logger.info(step_banner(7))
     logger.info(f"Running final memote evaluation on {n} polished models...")
+    failed = []
     for i, model in enumerate(models, 1):
         logger.info(f"  [{i}/{n}] Evaluating {model.stem}...")
         out_json = reports_dir / f"{model.stem}.json"
         out_html = reports_dir / f"{model.stem}.html"
-        run_memote_snapshot(model, out_json, out_html)
+        if not run_memote_snapshot(model, out_json, out_html):
+            failed.append(model.stem)
 
+    if failed:
+        logger.warning(f"Memote failed for {len(failed)}/{n} models: {failed}")
     logger.info(f"Final FAIR-compliance reports saved to {reports_dir}")
