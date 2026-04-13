@@ -297,6 +297,9 @@ data_clostridiales/
 run_pipeline.sh
 data_pipeline/
 project_test/
+data_clostridia/heldout_genomes/
+data_clostridia/train_genomes/
+varia/
 
 # commands md
 commands.md
