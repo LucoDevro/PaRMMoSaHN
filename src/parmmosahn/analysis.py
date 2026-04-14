@@ -54,6 +54,28 @@ def _apply_medium_csv(model: Model, medium_path: Path) -> None:
     model.medium = medium
 
 
+_TRUTHY = {"1", "true", "t", "yes", "y", "+"}
+_FALSY = {"0", "false", "f", "no", "n", "-"}
+
+
+def _coerce_growth(val: Any) -> bool:
+    """
+    Coerce a phenotype 'growth' cell to bool. Accepts bool, int/float (0/1),
+    or common string forms ('True'/'False', 'yes'/'no', '1'/'0').
+    """
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(int(val))
+    if isinstance(val, str):
+        v = val.strip().lower()
+        if v in _TRUTHY:
+            return True
+        if v in _FALSY:
+            return False
+    raise ValueError(f"Cannot interpret growth value: {val!r}")
+
+
 # ---------------------------------------------------------------------------
 # 1. FBA Summary
 # ---------------------------------------------------------------------------
@@ -544,12 +566,7 @@ def validate_phenotypes(
         for row in df.iter_rows(named=True):
             s = str(row["strain"])
             cs = str(row["carbon_source"])
-            g = (
-                bool(int(row["growth"]))
-                if not isinstance(row["growth"], bool)
-                else row["growth"]
-            )
-            phenotypes.append((s, cs, g))
+            phenotypes.append((s, cs, _coerce_growth(row["growth"])))
     else:
         # Matrix format: first column = carbon_source, rest = strains
         phenotypes = []
@@ -559,11 +576,16 @@ def validate_phenotypes(
             for col in cols[1:]:
                 val = row[col]
                 if val is not None:
-                    phenotypes.append((col, cs, bool(int(val))))
+                    phenotypes.append((col, cs, _coerce_growth(val)))
 
     # --- Run FBA predictions ---
     results: list[dict[str, Any]] = []
     tp = fp = tn = fn = 0
+
+    # Per-strain baseline medium, captured once before any mutation. Each
+    # phenotype test is run against a fresh copy of this baseline so carbon
+    # sources enabled for earlier tests never leak into later ones.
+    base_media: dict[str, dict[str, float]] = {}
 
     for strain, carbon_source, observed_growth in phenotypes:
         if strain not in model_map:
@@ -572,11 +594,11 @@ def validate_phenotypes(
 
         model = model_map[strain]
 
-        # Set up medium
-        if medium_path:
-            _apply_medium_csv(model, medium_path)
-
-        medium = dict(model.medium)
+        # Capture the baseline medium on first encounter of this strain.
+        if strain not in base_media:
+            if medium_path:
+                _apply_medium_csv(model, medium_path)
+            base_media[strain] = dict(model.medium)
 
         # Check if the exchange reaction exists
         if carbon_source not in model.reactions:
@@ -597,7 +619,8 @@ def validate_phenotypes(
                 tn += 1
             continue
 
-        # Enable the carbon source
+        # Reset to baseline, then enable just this carbon source for the test.
+        medium = dict(base_media[strain])
         medium[carbon_source] = 1000.0
         model.medium = medium
 
