@@ -85,4 +85,10 @@ markers = [
 addopts = "-m 'not biological'"
 
 [tool.setuptools.package-data]
-parmmosahn = ["data/*.yml", "data/*.tsv"]
+# Explicit list — do NOT use globs like "data/*.tsv" because chem_xref.tsv
+# (648 MB, thesis-only) must never be included in the wheel.
+parmmosahn = [
+    "data/docker-compose.yml",
+    "data/mnxr_to_rhea.tsv",
+    "data/seed_to_rhea.tsv",
+]

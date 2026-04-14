@@ -300,6 +300,7 @@ project_test/
 data_clostridia/heldout_genomes/
 data_clostridia/train_genomes/
 varia/
+data_bsubtilis/genomes/
 
 # commands md
 commands.md
@@ -309,8 +310,10 @@ THESIS*.md
 
 #Other docker compose files
 !src/parmmosahn/data/docker-compose.yml
-!src/parmmosahn/data/*.tsv
 src/parmmosahn/data/docker-compose*.yml
+
+# Large external reference data — download separately, never commit
+chem_xref.tsv
 
 # Helper scripts
 get_excel.py
@@ -325,3 +328,11 @@ pipeline_runs/
 *.tbl
 
 src/parmmosahn.egg-info/
+
+# Thesis-specific directories — live in PaRMMoSaHN-thesis repo
+data_clostridia/
+data_bsubtilis/
+data_validation/
+carveme/
+analysis/
+envs/
