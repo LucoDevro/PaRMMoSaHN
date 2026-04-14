@@ -398,8 +398,20 @@ def apply_curations(
         df_dupl = pl.read_excel(
             curation_db_path, sheet_name="duplicate_reactions", engine="openpyxl"
         )
+        # Accept both the canonical name and the legacy name for the balance
+        # corrections sheet. "curated_imbalances" is preferred (more consistent
+        # with the output terminology); "corrected_balances" is the fallback.
+        import openpyxl as _openpyxl
+
+        _wb = _openpyxl.load_workbook(curation_db_path, read_only=True)
+        _sheets = _wb.sheetnames
+        _balance_sheet = (
+            "curated_imbalances"
+            if "curated_imbalances" in _sheets
+            else "corrected_balances"
+        )
         df_cur = pl.read_excel(
-            curation_db_path, sheet_name="curated_imbalances", engine="openpyxl"
+            curation_db_path, sheet_name=_balance_sheet, engine="openpyxl"
         )
     except Exception as e:
         logger.error(f"Could not read curation database {curation_db_path}: {e}")
