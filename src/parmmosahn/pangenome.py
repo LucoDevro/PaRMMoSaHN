@@ -8,6 +8,20 @@ from parmmosahn.utils import ToolExecutionError, run_command
 logger = logging.getLogger(__name__)
 
 
+def _summarize_ppanggolin_log(log_path: Path) -> None:
+    """Scan PPanGGOLiN log for notable warnings and print a brief summary."""
+    if not log_path.exists():
+        return
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    transl_except_count = text.count("transl_except")
+    if transl_except_count:
+        logger.info(
+            f"PPanGGOLiN: {transl_except_count} transl_except warnings "
+            f"(see {log_path})"
+        )
+    logger.info(f"Full PPanGGOLiN output saved to {log_path}")
+
+
 def get_genbank_files(genomes_dir: Path) -> list[Path]:
     """Helper to find all genbank extensions."""
     files: list[Path] = []
@@ -82,6 +96,7 @@ def build_pangenome(
 
     annotations_list = output_dir / "annotations.list"
     h5_db = output_dir / "pangenome.h5"
+    ppanggolin_log = output_dir / "ppanggolin.log"
 
     # Step 1: Pre-process inputs
     clean_genbank_files(genomes_dir)
@@ -100,7 +115,7 @@ def build_pangenome(
         "-c",
         str(threads),
     ]
-    run_command(annotate_cmd)
+    run_command(annotate_cmd, stdout_file=ppanggolin_log)
 
     # Step 3: Cluster
     logger.info("Running PPanGGOLiN cluster...")
@@ -119,7 +134,7 @@ def build_pangenome(
     ]
     if tmp_dir:
         cluster_cmd.extend(["--tmpdir", str(tmp_dir)])
-    run_command(cluster_cmd)
+    run_command(cluster_cmd, stdout_file=ppanggolin_log)
 
     # Step 4: Extract total genome count to calculate soft-core threshold
     logger.info("Extracting pangenome statistics...")
@@ -174,7 +189,10 @@ def build_pangenome(
         "--soft_core",
         str(soft_core_threshold),
     ]
-    run_command(fasta_cmd)
+    run_command(fasta_cmd, stdout_file=ppanggolin_log)
+
+    # Summarize notable PPanGGOLiN warnings for the user
+    _summarize_ppanggolin_log(ppanggolin_log)
 
     # Step 6: Rename final output file
     extracted_fasta = output_dir / f"{partitions}_protein_families.faa"

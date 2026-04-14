@@ -103,6 +103,62 @@ def run_command(
             raise ToolExecutionError("; ".join(error_details)) from e
 
 
+def validate_input_genomes(genomes_dir: Path) -> None:
+    """Pre-flight validation of input genome files.
+
+    Warns about potential issues that would cause pipeline failures later.
+    Raises FileNotFoundError if no genome files found.
+    """
+    gbff_files = list(genomes_dir.glob("*.gbff")) + list(genomes_dir.glob("*.gbk"))
+    faa_files = list(genomes_dir.glob("*.faa"))
+
+    all_files = gbff_files + faa_files
+    if not all_files:
+        raise FileNotFoundError(
+            f"No genome files (.gbff, .gbk, .faa) found in {genomes_dir}"
+        )
+
+    n_genomes = len(set(f.stem for f in all_files))
+    if n_genomes < 3:
+        logger.warning(
+            f"Only {n_genomes} genome(s) found. Pangenome analysis typically "
+            f"requires at least 3 genomes to produce meaningful results."
+        )
+
+    # Spot-check GenBank files for CDS features with translations
+    for gbff in gbff_files[:3]:  # check up to 3 files
+        cds_count = 0
+        translated_count = 0
+        try:
+            for record in SeqIO.parse(str(gbff), "genbank"):
+                for feature in record.features:
+                    if feature.type == "CDS":
+                        cds_count += 1
+                        if feature.qualifiers.get("translation"):
+                            translated_count += 1
+                # Only scan first record per file for speed
+                break
+        except Exception as e:
+            logger.warning(f"Could not parse {gbff.name}: {e}")
+            continue
+
+        if cds_count == 0:
+            logger.warning(
+                f"{gbff.name}: no CDS features found. This file may not be a "
+                f"valid annotated genome (GenBank flat file format expected)."
+            )
+        elif translated_count == 0:
+            logger.warning(
+                f"{gbff.name}: CDS features found but none have translations. "
+                f"Proteome extraction will produce empty output."
+            )
+        elif translated_count < 100:
+            logger.warning(
+                f"{gbff.name}: only {translated_count} translated CDS features "
+                f"in first record. This may indicate a partial or low-quality genome."
+            )
+
+
 def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
     """
     Extracts translated CDS features from a GenBank flat file into a FASTA file.
@@ -159,6 +215,37 @@ def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
         raise
 
     return output_faa_path
+
+
+def extract_gene_id_mapping(gbff_path: Path, output_tsv: Path) -> Path:
+    """Build a protein_id → NCBI RefSeq accession mapping from a GenBank file.
+
+    Parses CDS features and extracts ``db_xref`` entries that start with
+    ``RefSeq:``.  Writes a two-column TSV (protein_id \\t refseq_accession).
+    """
+    mapping: dict[str, str] = {}
+    with open(gbff_path, "r") as handle:
+        for record in SeqIO.parse(handle, "genbank"):
+            for feature in record.features:
+                if feature.type != "CDS":
+                    continue
+                protein_id = feature.qualifiers.get("protein_id", [None])[0]
+                if not protein_id:
+                    continue
+                for xref in feature.qualifiers.get("db_xref", []):
+                    if xref.startswith("RefSeq:"):
+                        mapping[protein_id] = xref.split(":", 1)[1]
+                        break
+
+    output_tsv.parent.mkdir(parents=True, exist_ok=True)
+    output_tsv.write_text(
+        "\n".join(f"{k}\t{v}" for k, v in mapping.items()) + "\n",
+        encoding="utf-8",
+    )
+    logger.debug(
+        f"Gene ID mapping: {len(mapping)} RefSeq accessions from {gbff_path.name}"
+    )
+    return output_tsv
 
 
 def load_config(config_path: Path) -> dict:

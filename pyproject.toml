@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parmmosahn"
-version = "0.1.0"
+version = "0.2.0"
 description = "PaRMMoSaHN - Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks"
 authors = [{name = "Robbe De Win", email = "robbedewin@hotmail.com"}, {name = "Lucas De Vrieze", email = "lucas.devrieze@kuleuven.be"}]
 license = {text = "MIT"}
@@ -38,6 +38,7 @@ dev = [
     "black>=22.0.0",
     "mypy>=0.910",
     "isort>=5.10.0",
+    "pre-commit>=3.0.0",
 ]
 config = [
     "pyyaml>=6.0",   # Required for YAML config file support (--config / init-config)
@@ -84,4 +85,10 @@ markers = [
 addopts = "-m 'not biological'"
 
 [tool.setuptools.package-data]
-parmmosahn = ["data/*.yml", "data/*.tsv"]
+# Explicit list — do NOT use globs like "data/*.tsv" because chem_xref.tsv
+# (648 MB, thesis-only) must never be included in the wheel.
+parmmosahn = [
+    "data/docker-compose.yml",
+    "data/mnxr_to_rhea.tsv",
+    "data/seed_to_rhea.tsv",
+]

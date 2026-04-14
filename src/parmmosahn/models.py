@@ -1,11 +1,17 @@
 import logging
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
 
-from parmmosahn.utils import ToolExecutionError, extract_proteome_from_gbff, run_command
+from parmmosahn.utils import (
+    ToolExecutionError,
+    extract_gene_id_mapping,
+    extract_proteome_from_gbff,
+    run_command,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -13,10 +19,10 @@ logger = logging.getLogger(__name__)
 def clean_fasta_file(fasta_path: Path) -> None:
     """
     Cleans FASTA files by:
-    1. Removing problematic characters (like '’')
+    1. Removing problematic characters (like ‘’’ and trailing * stop codons)
     2. Truncating headers at the first space to remove descriptions that break gapseq regex.
     """
-    logger.info(f"Cleaning formatting for {fasta_path.name}...")
+    logger.debug(f"Cleaning formatting for {fasta_path.name}...")
     try:
         lines = fasta_path.read_text(encoding="utf-8").splitlines()
         cleaned_lines = []
@@ -24,6 +30,12 @@ def clean_fasta_file(fasta_path: Path) -> None:
             if line.startswith(">"):
                 # Truncate at the first space to keep only the pure ID (e.g. >AEP89073.1)
                 line = line.split()[0]
+            else:
+                # Remove trailing stop codons (*) that PPanGGOLiN includes in
+                # representative protein sequences.  These cause R/Biostrings
+                # to report thousands of "invalid one-letter sequence codes"
+                # during gapseq BLAST.
+                line = line.rstrip("*")
 
             # Remove problematic characters from previous tools
             if "’" in line:
@@ -218,6 +230,10 @@ def derive_strain_models(
         out_faa = proteomes_dir / f"{gbff.stem}.faa"
         extract_proteome_from_gbff(gbff, out_faa)
         clean_fasta_file(out_faa)
+        # Build Bakta protein_id → NCBI RefSeq mapping for annotation enrichment
+        mapping_tsv = proteomes_dir / f"{gbff.stem}.gene_mapping.tsv"
+        if not mapping_tsv.exists():
+            extract_gene_id_mapping(gbff, mapping_tsv)
         processed_genomes_map[gbff.stem] = out_faa
 
     for faa in faa_files:
@@ -242,12 +258,22 @@ def derive_strain_models(
 
     # Step 3: Iterate through strains
     total_strains = len(processed_genomes)
+    skipped = 0
     for idx, genome in enumerate(processed_genomes, start=1):
         strain_name = genome.stem
-        logger.info(f"[{idx}/{total_strains}] --- Processing strain: {strain_name} ---")
 
         strain_dir = models_dir / strain_name
         strain_dir.mkdir(exist_ok=True)
+        done_marker = strain_dir / ".done"
+
+        if done_marker.exists():
+            logger.info(
+                f"[{idx}/{total_strains}] Skipping {strain_name} (already completed)"
+            )
+            skipped += 1
+            continue
+
+        logger.info(f"[{idx}/{total_strains}] --- Processing strain: {strain_name} ---")
 
         log_out = strain_dir / "log.log"
         log_err = strain_dir / "log.err"
@@ -377,5 +403,15 @@ def derive_strain_models(
             draft_xml.unlink()
             logger.debug(f"Removed intermediate draft model {draft_xml.name}")
 
+        # Mark strain as completed for checkpointing
+        done_marker.write_text(
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            encoding="utf-8",
+        )
+
+    if skipped:
+        logger.info(
+            f"Resumed: skipped {skipped}/{total_strains} previously completed strains."
+        )
     logger.info(f"All strain models successfully generated in {models_dir}")
     return models_dir

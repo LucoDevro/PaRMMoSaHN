@@ -73,7 +73,10 @@ def test_run_pan_with_soft_core_override(
 
 @patch("parmmosahn.pipeline.evaluate_final_models")
 @patch("parmmosahn.pipeline.gather_and_convert_models")
-@patch("parmmosahn.pipeline.enrich_models_directory", side_effect=lambda src, dst: dst)
+@patch(
+    "parmmosahn.pipeline.enrich_models_directory",
+    side_effect=lambda src, dst, proteomes_dir=None: dst,
+)
 @patch("parmmosahn.pipeline.apply_curations")
 @patch("shutil.copy")
 def test_run_downstream_with_curation(
@@ -115,7 +118,10 @@ def test_run_downstream_with_curation(
 
 @patch("parmmosahn.pipeline.evaluate_final_models")
 @patch("parmmosahn.pipeline.gather_and_convert_models")
-@patch("parmmosahn.pipeline.enrich_models_directory", side_effect=lambda src, dst: dst)
+@patch(
+    "parmmosahn.pipeline.enrich_models_directory",
+    side_effect=lambda src, dst, proteomes_dir=None: dst,
+)
 @patch("parmmosahn.pipeline.apply_curations")
 @patch("parmmosahn.pipeline.generate_curation_template")
 def test_run_downstream_no_curation_generates_template(
@@ -157,7 +163,10 @@ def test_run_downstream_no_curation_generates_template(
 @patch("parmmosahn.pipeline.run_model_polisher")
 @patch("parmmosahn.pipeline.evaluate_final_models")
 @patch("parmmosahn.pipeline.gather_and_convert_models")
-@patch("parmmosahn.pipeline.enrich_models_directory", side_effect=lambda src, dst: dst)
+@patch(
+    "parmmosahn.pipeline.enrich_models_directory",
+    side_effect=lambda src, dst, proteomes_dir=None: dst,
+)
 @patch("shutil.copy")
 @patch("shutil.which", return_value="/usr/bin/docker")
 def test_run_downstream_polisher_called_when_engine_present(

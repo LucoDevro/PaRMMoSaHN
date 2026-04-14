@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -11,6 +12,15 @@ from parmmosahn.pangenome import build_pangenome
 from parmmosahn.results import gather_and_convert_models
 
 logger = logging.getLogger(__name__)
+
+
+def get_default_threads() -> int:
+    """Default to 75 % of available CPU cores (minimum 1)."""
+    cpus = os.cpu_count()
+    return max(1, int(cpus * 0.75)) if cpus else 1
+
+
+_DEFAULT_THREADS = get_default_threads()
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -90,7 +100,7 @@ def cli(ctx, verbose, quiet):
 @click.option(
     "-t",
     "--threads",
-    default=14,
+    default=_DEFAULT_THREADS,
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
@@ -127,7 +137,11 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
         genomes = genomes or cfg.get("genomes")
         output = output or cfg.get("output", ".")
         label = label or cfg.get("label")
-        threads = threads if threads != 14 else cfg.get("threads", 14)
+        threads = (
+            threads
+            if threads != _DEFAULT_THREADS
+            else cfg.get("threads", _DEFAULT_THREADS)
+        )
         add_unique = add_unique or cfg.get("add_unique", False)
         if soft_core is None:
             soft_core = cfg.get("soft_core")
@@ -179,7 +193,7 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
 @click.option(
     "-t",
     "--threads",
-    default=14,
+    default=_DEFAULT_THREADS,
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
@@ -262,7 +276,7 @@ def run_pipeline(
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    # Set up error log file
+    # Set up error log file (WARNING+ only)
     error_log = out_path / "errors.log"
     error_handler = logging.FileHandler(str(error_log), mode="w")
     error_handler.setLevel(logging.WARNING)
@@ -271,10 +285,38 @@ def run_pipeline(
     )
     logging.getLogger().addHandler(error_handler)
 
+    # Set up full run log (INFO+) — append so a resumed run continues the same file
+    run_log = out_path / "run.log"
+    run_log_handler = logging.FileHandler(str(run_log), mode="a")
+    run_log_handler.setLevel(logging.INFO)
+    run_log_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(run_log_handler)
+
     t_start = time.time()
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     command = " ".join(sys.argv)
     steps = {}
+
+    # Define parameters early so incremental summary writes have full context
+    parameters = {
+        "genomes": str(genomes),
+        "medium": str(medium),
+        "label": label,
+        "threads": threads,
+        "diamond_bits": diamond_bits,
+        "gapseq_bits": gapseq_bits,
+        "biomass": biomass,
+        "soft_core": soft_core,
+        "engine": engine,
+        "no_polish": no_polish,
+    }
+
+    # --- Pre-flight validation ---
+    from parmmosahn.utils import validate_input_genomes
+
+    validate_input_genomes(Path(genomes))
 
     # --- Steps 1-2: Pangenome & Pan-model ---
     click.echo(f"Input:  {genomes}")
@@ -296,6 +338,14 @@ def run_pipeline(
         "status": "completed",
         "elapsed": _format_elapsed(time.time() - t_step),
     }
+    write_pipeline_summary(
+        out_path,
+        steps,
+        parameters,
+        command=command,
+        started_at=started_at,
+        total_elapsed=time.time() - t_start,
+    )
 
     # --- Step 3: Strain models ---
     click.echo("Step 3: Deriving strain-specific models...")
@@ -316,6 +366,14 @@ def run_pipeline(
         "status": "completed",
         "elapsed": _format_elapsed(time.time() - t_step),
     }
+    write_pipeline_summary(
+        out_path,
+        steps,
+        parameters,
+        command=command,
+        started_at=started_at,
+        total_elapsed=time.time() - t_start,
+    )
 
     # --- Optional pause for human-in-the-loop curation ---
     if pause_for_curation:
@@ -351,19 +409,7 @@ def run_pipeline(
 
     total_elapsed = time.time() - t_start
 
-    # Write pipeline summary
-    parameters = {
-        "genomes": str(genomes),
-        "medium": str(medium),
-        "label": label,
-        "threads": threads,
-        "diamond_bits": diamond_bits,
-        "gapseq_bits": gapseq_bits,
-        "biomass": biomass,
-        "soft_core": soft_core,
-        "engine": engine,
-        "no_polish": no_polish,
-    }
+    # Final summary (includes model_statistics from 06-final_models)
     write_pipeline_summary(
         out_path,
         steps,
@@ -373,7 +419,9 @@ def run_pipeline(
         total_elapsed=total_elapsed,
     )
 
-    # Remove empty errors.log
+    # Remove empty errors.log; always keep run.log
+    logging.getLogger().removeHandler(run_log_handler)
+    run_log_handler.close()
     logging.getLogger().removeHandler(error_handler)
     error_handler.close()
     if error_log.exists() and error_log.stat().st_size == 0:
@@ -419,7 +467,7 @@ def run_pipeline(
 @click.option(
     "-t",
     "--threads",
-    default=14,
+    default=_DEFAULT_THREADS,
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
@@ -620,7 +668,7 @@ def gather(models, output):
 @click.option(
     "-t",
     "--threads",
-    default=14,
+    default=_DEFAULT_THREADS,
     show_default=True,
     help="Number of CPU threads to allocate.",
 )
@@ -698,9 +746,12 @@ def project(
     This bypasses Steps 1 & 2 (PPanGGOLiN).
     Can also resume the project using the --resume flag.
     """
+    import sys
+    from datetime import datetime, timezone
+
     from parmmosahn.curation import generate_curation_template
     from parmmosahn.models import derive_strain_models
-    from parmmosahn.pipeline import run_downstream
+    from parmmosahn.pipeline import run_downstream, write_pipeline_summary
 
     if config_file:
         from parmmosahn.utils import load_config
@@ -710,7 +761,11 @@ def project(
         fasta = fasta or cfg.get("fasta")
         panmodel_rxns = panmodel_rxns or cfg.get("panmodel_rxns")
         medium = medium or cfg.get("medium")
-        threads = threads if threads != 14 else cfg.get("threads", 14)
+        threads = (
+            threads
+            if threads != _DEFAULT_THREADS
+            else cfg.get("threads", _DEFAULT_THREADS)
+        )
         diamond_bits = (
             diamond_bits if diamond_bits != 150 else cfg.get("diamond_bits", 150)
         )
@@ -720,6 +775,19 @@ def project(
 
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
+
+    t_start = time.time()
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    command = " ".join(sys.argv)
+
+    # Full run log — append so this integrates with any prior parmmosahn run log
+    run_log = out_path / "run.log"
+    run_log_handler = logging.FileHandler(str(run_log), mode="a")
+    run_log_handler.setLevel(logging.INFO)
+    run_log_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(run_log_handler)
 
     # Handle Resume mode
     if resume:
@@ -731,9 +799,7 @@ def project(
                 )
 
         if not curation_db:
-            curation_db = (
-                out_path / "07-memote_reports" / "draft" / "curation_template.xlsx"
-            )
+            curation_db = out_path / "curation_template.xlsx"
         else:
             curation_db = Path(curation_db)
 
@@ -747,6 +813,7 @@ def project(
             f"Resuming pipeline using defined curation database: {curation_db.name}"
         )
 
+        t_step = time.time()
         run_downstream(
             draft_models_dir=drafts,
             output_dir=out_path,
@@ -754,6 +821,26 @@ def project(
             no_polish=no_polish,
             engine=engine,
         )
+        write_pipeline_summary(
+            out_path,
+            steps={
+                "04-07 downstream (resumed)": {
+                    "status": "completed",
+                    "elapsed": _format_elapsed(time.time() - t_step),
+                }
+            },
+            parameters={
+                "output": str(out_path),
+                "curation_db": str(curation_db),
+                "no_polish": no_polish,
+                "engine": engine,
+            },
+            command=command,
+            started_at=started_at,
+            total_elapsed=time.time() - t_start,
+        )
+        logging.getLogger().removeHandler(run_log_handler)
+        run_log_handler.close()
         return
 
     # Normal mode (Not resuming)
@@ -799,6 +886,7 @@ def project(
         return
 
     # 2. Pipe directly into downstream processing (Steps 4-7)
+    t_downstream = time.time()
     run_downstream(
         draft_models_dir=draft_models_dir,
         output_dir=out_path,
@@ -806,6 +894,33 @@ def project(
         no_polish=no_polish,
         engine=engine,
     )
+    write_pipeline_summary(
+        out_path,
+        steps={
+            "03-strain_models": {
+                "status": "completed",
+                "elapsed": _format_elapsed(t_downstream - t_start),
+            },
+            "04-07 downstream": {
+                "status": "completed",
+                "elapsed": _format_elapsed(time.time() - t_downstream),
+            },
+        },
+        parameters={
+            "genomes": str(genomes),
+            "fasta": str(fasta),
+            "panmodel_rxns": str(panmodel_rxns),
+            "medium": str(medium),
+            "threads": threads,
+            "no_polish": no_polish,
+            "engine": engine,
+        },
+        command=command,
+        started_at=started_at,
+        total_elapsed=time.time() - t_start,
+    )
+    logging.getLogger().removeHandler(run_log_handler)
+    run_log_handler.close()
 
 
 _INIT_CONFIG_TEMPLATE = """\
@@ -974,6 +1089,131 @@ def heatmap(models, output, plot):
         plot=plot,
     )
     click.echo(f"Reaction matrix saved to {output}")
+
+
+@analyze.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path (additional files written alongside).",
+)
+@click.option(
+    "--plot",
+    is_flag=True,
+    help="Also generate a dendrogram PNG (requires pip install 'parmmosahn[viz]' scipy).",
+)
+def panreactome(models, output, plot):
+    """Characterize the pan-reactome: core/accessory/unique reactions, Jaccard similarity, accumulation curve."""
+    from parmmosahn.analysis import panreactome as panreactome_fn
+
+    click.echo(f"Analyzing pan-reactome from models in {models}...")
+    panreactome_fn(
+        models_dir=Path(models),
+        output_path=Path(output),
+        plot=plot,
+    )
+    click.echo(f"Pan-reactome analysis saved alongside {output}")
+
+
+@analyze.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-p",
+    "--phenotypes",
+    required=True,
+    type=click.Path(exists=True),
+    help="CSV/TSV with experimental growth phenotypes (matrix or long format).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path.",
+)
+@click.option(
+    "-m",
+    "--medium",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional base medium CSV (cols: exchange_id, flux).",
+)
+@click.option(
+    "--threshold",
+    default=1e-3,
+    show_default=True,
+    help="Growth rate below this is predicted as 'no growth'.",
+)
+def validate(models, phenotypes, output, medium, threshold):
+    """Validate model predictions against experimental growth phenotypes."""
+    from parmmosahn.analysis import validate_phenotypes
+
+    click.echo(f"Validating models in {models} against {phenotypes}...")
+    validate_phenotypes(
+        models_dir=Path(models),
+        phenotype_path=Path(phenotypes),
+        output_path=Path(output),
+        medium_path=Path(medium) if medium else None,
+        threshold=threshold,
+    )
+    click.echo(f"Validation results saved to {output}")
+
+
+@analyze.command()
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path.",
+)
+@click.option(
+    "-m",
+    "--medium",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional medium CSV (cols: exchange_id, flux) to override model media.",
+)
+@click.option(
+    "--threshold",
+    default=1e-3,
+    show_default=True,
+    help="Growth rate below this fraction of WT marks a gene as essential.",
+)
+def essentiality(models, output, medium, threshold):
+    """Predict essential genes via single-gene deletion FBA."""
+    from parmmosahn.analysis import gene_essentiality
+
+    click.echo(f"Running gene essentiality analysis on models in {models}...")
+    gene_essentiality(
+        models_dir=Path(models),
+        output_path=Path(output),
+        medium_path=Path(medium) if medium else None,
+        threshold=threshold,
+    )
+    click.echo(f"Gene essentiality predictions saved to {output}")
 
 
 @cli.command()

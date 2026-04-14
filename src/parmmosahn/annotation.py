@@ -28,6 +28,44 @@ _URI_PREFIX = {
 # Handles underscore-containing prefixes like NP_391935_1_1_308 → NP_391935.1
 _GENE_ID_RE = re.compile(r"^(?P<acc>[A-Za-z]{2,3}_?\d+)_(?P<ver>\d+)_\d+_\d+$")
 
+# Pattern for Bakta-style gene IDs produced by PPanGGOLiN + gapseq:
+#   G_gnl_Bakta_{assembly}_{ver}_{locus}_{start}_{end}
+#   e.g. G_gnl_Bakta_GCF_000144625_1_00215_3_298
+_BAKTA_GENE_ID_RE = re.compile(
+    r"^(?:G_)?gnl_Bakta_(?P<core>.+)_(?P<start>\d+)_(?P<end>\d+)$"
+)
+
+
+def _core_to_bakta_protein_id(core: str) -> str:
+    """Reconstruct a GenBank protein_id from the underscore-flattened core.
+
+    ``GCF_000144625_1_00215`` → ``gnl|Bakta|GCF_000144625.1_00215``
+
+    The assembly accession follows the pattern ``GCF_NNNNNNNNN_V`` where
+    V is the version digit.  We restore the ``.`` between the accession
+    number and the version, then reattach the locus suffix.
+    """
+    # Split: ['GCF', '000144625', '1', '00215']
+    parts = core.split("_")
+    if len(parts) >= 4:
+        # GCF_000144625.1_00215  (prefix_number.version_locus)
+        accession = f"{parts[0]}_{parts[1]}.{parts[2]}"
+        locus = "_".join(parts[3:])
+        return f"gnl|Bakta|{accession}_{locus}"
+    return f"gnl|Bakta|{core}"
+
+
+def load_gene_mapping(tsv_path: Path) -> dict[str, str]:
+    """Load a protein_id → RefSeq accession mapping from a two-column TSV."""
+    mapping: dict[str, str] = {}
+    if not tsv_path.exists():
+        return mapping
+    for line in tsv_path.read_text(encoding="utf-8").splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            mapping[parts[0]] = parts[1]
+    return mapping
+
 
 def _load_tsv_mapping(tsv_name: str) -> dict[str, str]:
     """Load a two-column TSV from the bundled data directory into a dict."""
@@ -81,11 +119,15 @@ def _add_annotation(entity, key: str, value: str) -> bool:
     return False
 
 
-def annotate_genes(model: cobra.Model) -> int:
+def annotate_genes(
+    model: cobra.Model, gene_mapping: dict[str, str] | None = None
+) -> int:
     """Recover NCBI protein accessions from gapseq-mangled gene IDs.
 
-    Gene IDs follow the pattern {accession}_{version}_{start}_{end},
-    e.g. AEP93129_1_1_308 -> AEP93129.1 (NCBI protein accession).
+    Supports two ID formats:
+    - NCBI-style: ``AEP93129_1_1_308`` → ``AEP93129.1``
+    - Bakta-style: ``G_gnl_Bakta_GCF_000144625_1_00215_3_298``
+      → looked up via *gene_mapping* dict (protein_id → RefSeq accession)
 
     Returns the number of genes annotated.
     """
@@ -93,11 +135,28 @@ def annotate_genes(model: cobra.Model) -> int:
     for gene in model.genes:
         if _get_annotation(gene, "ncbiprotein"):
             continue
+        # Try NCBI-style regex first
         m = _GENE_ID_RE.match(gene.id)
         if m:
             accession = f"{m.group('acc')}.{m.group('ver')}"
             if _add_annotation(gene, "ncbiprotein", accession):
                 count += 1
+            continue
+        # Try Bakta-style with mapping lookup
+        if gene_mapping:
+            bm = _BAKTA_GENE_ID_RE.match(gene.id)
+            if bm:
+                bakta_id = _core_to_bakta_protein_id(bm.group("core"))
+                ncbi_acc = gene_mapping.get(bakta_id)
+                if ncbi_acc and _add_annotation(gene, "ncbiprotein", ncbi_acc):
+                    count += 1
+
+    if count == 0 and any("Bakta" in g.id or "gnl" in g.id for g in model.genes):
+        logger.warning(
+            "No NCBI protein accessions recovered. Gene IDs appear to be "
+            "Bakta-style. Ensure .gene_mapping.tsv files exist in the "
+            "proteomes/ directory (generated from GenBank db_xref fields)."
+        )
     return count
 
 
@@ -204,6 +263,7 @@ def enrich_model_annotations(
 def enrich_models_directory(
     models_dir: Path,
     output_dir: Path,
+    proteomes_dir: Path | None = None,
 ) -> Path:
     """Enrich all SBML models in a directory. Returns the output directory.
 
@@ -213,6 +273,9 @@ def enrich_models_directory(
         Directory containing .xml model files (searched recursively).
     output_dir : Path
         Directory to write enriched models (flat structure).
+    proteomes_dir : Path, optional
+        Directory containing ``*.gene_mapping.tsv`` files (one per strain).
+        If provided, Bakta-style gene IDs are resolved to NCBI accessions.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     xml_files = list(models_dir.rglob("*.xml"))
@@ -234,7 +297,14 @@ def enrich_models_directory(
         out_file = output_dir / xml.name
         model = cobra.io.read_sbml_model(str(xml))
 
-        gene_count = annotate_genes(model)
+        # Load per-strain gene mapping if available
+        gene_mapping: dict[str, str] | None = None
+        if proteomes_dir:
+            mapping_tsv = proteomes_dir / f"{xml.stem}.gene_mapping.tsv"
+            if mapping_tsv.exists():
+                gene_mapping = load_gene_mapping(mapping_tsv)
+
+        gene_count = annotate_genes(model, gene_mapping=gene_mapping)
         rxn_counts = annotate_reactions(model, seed_rhea=seed_rhea, mnxr_rhea=mnxr_rhea)
 
         cobra.io.write_sbml_model(model, str(out_file))
@@ -243,7 +313,7 @@ def enrich_models_directory(
         totals["reactions_brenda"] += rxn_counts["brenda"]
         totals["reactions_rhea"] += rxn_counts["rhea"]
 
-        logger.info(
+        logger.debug(
             f"  [{i}/{n}] {xml.name}: +{gene_count} ncbiprotein, "
             f"+{rxn_counts['brenda']} brenda, +{rxn_counts['rhea']} rhea"
         )

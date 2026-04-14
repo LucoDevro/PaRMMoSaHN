@@ -122,6 +122,50 @@ def test_annotate_genes_skips_existing():
     assert count == 0
 
 
+def test_annotate_genes_bakta_style_with_G_prefix():
+    """Bakta-style gene IDs with G_ prefix should be resolved via gene_mapping."""
+    genes = [
+        _make_gene("G_gnl_Bakta_GCF_000144625_1_00215_3_298"),
+    ]
+    model = _make_model(genes=genes)
+    gene_mapping = {"gnl|Bakta|GCF_000144625.1_00215": "WP_012345678.1"}
+
+    count = annotate_genes(model, gene_mapping=gene_mapping)
+
+    assert count == 1
+    assert genes[0].annotation["ncbiprotein"] == "WP_012345678.1"
+
+
+def test_annotate_genes_bakta_style_without_G_prefix():
+    """Bakta-style gene IDs without G_ prefix (real Clostridiales output)."""
+    genes = [
+        _make_gene("gnl_Bakta_GCF_000007625_1_00510_3_298"),
+        _make_gene("gnl_Bakta_GCF_000007625_1_05095_3_592"),
+    ]
+    model = _make_model(genes=genes)
+    gene_mapping = {
+        "gnl|Bakta|GCF_000007625.1_00510": "WP_035110684.1",
+        "gnl|Bakta|GCF_000007625.1_05095": "WP_011098500.1",
+    }
+
+    count = annotate_genes(model, gene_mapping=gene_mapping)
+
+    assert count == 2
+    assert genes[0].annotation["ncbiprotein"] == "WP_035110684.1"
+    assert genes[1].annotation["ncbiprotein"] == "WP_011098500.1"
+
+
+def test_annotate_genes_bakta_no_mapping_warns(caplog):
+    """Bakta-style IDs without gene_mapping should warn (no crash)."""
+    genes = [_make_gene("gnl_Bakta_GCF_000007625_1_00510_3_298")]
+    model = _make_model(genes=genes)
+
+    count = annotate_genes(model, gene_mapping=None)
+
+    assert count == 0
+    assert "Bakta-style" in caplog.text
+
+
 def test_annotate_genes_unmatched_id():
     """Gene IDs that don't match the pattern should be skipped."""
     genes = [
