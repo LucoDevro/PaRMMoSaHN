@@ -276,7 +276,7 @@ def run_pipeline(
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    # Set up error log file
+    # Set up error log file (WARNING+ only)
     error_log = out_path / "errors.log"
     error_handler = logging.FileHandler(str(error_log), mode="w")
     error_handler.setLevel(logging.WARNING)
@@ -285,10 +285,33 @@ def run_pipeline(
     )
     logging.getLogger().addHandler(error_handler)
 
+    # Set up full run log (INFO+) — append so a resumed run continues the same file
+    run_log = out_path / "run.log"
+    run_log_handler = logging.FileHandler(str(run_log), mode="a")
+    run_log_handler.setLevel(logging.INFO)
+    run_log_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(run_log_handler)
+
     t_start = time.time()
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     command = " ".join(sys.argv)
     steps = {}
+
+    # Define parameters early so incremental summary writes have full context
+    parameters = {
+        "genomes": str(genomes),
+        "medium": str(medium),
+        "label": label,
+        "threads": threads,
+        "diamond_bits": diamond_bits,
+        "gapseq_bits": gapseq_bits,
+        "biomass": biomass,
+        "soft_core": soft_core,
+        "engine": engine,
+        "no_polish": no_polish,
+    }
 
     # --- Pre-flight validation ---
     from parmmosahn.utils import validate_input_genomes
@@ -315,6 +338,14 @@ def run_pipeline(
         "status": "completed",
         "elapsed": _format_elapsed(time.time() - t_step),
     }
+    write_pipeline_summary(
+        out_path,
+        steps,
+        parameters,
+        command=command,
+        started_at=started_at,
+        total_elapsed=time.time() - t_start,
+    )
 
     # --- Step 3: Strain models ---
     click.echo("Step 3: Deriving strain-specific models...")
@@ -335,6 +366,14 @@ def run_pipeline(
         "status": "completed",
         "elapsed": _format_elapsed(time.time() - t_step),
     }
+    write_pipeline_summary(
+        out_path,
+        steps,
+        parameters,
+        command=command,
+        started_at=started_at,
+        total_elapsed=time.time() - t_start,
+    )
 
     # --- Optional pause for human-in-the-loop curation ---
     if pause_for_curation:
@@ -370,19 +409,7 @@ def run_pipeline(
 
     total_elapsed = time.time() - t_start
 
-    # Write pipeline summary
-    parameters = {
-        "genomes": str(genomes),
-        "medium": str(medium),
-        "label": label,
-        "threads": threads,
-        "diamond_bits": diamond_bits,
-        "gapseq_bits": gapseq_bits,
-        "biomass": biomass,
-        "soft_core": soft_core,
-        "engine": engine,
-        "no_polish": no_polish,
-    }
+    # Final summary (includes model_statistics from 06-final_models)
     write_pipeline_summary(
         out_path,
         steps,
@@ -392,7 +419,9 @@ def run_pipeline(
         total_elapsed=total_elapsed,
     )
 
-    # Remove empty errors.log
+    # Remove empty errors.log; always keep run.log
+    logging.getLogger().removeHandler(run_log_handler)
+    run_log_handler.close()
     logging.getLogger().removeHandler(error_handler)
     error_handler.close()
     if error_log.exists() and error_log.stat().st_size == 0:
@@ -717,9 +746,12 @@ def project(
     This bypasses Steps 1 & 2 (PPanGGOLiN).
     Can also resume the project using the --resume flag.
     """
+    import sys
+    from datetime import datetime, timezone
+
     from parmmosahn.curation import generate_curation_template
     from parmmosahn.models import derive_strain_models
-    from parmmosahn.pipeline import run_downstream
+    from parmmosahn.pipeline import run_downstream, write_pipeline_summary
 
     if config_file:
         from parmmosahn.utils import load_config
@@ -743,6 +775,19 @@ def project(
 
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
+
+    t_start = time.time()
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    command = " ".join(sys.argv)
+
+    # Full run log — append so this integrates with any prior parmmosahn run log
+    run_log = out_path / "run.log"
+    run_log_handler = logging.FileHandler(str(run_log), mode="a")
+    run_log_handler.setLevel(logging.INFO)
+    run_log_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(run_log_handler)
 
     # Handle Resume mode
     if resume:
@@ -768,6 +813,7 @@ def project(
             f"Resuming pipeline using defined curation database: {curation_db.name}"
         )
 
+        t_step = time.time()
         run_downstream(
             draft_models_dir=drafts,
             output_dir=out_path,
@@ -775,6 +821,26 @@ def project(
             no_polish=no_polish,
             engine=engine,
         )
+        write_pipeline_summary(
+            out_path,
+            steps={
+                "04-07 downstream (resumed)": {
+                    "status": "completed",
+                    "elapsed": _format_elapsed(time.time() - t_step),
+                }
+            },
+            parameters={
+                "output": str(out_path),
+                "curation_db": str(curation_db),
+                "no_polish": no_polish,
+                "engine": engine,
+            },
+            command=command,
+            started_at=started_at,
+            total_elapsed=time.time() - t_start,
+        )
+        logging.getLogger().removeHandler(run_log_handler)
+        run_log_handler.close()
         return
 
     # Normal mode (Not resuming)
@@ -820,6 +886,7 @@ def project(
         return
 
     # 2. Pipe directly into downstream processing (Steps 4-7)
+    t_downstream = time.time()
     run_downstream(
         draft_models_dir=draft_models_dir,
         output_dir=out_path,
@@ -827,6 +894,33 @@ def project(
         no_polish=no_polish,
         engine=engine,
     )
+    write_pipeline_summary(
+        out_path,
+        steps={
+            "03-strain_models": {
+                "status": "completed",
+                "elapsed": _format_elapsed(t_downstream - t_start),
+            },
+            "04-07 downstream": {
+                "status": "completed",
+                "elapsed": _format_elapsed(time.time() - t_downstream),
+            },
+        },
+        parameters={
+            "genomes": str(genomes),
+            "fasta": str(fasta),
+            "panmodel_rxns": str(panmodel_rxns),
+            "medium": str(medium),
+            "threads": threads,
+            "no_polish": no_polish,
+            "engine": engine,
+        },
+        command=command,
+        started_at=started_at,
+        total_elapsed=time.time() - t_start,
+    )
+    logging.getLogger().removeHandler(run_log_handler)
+    run_log_handler.close()
 
 
 _INIT_CONFIG_TEMPLATE = """\
