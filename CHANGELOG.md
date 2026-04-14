@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
-## [0.2.0] - 2026-04-14
+## [0.2.0] - 2026-04-15
 
 ### Added
 - `parmmosahn analyze panreactome`: classify reactions as core/accessory/unique
@@ -46,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SBML model gathering now uses recursive search so models nested in
   subdirectories are found correctly
 - Model-identifier regex updated for compatibility with current gapseq output
+- `parmmosahn analyze validate` no longer leaks carbon sources between
+  phenotype tests: a per-strain baseline medium is snapshotted before the
+  first test and restored for each subsequent one. Previously, accuracy/MCC
+  numbers were silently inflated because carbon sources from earlier tests
+  remained enabled on `model.medium`
+- `parmmosahn analyze validate` growth-column parser now accepts bool,
+  int/float, and common string forms (`True`/`False`, `yes`/`no`, `1`/`0`);
+  previously, string booleans raised `ValueError` despite being documented
+  as valid input
 
 ### Changed
 - `run` command writes `pipeline_summary.json` incrementally after each step;
@@ -63,6 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadlocks on large tool outputs
 - `run_memote_snapshot` returns a boolean success flag for use in
   checkpointing logic
+
+### Removed
+- Stale `errors.md` troubleshooting log (contained local hostname/path
+  references and was superseded by the in-output `run.log` and `errors.log`
+  files written by the `run` and `project` commands)
 
 ### Package
 - `MANIFEST.in` and `pyproject.toml` `package-data` now list runtime data
