@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Model-identifier regex updated for compatibility with current gapseq output
 
 ### Changed
+- `run` command writes `pipeline_summary.json` incrementally after each step;
+  a crash mid-run now preserves timing and status for all completed steps
+- Full INFO-level `run.log` appended to the output directory during `run` and
+  `project`; all per-strain progress is captured even when the terminal session
+  is lost
+- `project` command now writes `pipeline_summary.json` on completion, making
+  it the documented crash-recovery path for interrupted `run` executions
 - `apply_curations` refactored into `_apply_duplicate_decisions` and
   `_apply_formula_fixes`; both the `curated_imbalances` sheet name (preferred)
   and the legacy `corrected_balances` sheet name are now accepted
