@@ -1,6 +1,8 @@
 import logging
 import re
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -184,6 +186,170 @@ def filter_blast_table(
     )
 
 
+def _process_single_strain(
+    genome: Path,
+    total_strains: int,
+    models_dir: Path,
+    matches_dir: Path,
+    db_file: Path,
+    panmodel_rxn_table: Path,
+    medium_file: Path,
+    diamond_bits: int,
+    gapseq_bits: int,
+    biomass: str,
+    threads_per_strain: int,
+    counter: "list[int]",
+    counter_lock: threading.Lock,
+) -> tuple[str, bool]:
+    """Process a single strain end-to-end. Returns (strain_name, skipped)."""
+    strain_name = genome.stem
+    strain_dir = models_dir / strain_name
+    strain_dir.mkdir(exist_ok=True)
+    done_marker = strain_dir / ".done"
+
+    with counter_lock:
+        counter[0] += 1
+        display_idx = counter[0]
+
+    if done_marker.exists():
+        logger.info(
+            f"[{display_idx}/{total_strains}] Skipping {strain_name} (already completed)"
+        )
+        return strain_name, True
+
+    logger.info(
+        f"[{display_idx}/{total_strains}] --- Processing strain: {strain_name} ---"
+    )
+
+    log_out = strain_dir / "log.log"
+    log_err = strain_dir / "log.err"
+
+    # 3a. Diamond Blastp
+    match_file = matches_dir / f"{strain_name}.tsv"
+    run_command(
+        [
+            "diamond",
+            "blastp",
+            "-d",
+            str(db_file),
+            "-q",
+            str(genome),
+            "-o",
+            str(match_file),
+            "--min-score",
+            str(diamond_bits),
+            "-p",
+            str(threads_per_strain),
+        ]
+    )
+
+    # 3b. Filter Panmodel table
+    filtered_rxn_tbl = strain_dir / "filtered-Reactions.tbl"
+    filter_blast_table(panmodel_rxn_table, match_file, filtered_rxn_tbl)
+
+    # 3c. Find Transporters
+    run_command(
+        [
+            "gapseq",
+            "find-transport",
+            "-K",
+            str(threads_per_strain),
+            "-b",
+            str(gapseq_bits),
+            "-M",
+            "prot",
+            "-f",
+            str(strain_dir),
+            str(genome),
+        ],
+        stdout_file=log_out,
+        stderr_file=log_err,
+    )
+
+    # 3d. Draft Model
+    transporter_tbl = strain_dir / f"{strain_name}-Transporter.tbl"
+    run_command(
+        [
+            "gapseq",
+            "draft",
+            "-r",
+            str(filtered_rxn_tbl),
+            "-t",
+            str(transporter_tbl),
+            "-b",
+            biomass,
+            "-u",
+            str(gapseq_bits),
+            "-f",
+            str(strain_dir),
+        ],
+        stdout_file=log_out,
+        stderr_file=log_err,
+    )
+
+    # 3e. Gapfill Model
+    draft_rds = strain_dir / "filtered-Reactions.tbl-draft.RDS"
+    weights_rds = strain_dir / "filtered-Reactions.tbl-rxnWeights.RDS"
+    genes_rds = strain_dir / "filtered-Reactions.tbl-rxnXgenes.RDS"
+
+    run_command(
+        [
+            "gapseq",
+            "fill",
+            "-q",
+            "-m",
+            str(draft_rds),
+            "-n",
+            str(medium_file),
+            "-c",
+            str(weights_rds),
+            "-g",
+            str(genes_rds),
+            "-f",
+            str(strain_dir),
+        ],
+        stdout_file=log_out,
+        stderr_file=log_err,
+    )
+
+    # 3f. Clean XML
+    xml_file = strain_dir / "filtered-Reactions.tbl.xml"
+    final_xml = strain_dir / f"{strain_name}.xml"
+
+    if xml_file.exists():
+        xml_content = xml_file.read_text(encoding="utf-8")
+        xml_content = xml_content.replace("R_EX_", "EX_")
+        safe_model_id = re.sub(r"[^a-zA-Z0-9_]", "_", strain_name)
+        if safe_model_id and safe_model_id[0].isdigit():
+            safe_model_id = f"M_{safe_model_id}"
+        xml_content = re.sub(
+            r'((?:id|metaid)=")filtered[-_]Reactions[._]?tbl"',
+            r"\g<1>" + safe_model_id + '"',
+            xml_content,
+        )
+        xml_content = re.sub(
+            r'(name=")filtered[-.]Reactions[._]?tbl"',
+            r"\g<1>" + strain_name + '"',
+            xml_content,
+        )
+        final_xml.write_text(xml_content, encoding="utf-8")
+        xml_file.unlink()
+        logger.debug(
+            f"Saved cleaned XML as {final_xml.name} with internal ID {safe_model_id}"
+        )
+
+    draft_xml = strain_dir / "filtered-Reactions.tbl-draft.xml"
+    if draft_xml.exists():
+        draft_xml.unlink()
+        logger.debug(f"Removed intermediate draft model {draft_xml.name}")
+
+    done_marker.write_text(
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        encoding="utf-8",
+    )
+    return strain_name, False
+
+
 def derive_strain_models(
     genomes_dir: str | Path,
     pangenome_fasta: str | Path,
@@ -194,10 +360,16 @@ def derive_strain_models(
     gapseq_bits: int = 150,
     biomass: str = "pos",
     threads: int = 14,
+    parallel_strains: int | None = None,
 ) -> Path:
     """
     Uses diamond and gapseq to project the pan-model onto individual strains.
     Gracefully accepts both .gbff (extracts CDS) and .faa (direct mapping).
+
+    Args:
+        parallel_strains: Number of strains to process concurrently. Each strain
+            receives threads // parallel_strains CPU threads. Default 1 (sequential).
+            Recommended: 2–4 on 8–16 GB machines (each strain peaks at ~1.5 GB RAM).
     """
     genomes_dir = Path(genomes_dir).resolve()
     pangenome_fasta = Path(pangenome_fasta).resolve()
@@ -256,158 +428,54 @@ def derive_strain_models(
     run_command(["diamond", "makedb", "--in", str(pangenome_fasta), "-d", str(db_path)])
     db_file = db_path.with_suffix(".dmnd")
 
-    # Step 3: Iterate through strains
+    # Step 3: Process strains (parallel or sequential)
     total_strains = len(processed_genomes)
+    if parallel_strains is None:
+        parallel_strains = max(1, threads // 4)
+    threads_per_strain = max(1, threads // parallel_strains)
+
+    if parallel_strains > 1:
+        logger.info(
+            f"Processing {total_strains} strains with {parallel_strains} parallel workers "
+            f"({threads_per_strain} threads each)"
+        )
+    else:
+        logger.info(
+            f"Processing {total_strains} strains sequentially ({threads} threads each)"
+        )
+
+    counter: list[int] = [0]
+    counter_lock = threading.Lock()
     skipped = 0
-    for idx, genome in enumerate(processed_genomes, start=1):
-        strain_name = genome.stem
 
-        strain_dir = models_dir / strain_name
-        strain_dir.mkdir(exist_ok=True)
-        done_marker = strain_dir / ".done"
-
-        if done_marker.exists():
-            logger.info(
-                f"[{idx}/{total_strains}] Skipping {strain_name} (already completed)"
-            )
-            skipped += 1
-            continue
-
-        logger.info(f"[{idx}/{total_strains}] --- Processing strain: {strain_name} ---")
-
-        log_out = strain_dir / "log.log"
-        log_err = strain_dir / "log.err"
-
-        # 3a. Diamond Blastp
-        match_file = matches_dir / f"{strain_name}.tsv"
-        run_command(
-            [
-                "diamond",
-                "blastp",
-                "-d",
-                str(db_file),
-                "-q",
-                str(genome),
-                "-o",
-                str(match_file),
-                "--min-score",
-                str(diamond_bits),
-                "-p",
-                str(threads),
-            ]
-        )
-
-        # 3b. Filter Panmodel table
-        filtered_rxn_tbl = strain_dir / "filtered-Reactions.tbl"
-        filter_blast_table(panmodel_rxn_table, match_file, filtered_rxn_tbl)
-
-        # 3c. Find Transporters (Using the protein FASTA)
-        run_command(
-            [
-                "gapseq",
-                "find-transport",
-                "-K",
-                str(threads),
-                "-b",
-                str(gapseq_bits),
-                "-M",
-                "prot",
-                "-f",
-                str(strain_dir),
-                str(genome),
-            ],
-            stdout_file=log_out,
-            stderr_file=log_err,
-        )
-
-        # 3d. Draft Model
-        transporter_tbl = strain_dir / f"{strain_name}-Transporter.tbl"
-        run_command(
-            [
-                "gapseq",
-                "draft",
-                "-r",
-                str(filtered_rxn_tbl),
-                "-t",
-                str(transporter_tbl),
-                "-b",
+    with ThreadPoolExecutor(max_workers=parallel_strains) as pool:
+        futures = {
+            pool.submit(
+                _process_single_strain,
+                genome,
+                total_strains,
+                models_dir,
+                matches_dir,
+                db_file,
+                panmodel_rxn_table,
+                medium_file,
+                diamond_bits,
+                gapseq_bits,
                 biomass,
-                "-u",
-                str(gapseq_bits),
-                "-f",
-                str(strain_dir),
-            ],
-            stdout_file=log_out,
-            stderr_file=log_err,
-        )
-
-        # 3e. Gapfill Model
-        draft_rds = strain_dir / "filtered-Reactions.tbl-draft.RDS"
-        weights_rds = strain_dir / "filtered-Reactions.tbl-rxnWeights.RDS"
-        genes_rds = strain_dir / "filtered-Reactions.tbl-rxnXgenes.RDS"
-
-        run_command(
-            [
-                "gapseq",
-                "fill",
-                "-q",
-                "-m",
-                str(draft_rds),
-                "-n",
-                str(medium_file),
-                "-c",
-                str(weights_rds),
-                "-g",
-                str(genes_rds),
-                "-f",
-                str(strain_dir),
-            ],
-            stdout_file=log_out,
-            stderr_file=log_err,
-        )
-
-        # 3f. Clean XML tags and internal model IDs for compatibility with downstream tools
-        xml_file = strain_dir / "filtered-Reactions.tbl.xml"
-        final_xml = strain_dir / f"{strain_name}.xml"
-
-        if xml_file.exists():
-            xml_content = xml_file.read_text(encoding="utf-8")
-            xml_content = xml_content.replace("R_EX_", "EX_")
-            safe_model_id = re.sub(r"[^a-zA-Z0-9_]", "_", strain_name)
-            if safe_model_id and safe_model_id[0].isdigit():
-                safe_model_id = f"M_{safe_model_id}"
-
-            # Fix: Replace the generic model identifiers gapseq generates.
-            # gapseq produces id/metaid="filtered_Reactions_tbl" (SBML SId)
-            # and name="filtered-Reactions.tbl" (human-readable).
-            xml_content = re.sub(
-                r'((?:id|metaid)=")filtered[-_]Reactions[._]?tbl"',
-                r"\g<1>" + safe_model_id + '"',
-                xml_content,
-            )
-            xml_content = re.sub(
-                r'(name=")filtered[-.]Reactions[._]?tbl"',
-                r"\g<1>" + strain_name + '"',
-                xml_content,
-            )
-
-            final_xml.write_text(xml_content, encoding="utf-8")
-            xml_file.unlink()
-            logger.debug(
-                f"Saved cleaned XML as {final_xml.name} with internal ID {safe_model_id}"
-            )
-
-        # This prevents memote and the pipeline from picking up duplicate/unfinished models
-        draft_xml = strain_dir / "filtered-Reactions.tbl-draft.xml"
-        if draft_xml.exists():
-            draft_xml.unlink()
-            logger.debug(f"Removed intermediate draft model {draft_xml.name}")
-
-        # Mark strain as completed for checkpointing
-        done_marker.write_text(
-            datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            encoding="utf-8",
-        )
+                threads_per_strain,
+                counter,
+                counter_lock,
+            ): genome
+            for genome in processed_genomes
+        }
+        for future in as_completed(futures):
+            try:
+                _, was_skipped = future.result()
+                if was_skipped:
+                    skipped += 1
+            except Exception as exc:
+                genome = futures[future]
+                logger.error(f"Strain {genome.stem} failed: {exc}")
 
     if skipped:
         logger.info(

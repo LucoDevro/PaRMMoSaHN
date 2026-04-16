@@ -250,6 +250,16 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
     is_flag=True,
     help="Pause after memote evaluation to allow manual curation edits before continuing.",
 )
+@click.option(
+    "--parallel-strains",
+    default=None,
+    type=int,
+    help=(
+        "Number of strains to process concurrently in Step 3. "
+        "Default: threads//4 (auto). Each worker gets threads//N CPU threads "
+        "and peaks at ~1.5 GB RAM."
+    ),
+)
 def run_pipeline(
     genomes,
     output,
@@ -265,6 +275,7 @@ def run_pipeline(
     engine,
     curation_db,
     pause_for_curation,
+    parallel_strains,
 ):
     """Full pipeline: genomes -> pangenome -> pan-model -> strain models -> curated -> polished -> annotated -> final models."""
     import sys
@@ -361,6 +372,7 @@ def run_pipeline(
         diamond_bits=diamond_bits,
         gapseq_bits=gapseq_bits,
         biomass=biomass,
+        parallel_strains=parallel_strains,
     )
     steps["03-strain_models"] = {
         "status": "completed",
@@ -489,6 +501,12 @@ def run_pipeline(
     show_default=True,
     help="Biomass reaction type for gapseq draft model generation (e.g. 'pos', 'neg').",
 )
+@click.option(
+    "--parallel-strains",
+    default=None,
+    type=int,
+    help="Number of strains to process concurrently. Default: threads//4 (auto). Each worker peaks at ~1.5 GB RAM.",
+)
 def strains(
     genomes,
     fasta,
@@ -499,6 +517,7 @@ def strains(
     diamond_bits,
     gapseq_bits,
     biomass,
+    parallel_strains,
 ):
     """Step 3: Derive strain-specific models using diamond and gapseq."""
     click.echo("Deriving strain models...")
@@ -525,6 +544,7 @@ def strains(
         diamond_bits=diamond_bits,
         gapseq_bits=gapseq_bits,
         biomass=biomass,
+        parallel_strains=parallel_strains,
     )
 
 
@@ -707,6 +727,12 @@ def gather(models, output):
     help="Pause the pipeline before automatic curation to allow manual evaluation/edits.",
 )
 @click.option(
+    "--parallel-strains",
+    default=None,
+    type=int,
+    help="Number of strains to process concurrently. Default: threads//4 (auto). Each worker peaks at ~1.5 GB RAM.",
+)
+@click.option(
     "--resume",
     is_flag=True,
     help="Resume the configured pipeline originating from Step 4 using a finished curation database.",
@@ -737,6 +763,7 @@ def project(
     no_polish,
     engine,
     pause_for_curation,
+    parallel_strains,
     resume,
     drafts,
     config_file,
@@ -871,6 +898,7 @@ def project(
         diamond_bits=diamond_bits,
         gapseq_bits=gapseq_bits,
         biomass=biomass,
+        parallel_strains=parallel_strains,
     )
 
     if pause_for_curation:

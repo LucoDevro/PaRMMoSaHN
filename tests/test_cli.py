@@ -110,6 +110,7 @@ def test_cli_strains(tmp_path: Path):
         diamond_bits=200,
         gapseq_bits=180,
         biomass="neg",
+        parallel_strains=None,
     )
 
 
