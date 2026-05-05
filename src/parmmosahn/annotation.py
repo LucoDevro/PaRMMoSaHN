@@ -22,11 +22,28 @@ _URI_PREFIX = {
     "rhea": "https://identifiers.org/rhea:",
 }
 
+# SBO terms for SBML reaction/metabolite classification (MIRIAM standard)
+_SBO = {
+    "exchange": "SBO:0000627",  # exchange reaction
+    "demand": "SBO:0000628",  # demand reaction
+    "sink": "SBO:0000632",  # sink reaction
+    "biomass": "SBO:0000629",  # biomass production
+    "biochemical": "SBO:0000176",  # biochemical or transport reaction (default)
+    "metabolite": "SBO:0000247",  # simple chemical
+}
+
 # Pattern for gapseq-mangled gene IDs:
 #   {accession}_{version}_{start}_{end}  e.g. AEP93129_1_1_308
 # We recover {accession}.{version} as the NCBI protein accession.
 # Handles underscore-containing prefixes like NP_391935_1_1_308 → NP_391935.1
 _GENE_ID_RE = re.compile(r"^(?P<acc>[A-Za-z]{2,3}_?\d+)_(?P<ver>\d+)_\d+_\d+$")
+
+# Exchange reaction ID pattern for gapseq/SEED models: EX_cpd#####_e0
+_SEED_EXCHANGE_RE = re.compile(r"^EX_(cpd\d+)_e0$")
+
+# Metabolite ID pattern for gapseq/SEED models: cpd#####_{compartment}
+# Matches cytoplasm (c0), external (e0), periplasm (p0), etc.
+_SEED_MET_RE = re.compile(r"^(cpd\d+)_[a-z]\d*$")
 
 # Pattern for Bakta-style gene IDs produced by PPanGGOLiN + gapseq:
 #   G_gnl_Bakta_{assembly}_{ver}_{locus}_{start}_{end}
@@ -218,6 +235,112 @@ def annotate_reactions(
     return counts
 
 
+def annotate_exchanges(
+    model: cobra.Model,
+    seed_bigg: dict[str, str] | None = None,
+) -> int:
+    """Add BiGG annotations to exchange reactions and their boundary metabolites.
+
+    For each SEED-format exchange reaction (``EX_cpd#####_e0``):
+    - ``bigg.metabolite`` is written on the boundary metabolite
+    - ``bigg.reaction``  is written on the reaction itself (e.g. ``EX_glc__D_e``)
+
+    Uses the bundled ``seed_to_bigg.tsv`` (2900+ entries built from MetaNetX
+    chem_xref plus supervisor-verified overrides) unless *seed_bigg* is supplied.
+
+    Returns the number of exchange reactions annotated with ``bigg.reaction``
+    (idempotent: already-present annotations are not re-added and not counted).
+    """
+    if seed_bigg is None:
+        seed_bigg = _load_tsv_mapping("seed_to_bigg.tsv")
+
+    count = 0
+    for rxn in model.exchanges:
+        m = _SEED_EXCHANGE_RE.match(rxn.id)
+        if not m:
+            continue
+        bigg_id = seed_bigg.get(m.group(1))
+        if not bigg_id:
+            continue
+        for met in rxn.metabolites:
+            _add_annotation(met, "bigg.metabolite", bigg_id)
+        if _add_annotation(rxn, "bigg.reaction", f"EX_{bigg_id}_e"):
+            count += 1
+
+    return count
+
+
+def annotate_metabolites(
+    model: cobra.Model,
+    seed_bigg: dict[str, str] | None = None,
+) -> int:
+    """Add ``bigg.metabolite`` to every SEED-format metabolite in the model.
+
+    Iterates ``model.metabolites`` (all compartments: cytoplasm, external,
+    periplasm, …).  Boundary metabolites of exchange reactions already
+    annotated by :func:`annotate_exchanges` are skipped (idempotent).
+
+    Returns the number of metabolites newly annotated.
+    """
+    if seed_bigg is None:
+        seed_bigg = _load_tsv_mapping("seed_to_bigg.tsv")
+
+    count = 0
+    for met in model.metabolites:
+        m = _SEED_MET_RE.match(met.id)
+        if not m:
+            continue
+        bigg_id = seed_bigg.get(m.group(1))
+        if not bigg_id:
+            continue
+        if _add_annotation(met, "bigg.metabolite", bigg_id):
+            count += 1
+
+    return count
+
+
+def annotate_sbo_terms(model: cobra.Model) -> dict[str, int]:
+    """Add SBO terms to every reaction and metabolite that lacks one.
+
+    Classification for reactions:
+    - Exchange reactions (``model.exchanges``)  → SBO:0000627
+    - Demand reactions   (``model.demands``)    → SBO:0000628
+    - Sink reactions     (``model.sinks``)      → SBO:0000632
+    - Reactions with "biomass" in their ID/name → SBO:0000629
+    - All others                                → SBO:0000176
+
+    All metabolites receive SBO:0000247 ("simple chemical").
+
+    Returns ``{"reactions": n_added, "metabolites": n_added}``.
+    """
+    exchange_ids = {rxn.id for rxn in model.exchanges}
+    demand_ids = {rxn.id for rxn in model.demands}
+    sink_ids = {rxn.id for rxn in model.sinks}
+
+    rxn_count = 0
+    for rxn in model.reactions:
+        if rxn.id in exchange_ids:
+            sbo = _SBO["exchange"]
+        elif rxn.id in demand_ids:
+            sbo = _SBO["demand"]
+        elif rxn.id in sink_ids:
+            sbo = _SBO["sink"]
+        elif "biomass" in rxn.id.lower() or "biomass" in rxn.name.lower():
+            sbo = _SBO["biomass"]
+        else:
+            sbo = _SBO["biochemical"]
+        if _add_annotation(rxn, "sbo", sbo):
+            rxn_count += 1
+
+    met_count = sum(
+        1
+        for met in model.metabolites
+        if _add_annotation(met, "sbo", _SBO["metabolite"])
+    )
+
+    return {"reactions": rxn_count, "metabolites": met_count}
+
+
 def enrich_model_annotations(
     model_path: Path,
     output_path: Path,
@@ -240,14 +363,22 @@ def enrich_model_annotations(
     # Load bundled mappings once
     seed_rhea = _load_tsv_mapping("seed_to_rhea.tsv")
     mnxr_rhea = _load_tsv_mapping("mnxr_to_rhea.tsv")
+    seed_bigg = _load_tsv_mapping("seed_to_bigg.tsv")
 
     gene_count = annotate_genes(model)
     rxn_counts = annotate_reactions(model, seed_rhea=seed_rhea, mnxr_rhea=mnxr_rhea)
+    exch_count = annotate_exchanges(model, seed_bigg=seed_bigg)
+    met_count = annotate_metabolites(model, seed_bigg=seed_bigg)
+    sbo_counts = annotate_sbo_terms(model)
 
     summary = {
         "genes_ncbiprotein": gene_count,
         "reactions_brenda": rxn_counts["brenda"],
         "reactions_rhea": rxn_counts["rhea"],
+        "exchanges_bigg": exch_count,
+        "metabolites_bigg": met_count,
+        "sbo_reactions": sbo_counts["reactions"],
+        "sbo_metabolites": sbo_counts["metabolites"],
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -255,7 +386,9 @@ def enrich_model_annotations(
 
     logger.info(
         f"{model_path.name}: +{gene_count} ncbiprotein genes, "
-        f"+{rxn_counts['brenda']} brenda, +{rxn_counts['rhea']} rhea reactions"
+        f"+{rxn_counts['brenda']} brenda, +{rxn_counts['rhea']} rhea, "
+        f"+{exch_count} bigg.reaction, +{met_count} bigg.metabolite, "
+        f"+{sbo_counts['reactions']} sbo reactions, +{sbo_counts['metabolites']} sbo metabolites"
     )
     return summary
 
@@ -289,8 +422,17 @@ def enrich_models_directory(
     # Load mappings once for all models
     seed_rhea = _load_tsv_mapping("seed_to_rhea.tsv")
     mnxr_rhea = _load_tsv_mapping("mnxr_to_rhea.tsv")
+    seed_bigg = _load_tsv_mapping("seed_to_bigg.tsv")
 
-    totals = {"genes_ncbiprotein": 0, "reactions_brenda": 0, "reactions_rhea": 0}
+    totals: dict[str, int] = {
+        "genes_ncbiprotein": 0,
+        "reactions_brenda": 0,
+        "reactions_rhea": 0,
+        "exchanges_bigg": 0,
+        "metabolites_bigg": 0,
+        "sbo_reactions": 0,
+        "sbo_metabolites": 0,
+    }
 
     n = len(xml_files)
     for i, xml in enumerate(xml_files, 1):
@@ -306,23 +448,37 @@ def enrich_models_directory(
 
         gene_count = annotate_genes(model, gene_mapping=gene_mapping)
         rxn_counts = annotate_reactions(model, seed_rhea=seed_rhea, mnxr_rhea=mnxr_rhea)
+        exch_count = annotate_exchanges(model, seed_bigg=seed_bigg)
+        met_count = annotate_metabolites(model, seed_bigg=seed_bigg)
+        sbo_counts = annotate_sbo_terms(model)
 
         cobra.io.write_sbml_model(model, str(out_file))
 
         totals["genes_ncbiprotein"] += gene_count
         totals["reactions_brenda"] += rxn_counts["brenda"]
         totals["reactions_rhea"] += rxn_counts["rhea"]
+        totals["exchanges_bigg"] += exch_count
+        totals["metabolites_bigg"] += met_count
+        totals["sbo_reactions"] += sbo_counts["reactions"]
+        totals["sbo_metabolites"] += sbo_counts["metabolites"]
 
         logger.debug(
             f"  [{i}/{n}] {xml.name}: +{gene_count} ncbiprotein, "
-            f"+{rxn_counts['brenda']} brenda, +{rxn_counts['rhea']} rhea"
+            f"+{rxn_counts['brenda']} brenda, +{rxn_counts['rhea']} rhea, "
+            f"+{exch_count} bigg.reaction, +{met_count} bigg.metabolite, "
+            f"+{sbo_counts['reactions']} sbo rxns, +{sbo_counts['metabolites']} sbo mets"
         )
 
     logger.info(
         f"Annotation enrichment complete: "
         f"+{totals['genes_ncbiprotein']} ncbiprotein genes, "
         f"+{totals['reactions_brenda']} brenda, "
-        f"+{totals['reactions_rhea']} rhea reactions (across {len(xml_files)} models)"
+        f"+{totals['reactions_rhea']} rhea, "
+        f"+{totals['exchanges_bigg']} bigg.reaction exchanges, "
+        f"+{totals['metabolites_bigg']} bigg.metabolite internal, "
+        f"+{totals['sbo_reactions']} sbo reactions, "
+        f"+{totals['sbo_metabolites']} sbo metabolites "
+        f"(across {len(xml_files)} models)"
     )
 
     return output_dir

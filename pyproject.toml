@@ -91,4 +91,5 @@ parmmosahn = [
     "data/docker-compose.yml",
     "data/mnxr_to_rhea.tsv",
     "data/seed_to_rhea.tsv",
+    "data/seed_to_bigg.tsv",
 ]
