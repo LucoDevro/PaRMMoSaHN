@@ -55,13 +55,19 @@ def _run_memote_snapshot_inprocess(
 
     html_report = memote_api.snapshot_report(results, config=config, html=True)
     if html_report:
-        with output_html.open("w", encoding="utf-8") as f:
+        # Write atomically: a kill mid-write must never leave a half-formed file
+        # that downstream consumers (or our own --skip-existing logic) treat as valid.
+        tmp_html = output_html.with_suffix(output_html.suffix + ".tmp")
+        with tmp_html.open("w", encoding="utf-8") as f:
             f.write(cast(str, html_report))
+        tmp_html.replace(output_html)
 
     json_report = memote_api.snapshot_report(results, config=config, html=False)
     if json_report:
-        with output_json.open("w", encoding="utf-8") as f:
+        tmp_json = output_json.with_suffix(output_json.suffix + ".tmp")
+        with tmp_json.open("w", encoding="utf-8") as f:
             f.write(cast(str, json_report))
+        tmp_json.replace(output_json)
 
 
 def run_memote_snapshot(

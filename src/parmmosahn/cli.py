@@ -1264,7 +1264,22 @@ def essentiality(models, output, medium, threshold):
     is_flag=True,
     help="Also generate the curation Excel template from memote results.",
 )
-def evaluate(models, output, curation_template):
+@click.option(
+    "--workers",
+    default=1,
+    show_default=True,
+    type=int,
+    help="Number of strains to evaluate in parallel. Memote uses ~6 internal "
+    "threads per model, so 2-3 outer workers typically saturate a 12-16 core host.",
+)
+@click.option(
+    "--skip-existing/--no-skip-existing",
+    default=True,
+    show_default=True,
+    help="Skip strains whose output JSON already exists and is non-empty. "
+    "Allows safe restart after a crash without redoing completed work.",
+)
+def evaluate(models, output, curation_template, workers, skip_existing):
     """Run memote evaluation on a directory of SBML models."""
     from parmmosahn.curation import (
         extract_memote_problems,
@@ -1280,19 +1295,65 @@ def evaluate(models, output, curation_template):
         click.echo(f"No XML models found in {models_path}")
         return
 
-    n = len(xml_files)
-    click.echo(f"Input:  {models_path} ({n} models)")
-    click.echo(f"Output: {output_path}")
-    click.echo(f"Evaluating {n} model(s) with memote...")
-
-    t_start = time.time()
-    for i, xml in enumerate(xml_files, 1):
-        t_model = time.time()
-        click.echo(f"  [{i}/{n}] {xml.stem} ...", nl=False)
+    n_total = len(xml_files)
+    todo = []
+    for xml in xml_files:
         out_json = output_path / f"{xml.stem}.json"
-        out_html = output_path / f"{xml.stem}.html"
-        run_memote_snapshot(xml, out_json, out_html)
-        click.echo(f" done ({_format_elapsed(time.time() - t_model)})")
+        if skip_existing and out_json.exists() and out_json.stat().st_size > 0:
+            continue
+        todo.append(xml)
+
+    n = len(todo)
+    skipped = n_total - n
+    click.echo(f"Input:  {models_path} ({n_total} models)")
+    click.echo(f"Output: {output_path}")
+    if skipped:
+        click.echo(f"Skipping {skipped} strain(s) with existing JSON output.")
+
+    if n == 0:
+        click.echo("Nothing to do.")
+        if curation_template:
+            out_excel = output_path / "curation_template.xlsx"
+            extract_memote_problems(output_path, models_path, out_excel)
+            click.echo(f"Curation template saved to {out_excel}")
+        return
+
+    click.echo(f"Evaluating {n} model(s) with memote (workers={workers})...")
+    t_start = time.time()
+
+    if workers <= 1:
+        for i, xml in enumerate(todo, 1):
+            t_model = time.time()
+            click.echo(f"  [{i}/{n}] {xml.stem} ...", nl=False)
+            out_json = output_path / f"{xml.stem}.json"
+            out_html = output_path / f"{xml.stem}.html"
+            run_memote_snapshot(xml, out_json, out_html)
+            click.echo(f" done ({_format_elapsed(time.time() - t_model)})")
+    else:
+        # Threads orchestrate; each task delegates to run_memote_snapshot which
+        # spawns its own subprocess (subprocess_mode=True by default), so memory
+        # is reclaimed per strain even though the outer pool is thread-based.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for xml in todo:
+                out_json = output_path / f"{xml.stem}.json"
+                out_html = output_path / f"{xml.stem}.html"
+                fut = executor.submit(run_memote_snapshot, xml, out_json, out_html)
+                futures[fut] = xml
+            for done, fut in enumerate(as_completed(futures), 1):
+                xml = futures[fut]
+                t_done = time.time() - t_start
+                try:
+                    ok = fut.result()
+                    status = "ok" if ok else "FAIL"
+                except Exception as e:
+                    status = f"ERROR: {e}"
+                click.echo(
+                    f"  [{done}/{n}] {xml.stem} {status} "
+                    f"(elapsed {_format_elapsed(t_done)})"
+                )
 
     if curation_template:
         out_excel = output_path / "curation_template.xlsx"
