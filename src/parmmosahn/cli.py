@@ -34,6 +34,13 @@ def _format_elapsed(seconds: float) -> str:
     return f"{h}h {m}m {s}s"
 
 
+def _stdin_is_tty() -> bool:
+    """Indirection so tests can force-toggle the interactive-pause behaviour."""
+    import sys
+
+    return sys.stdin.isatty()
+
+
 def _setup_logging(verbose: bool, quiet: bool) -> None:
     """Configure logging level based on CLI flags."""
     if verbose:
@@ -43,9 +50,15 @@ def _setup_logging(verbose: bool, quiet: bool) -> None:
     else:
         level = logging.INFO
 
+    # ``force=True`` re-attaches the StreamHandler to the *current* sys.stderr
+    # on every invocation. Without it, a handler bound to a stale stderr from
+    # an earlier ``CliRunner.invoke`` (or a long-running interpreter session)
+    # would silently swallow logger output. This is what made the v0.2.1
+    # ``--pause-for-curation`` notices appear to vanish under ``conda run``.
     logging.basicConfig(
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        force=True,
     )
 
     # Suppress noisy cobra solver warnings that clutter output
@@ -395,29 +408,55 @@ def run_pipeline(
     )
 
     # --- Optional pause for human-in-the-loop curation ---
+    # When stdin is a TTY, this prompts the user to edit the curation template
+    # and continues inline once they hit a key. When stdin is non-interactive
+    # (CI, `conda run`, nohup, tmux send-keys) the pipeline exits with a resume
+    # command instead — keeping the message in `run.log` rather than only on
+    # stdout, since `conda run` is known to buffer/drop stdout.
+    effective_curation_db: Path | None = Path(curation_db) if curation_db else None
+
     if pause_for_curation:
         from parmmosahn.curation import generate_curation_template
 
-        click.echo("Preparing curation template (running memote on drafts)...")
+        logger.info("Preparing curation template (running memote on drafts)...")
         template_path = generate_curation_template(draft_models_dir, out_path)
-        click.echo("=== Pipeline paused for Human-in-the-Loop Curation ===")
-        click.echo(
+        logger.info("=== Pipeline paused for Human-in-the-Loop Curation ===")
+        logger.info(
             f"ACTION REQUIRED: Fill out the curation template at {template_path.resolve()}"
         )
-        click.echo(
-            f"When finished, resume with: parmmosahn project --resume -o {out_path.resolve()}"
-        )
-        return
+
+        if _stdin_is_tty():
+            try:
+                click.pause(
+                    info=(
+                        "Press any key once you've finished editing the "
+                        "curation template to continue with Steps 4-7 "
+                        "(or Ctrl-C to abort and resume later)... "
+                    )
+                )
+            except (click.Abort, KeyboardInterrupt):
+                logger.info(
+                    f"Aborted. Resume with: parmmosahn project --resume -o "
+                    f"{out_path.resolve()}"
+                )
+                return
+            logger.info("Continuing with downstream processing (Steps 4-7)...")
+            effective_curation_db = template_path
+        else:
+            logger.info(
+                f"Resume with: parmmosahn project --resume -o {out_path.resolve()}"
+            )
+            return
 
     # --- Steps 4-7: Downstream processing ---
-    click.echo(
+    logger.info(
         "Steps 4-7: Curation, polishing, annotation, gather, final evaluation..."
     )
     t_step = time.time()
     run_downstream(
         draft_models_dir=draft_models_dir,
         output_dir=out_path,
-        curation_db=Path(curation_db) if curation_db else None,
+        curation_db=effective_curation_db,
         no_polish=not polish,
         engine=engine,
     )
@@ -912,24 +951,48 @@ def project(
         parallel_strains=parallel_strains,
     )
 
+    # See run_pipeline for the rationale on logger.info over click.echo and the
+    # TTY-aware inline-continue path (B7 in docs/ROADMAP.md).
+    effective_curation_db: Path | None = Path(curation_db) if curation_db else None
+
     if pause_for_curation:
-        click.echo("=== Preparing Human-in-the-Loop Curation (running memote) ===")
+        logger.info("=== Preparing Human-in-the-Loop Curation (running memote) ===")
         template_path = generate_curation_template(draft_models_dir, out_path)
-        click.echo("=== Pipeline paused for Human-in-the-Loop Curation ===")
-        click.echo(
-            f"ACTION REQUIRED: Please fill out the curation template at {template_path.resolve()}"
+        logger.info("=== Pipeline paused for Human-in-the-Loop Curation ===")
+        logger.info(
+            f"ACTION REQUIRED: Please fill out the curation template at "
+            f"{template_path.resolve()}"
         )
-        click.echo(
-            f"When finished, resume using: parmmosahn project --resume -o {out_path.resolve()}"
-        )
-        return
+
+        if _stdin_is_tty():
+            try:
+                click.pause(
+                    info=(
+                        "Press any key once you've finished editing the "
+                        "curation template to continue with Steps 4-7 "
+                        "(or Ctrl-C to abort and resume later)... "
+                    )
+                )
+            except (click.Abort, KeyboardInterrupt):
+                logger.info(
+                    f"Aborted. Resume with: parmmosahn project --resume -o "
+                    f"{out_path.resolve()}"
+                )
+                return
+            logger.info("Continuing with downstream processing (Steps 4-7)...")
+            effective_curation_db = template_path
+        else:
+            logger.info(
+                f"Resume with: parmmosahn project --resume -o {out_path.resolve()}"
+            )
+            return
 
     # 2. Pipe directly into downstream processing (Steps 4-7)
     t_downstream = time.time()
     run_downstream(
         draft_models_dir=draft_models_dir,
         output_dir=out_path,
-        curation_db=Path(curation_db) if curation_db else None,
+        curation_db=effective_curation_db,
         no_polish=not polish,
         engine=engine,
     )

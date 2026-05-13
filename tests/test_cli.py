@@ -310,6 +310,106 @@ def test_cli_project_pause_for_curation(tmp_path: Path):
     assert str(out.resolve()) in result.output
 
 
+def test_cli_project_pause_for_curation_tty_continues_inline(tmp_path: Path):
+    """In a TTY, --pause_for_curation prompts then continues to downstream."""
+    genomes = tmp_path / "g"
+    genomes.mkdir()
+    fasta = tmp_path / "f.faa"
+    fasta.touch()
+    rxns = tmp_path / "r.tbl"
+    rxns.touch()
+    medium = tmp_path / "m.csv"
+    medium.touch()
+    out = tmp_path / "out"
+    runner = CliRunner()
+
+    template_path = out / "curation_template.xlsx"
+
+    with (
+        patch("parmmosahn.models.derive_strain_models") as mock_derive,
+        patch("parmmosahn.curation.generate_curation_template") as mock_gen,
+        patch("parmmosahn.pipeline.run_downstream") as mock_downstream,
+        patch("parmmosahn.cli._stdin_is_tty", return_value=True),
+        # click.pause reads a key from stdin — short-circuit it to a no-op.
+        patch("click.pause") as mock_pause,
+    ):
+        mock_derive.return_value = out / "03-strain_models" / "models"
+        mock_gen.return_value = template_path
+        mock_downstream.return_value = {}
+        result = runner.invoke(
+            cli,
+            [
+                "project",
+                "-g",
+                str(genomes),
+                "-f",
+                str(fasta),
+                "-r",
+                str(rxns),
+                "-m",
+                str(medium),
+                "-o",
+                str(out),
+                "--pause_for_curation",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_pause.assert_called_once()
+    # After Enter, run_downstream should fire with the generated template as
+    # the curation_db argument, not None.
+    mock_downstream.assert_called_once()
+    _, kwargs = mock_downstream.call_args
+    assert kwargs["curation_db"] == template_path
+
+
+def test_cli_project_pause_for_curation_tty_abort(tmp_path: Path):
+    """Ctrl-C during the TTY pause prints a resume hint and exits cleanly."""
+    genomes = tmp_path / "g"
+    genomes.mkdir()
+    fasta = tmp_path / "f.faa"
+    fasta.touch()
+    rxns = tmp_path / "r.tbl"
+    rxns.touch()
+    medium = tmp_path / "m.csv"
+    medium.touch()
+    out = tmp_path / "out"
+    runner = CliRunner()
+
+    import click as _click
+
+    with (
+        patch("parmmosahn.models.derive_strain_models") as mock_derive,
+        patch("parmmosahn.curation.generate_curation_template") as mock_gen,
+        patch("parmmosahn.pipeline.run_downstream") as mock_downstream,
+        patch("parmmosahn.cli._stdin_is_tty", return_value=True),
+        patch("click.pause", side_effect=_click.Abort()),
+    ):
+        mock_derive.return_value = out / "03-strain_models" / "models"
+        mock_gen.return_value = out / "curation_template.xlsx"
+        result = runner.invoke(
+            cli,
+            [
+                "project",
+                "-g",
+                str(genomes),
+                "-f",
+                str(fasta),
+                "-r",
+                str(rxns),
+                "-m",
+                str(medium),
+                "-o",
+                str(out),
+                "--pause_for_curation",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_downstream.assert_not_called()
+    assert "Resume with:" in result.output or "Aborted" in result.output
+
+
 def test_cli_evaluate(tmp_path: Path):
     """'evaluate' should run memote on each XML model."""
     models_dir = tmp_path / "models"

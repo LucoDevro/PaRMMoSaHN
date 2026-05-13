@@ -21,6 +21,21 @@ Thank you for your interest in contributing to PaRMMoSaHN! This document provide
    pre-commit install
    ```
 
+   **Cache hygiene:** pre-commit caches its hook environments under
+   `~/.cache/pre-commit/`. The mypy hook in particular bundles a
+   per-environment `.mypy_cache` that does *not* refresh when you pull a
+   branch that adds new symbols (functions, kwargs, type imports). If
+   you see mypy errors like `Module "parmmosahn.X" has no attribute "Y"`
+   for symbols that clearly exist in `src/`, the cache is stale. Clear
+   it and re-install once:
+
+   ```bash
+   pre-commit clean && pre-commit install-hooks
+   ```
+
+   This is a known pre-commit-mypy interaction, not a problem with the
+   code. After a `clean`, the next commit will rebuild the venv (~30 s).
+
 ## Development Workflow
 
 ### Branching Strategy
