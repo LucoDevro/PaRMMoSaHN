@@ -649,6 +649,115 @@ def test_cli_project_config_file(tmp_path: Path):
     assert kwargs["diamond_bits"] == 111
 
 
+def test_cli_run_config_loads_all_keys(tmp_path: Path):
+    """'run --config' should pull every config-template key into the pipeline."""
+    pytest_importorskip_yaml()
+
+    genomes = tmp_path / "g"
+    genomes.mkdir()
+    medium = tmp_path / "m.csv"
+    medium.touch()
+    curation_db = tmp_path / "curation.xlsx"
+    curation_db.touch()
+    out = tmp_path / "out"
+
+    config_file = tmp_path / "config.yml"
+    config_file.write_text(
+        f"genomes: {genomes}\n"
+        f"output: {out}\n"
+        f"label: cohort_test\n"
+        f"medium: {medium}\n"
+        f"threads: 6\n"
+        f"diamond_bits: 200\n"
+        f"gapseq_bits: 180\n"
+        f"biomass: neg\n"
+        f"parallel_strains: 4\n"
+        f"polish: true\n"
+        f"engine: podman\n"
+        f"curation_db: {curation_db}\n"
+        f"add_unique: true\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    with (
+        patch("parmmosahn.pipeline.run_pan") as mock_run_pan,
+        patch("parmmosahn.models.derive_strain_models") as mock_derive,
+        patch("parmmosahn.pipeline.run_downstream") as mock_downstream,
+        patch("parmmosahn.utils.validate_input_genomes"),
+    ):
+        # run_pan returns (step_times, rxn_table_path, softcore_fasta)
+        mock_run_pan.return_value = (tmp_path / "rxns.tbl", tmp_path / "pan.faa")
+        mock_derive.return_value = out / "03-strain_models" / "models"
+        mock_downstream.return_value = {}
+
+        result = runner.invoke(cli, ["run", "--config", str(config_file)])
+
+    assert result.exit_code == 0, result.output
+
+    # run_pan should see threads + add_unique from config
+    _, pan_kwargs = mock_run_pan.call_args
+    assert pan_kwargs["threads"] == 6
+    assert pan_kwargs["add_unique"] is True
+
+    # derive_strain_models should see parallel_strains + diamond_bits + biomass
+    _, derive_kwargs = mock_derive.call_args
+    assert derive_kwargs["parallel_strains"] == 4
+    assert derive_kwargs["diamond_bits"] == 200
+    assert derive_kwargs["biomass"] == "neg"
+
+    # run_downstream should see polish, engine, curation_db
+    _, downstream_kwargs = mock_downstream.call_args
+    assert downstream_kwargs["no_polish"] is False  # polish=True → no_polish=False
+    assert downstream_kwargs["engine"] == "podman"
+    assert downstream_kwargs["curation_db"] == curation_db
+
+
+def test_cli_run_cli_flag_overrides_config(tmp_path: Path):
+    """An explicit --threads on the CLI must beat the same key in config."""
+    pytest_importorskip_yaml()
+
+    genomes = tmp_path / "g"
+    genomes.mkdir()
+    medium = tmp_path / "m.csv"
+    medium.touch()
+
+    config_file = tmp_path / "config.yml"
+    config_file.write_text(
+        f"genomes: {genomes}\n"
+        f"output: {tmp_path / 'out'}\n"
+        f"label: x\n"
+        f"medium: {medium}\n"
+        f"threads: 6\n",  # config says 6
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    with (
+        patch("parmmosahn.pipeline.run_pan") as mock_run_pan,
+        patch("parmmosahn.models.derive_strain_models") as mock_derive,
+        patch("parmmosahn.pipeline.run_downstream"),
+        patch("parmmosahn.utils.validate_input_genomes"),
+    ):
+        mock_run_pan.return_value = (tmp_path / "rxns.tbl", tmp_path / "pan.faa")
+        mock_derive.return_value = tmp_path / "models"
+
+        # CLI says 12 — must win.
+        result = runner.invoke(cli, ["run", "--config", str(config_file), "-t", "12"])
+
+    assert result.exit_code == 0, result.output
+    _, pan_kwargs = mock_run_pan.call_args
+    assert pan_kwargs["threads"] == 12
+
+
+def test_cli_run_missing_required_args_with_no_config(tmp_path: Path):
+    """`run` with neither CLI nor config should raise a clear UsageError."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["run"])
+    assert result.exit_code != 0
+    assert "Missing required arguments" in result.output or "Usage" in result.output
+
+
 def pytest_importorskip_yaml():
     """Skip test if pyyaml is not installed."""
     import pytest

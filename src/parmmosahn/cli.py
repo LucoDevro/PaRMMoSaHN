@@ -179,29 +179,25 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
 @click.option(
     "-g",
     "--genomes",
-    required=True,
     type=click.Path(exists=True),
-    help="Directory of input genome files (.gbff format).",
+    help="Directory of input genome files (.gbff format). Required (CLI or config).",
 )
 @click.option(
     "-o",
     "--output",
-    required=True,
     type=click.Path(),
-    help="Target base directory for all pipeline output.",
+    help="Target base directory for all pipeline output. Required (CLI or config).",
 )
 @click.option(
     "-l",
     "--label",
-    required=True,
-    help="A descriptive label for the pangenome (e.g., 'clostridiales').",
+    help="A descriptive label for the pangenome (e.g., 'clostridiales'). Required.",
 )
 @click.option(
     "-m",
     "--medium",
-    required=True,
     type=click.Path(exists=True),
-    help="Path to the media CSV file used for gapfilling.",
+    help="Path to the media CSV file used for gapfilling. Required (CLI or config).",
 )
 @click.option(
     "-t",
@@ -274,6 +270,16 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
         "and peaks at ~1.5 GB RAM."
     ),
 )
+@click.option(
+    "--config",
+    "config_file",
+    type=click.Path(exists=True),
+    help=(
+        "Path to a YAML config file (see `parmmosahn init-config`). CLI flags "
+        "override config values; required args (genomes/output/label/medium) "
+        "may be supplied via either. Requires pyyaml."
+    ),
+)
 def run_pipeline(
     genomes,
     output,
@@ -290,6 +296,7 @@ def run_pipeline(
     curation_db,
     pause_for_curation,
     parallel_strains,
+    config_file,
 ):
     """Full pipeline: genomes -> pangenome -> pan-model -> strain models -> curated -> polished -> annotated -> final models."""
     import sys
@@ -297,6 +304,54 @@ def run_pipeline(
 
     from parmmosahn.models import derive_strain_models
     from parmmosahn.pipeline import run_downstream, run_pan, write_pipeline_summary
+
+    # Merge YAML config with CLI flags: CLI values win when set; for the
+    # required path args, fall through to config when the CLI omitted them.
+    if config_file:
+        from parmmosahn.utils import load_config
+
+        cfg = load_config(Path(config_file))
+        genomes = genomes or cfg.get("genomes")
+        output = output or cfg.get("output")
+        label = label or cfg.get("label")
+        medium = medium or cfg.get("medium")
+        threads = (
+            threads
+            if threads != _DEFAULT_THREADS
+            else cfg.get("threads", _DEFAULT_THREADS)
+        )
+        diamond_bits = (
+            diamond_bits if diamond_bits != 150 else cfg.get("diamond_bits", 150)
+        )
+        gapseq_bits = gapseq_bits if gapseq_bits != 150 else cfg.get("gapseq_bits", 150)
+        biomass = biomass if biomass != "pos" else cfg.get("biomass", "pos")
+        engine = engine if engine != "docker" else cfg.get("engine", "docker")
+        add_unique = add_unique or cfg.get("add_unique", False)
+        if soft_core is None:
+            soft_core = cfg.get("soft_core")
+        polish = polish or cfg.get("polish", False)
+        pause_for_curation = pause_for_curation or cfg.get("pause_for_curation", False)
+        if parallel_strains is None:
+            parallel_strains = cfg.get("parallel_strains")
+        if curation_db is None:
+            curation_db = cfg.get("curation_db")
+
+    # Runtime validation — required values may come from CLI or config.
+    missing = [
+        name
+        for name, value in (
+            ("genomes", genomes),
+            ("output", output),
+            ("label", label),
+            ("medium", medium),
+        )
+        if not value
+    ]
+    if missing:
+        raise click.UsageError(
+            "Missing required arguments (provide via CLI or --config): "
+            + ", ".join(missing)
+        )
 
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)

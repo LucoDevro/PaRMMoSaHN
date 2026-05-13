@@ -284,19 +284,26 @@ Run `parmmosahn --help` for a full list of commands and options.
 
 ## Configuration
 
-PaRMMoSaHN supports YAML configuration files as an alternative to CLI flags. Generate a template:
+PaRMMoSaHN supports YAML configuration files as an alternative to CLI flags
+for the `run`, `pan`, and `project` commands. Generate a template:
 
 ```bash
 parmmosahn init-config -o my_config.yml
 ```
 
-Then use it:
+The generated template documents every config-loadable key. Then use it:
 
 ```bash
-parmmosahn project --config my_config.yml -o ./results/
+# Full pipeline from a config file (all required args may come from config)
+parmmosahn run --config my_config.yml
+
+# Or mix CLI overrides with config defaults
+parmmosahn run --config my_config.yml -o ./results/ -t 24
 ```
 
-CLI arguments always override config file values. All options can also be set via environment variables prefixed with `PARMMOSAHN_` (e.g., `PARMMOSAHN_THREADS=32`).
+CLI arguments always override config file values. All options can also be set
+via environment variables prefixed with `PARMMOSAHN_` (e.g.,
+`PARMMOSAHN_THREADS=32`).
 
 ## ModelPolisher
 
