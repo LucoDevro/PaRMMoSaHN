@@ -1,5 +1,8 @@
 import contextlib
+import hashlib
 import logging
+import os
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +19,59 @@ logger = logging.getLogger(__name__)
 
 class ToolExecutionError(Exception):
     pass
+
+
+def sha256_file(path: Path, chunk_size: int = 1 << 20) -> str | None:
+    """Return the hex SHA-256 of *path*, or ``None`` if the file is missing.
+
+    Used by ``pipeline_summary.json`` to pin the medium and curation-DB
+    versions used for a run so downstream re-analysis is reproducible
+    even if the source files are later replaced or moved.
+    """
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        return None
+    h = hashlib.sha256()
+    with p.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def get_system_resources() -> dict[str, Any]:
+    """Best-effort inventory of host CPU, RAM, and OS for run provenance.
+
+    Returns a dict with ``cpu_count``, ``total_ram_gb``, ``available_ram_gb``,
+    ``platform``, and ``python_version``. Any field that cannot be probed is
+    omitted. Memory is read from ``/proc/meminfo`` on Linux; non-Linux hosts
+    will return without memory fields rather than failing.
+    """
+    info: dict[str, Any] = {
+        "platform": platform.platform(),
+        "python_version": platform.python_version(),
+    }
+    cpus = os.cpu_count()
+    if cpus is not None:
+        info["cpu_count"] = cpus
+
+    meminfo_path = Path("/proc/meminfo")
+    if meminfo_path.exists():
+        try:
+            kv: dict[str, int] = {}
+            for line in meminfo_path.read_text().splitlines():
+                k, _, rest = line.partition(":")
+                tok = rest.strip().split()
+                if tok and tok[0].isdigit():
+                    kv[k.strip()] = int(tok[0])  # kB
+            if "MemTotal" in kv:
+                info["total_ram_gb"] = round(kv["MemTotal"] / 1024 / 1024, 2)
+            # MemAvailable is more useful than MemFree (accounts for reclaimable cache)
+            if "MemAvailable" in kv:
+                info["available_ram_gb"] = round(kv["MemAvailable"] / 1024 / 1024, 2)
+        except Exception:
+            pass
+
+    return info
 
 
 def run_command(

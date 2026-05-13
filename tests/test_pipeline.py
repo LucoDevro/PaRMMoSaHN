@@ -1,9 +1,10 @@
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from parmmosahn.pipeline import run_downstream, run_pan
+from parmmosahn.pipeline import run_downstream, run_pan, write_pipeline_summary
 
 
 @patch("parmmosahn.pipeline.evaluate_final_models")
@@ -109,9 +110,12 @@ def test_run_downstream_with_curation(
     )
 
     expected_curated_out = output_dir / "04-curated_models"
-    mock_apply_curations.assert_called_once_with(
-        draft_xml, curation_db, expected_curated_out
-    )
+    # apply_curations now receives a `stats` accumulator dict so the pipeline
+    # can emit a per-row applicability report after the loop.
+    mock_apply_curations.assert_called_once()
+    args, kwargs = mock_apply_curations.call_args
+    assert args == (draft_xml, curation_db, expected_curated_out)
+    assert "stats" in kwargs and isinstance(kwargs["stats"], dict)
     mock_gather.assert_called_once()
     mock_evaluate.assert_called_once()
 
@@ -154,9 +158,10 @@ def test_run_downstream_no_curation_generates_template(
 
     mock_gen_template.assert_called_once_with(draft_dir, output_dir)
     expected_curated_out = output_dir / "04-curated_models"
-    mock_apply_curations.assert_called_once_with(
-        draft_xml, fake_db, expected_curated_out
-    )
+    mock_apply_curations.assert_called_once()
+    args, kwargs = mock_apply_curations.call_args
+    assert args == (draft_xml, fake_db, expected_curated_out)
+    assert "stats" in kwargs and isinstance(kwargs["stats"], dict)
     mock_gather.assert_called_once()
 
 
@@ -192,3 +197,78 @@ def test_run_downstream_polisher_called_when_engine_present(
     )
 
     mock_polisher.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# write_pipeline_summary: A1 — run_environment + provenance enrichment
+# ---------------------------------------------------------------------------
+
+
+def test_write_pipeline_summary_includes_run_environment(tmp_path: Path):
+    """Summary should embed host CPU/RAM/OS so a reviewer can reconstruct the run."""
+    out = tmp_path / "out"
+    out.mkdir()
+    write_pipeline_summary(
+        out, steps={"01-pangenome": {"status": "completed"}}, parameters={}
+    )
+
+    summary = json.loads((out / "pipeline_summary.json").read_text())
+    assert "run_environment" in summary
+    env = summary["run_environment"]
+    # cpu_count and platform are present on every supported host
+    assert "platform" in env
+    assert "python_version" in env
+
+
+def test_write_pipeline_summary_records_medium_sha(tmp_path: Path):
+    """Provenance should pin the SHA-256 of the medium CSV used for the run."""
+    out = tmp_path / "out"
+    out.mkdir()
+    medium = tmp_path / "medium.csv"
+    medium.write_text("compounds,name,maxFlux\ncpd00001,water,1000\n")
+
+    write_pipeline_summary(out, steps={}, parameters={"medium": str(medium)})
+    summary = json.loads((out / "pipeline_summary.json").read_text())
+    prov = summary["provenance"]
+    assert prov["medium_path"] == str(medium)
+    assert isinstance(prov["medium_sha256"], str)
+    assert len(prov["medium_sha256"]) == 64  # hex SHA-256
+
+
+def test_write_pipeline_summary_records_curation_db_sha(tmp_path: Path):
+    """Provenance should also pin the curation DB SHA-256 when provided."""
+    out = tmp_path / "out"
+    out.mkdir()
+    db = tmp_path / "curation.xlsx"
+    db.write_bytes(b"\x50\x4b\x03\x04 fake xlsx header")
+
+    write_pipeline_summary(out, steps={}, parameters={"curation_db": str(db)})
+    summary = json.loads((out / "pipeline_summary.json").read_text())
+    prov = summary["provenance"]
+    assert prov["curation_db_path"] == str(db)
+    assert isinstance(prov["curation_db_sha256"], str)
+
+
+def test_write_pipeline_summary_pulls_pangenome_meta(tmp_path: Path):
+    """Provenance should include the soft-core threshold actually used."""
+    out = tmp_path / "out"
+    pan_dir = out / "01-pangenome"
+    pan_dir.mkdir(parents=True)
+    (pan_dir / "pangenome_meta.json").write_text(
+        json.dumps(
+            {
+                "n_genomes": 794,
+                "soft_core_threshold": 0.00252,
+                "soft_core_override_used": False,
+                "partitions": "softcore",
+                "cluster_identity": 0.8,
+                "cluster_coverage": 0.6,
+                "add_unique": False,
+            }
+        )
+    )
+
+    write_pipeline_summary(out, steps={}, parameters={})
+    summary = json.loads((out / "pipeline_summary.json").read_text())
+    assert summary["provenance"]["pangenome"]["n_genomes"] == 794
+    assert summary["provenance"]["pangenome"]["soft_core_threshold"] == 0.00252

@@ -13,6 +13,7 @@ from parmmosahn.curation import (
     evaluate_final_models,
     generate_curation_template,
     run_model_polisher,
+    write_curation_application_report,
 )
 from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.pangenome import build_pangenome
@@ -111,6 +112,48 @@ def _collect_model_statistics(output_dir: Path) -> dict:
     return stats
 
 
+def _collect_provenance(output_dir: Path, parameters: dict) -> dict:
+    """Build a per-run provenance block from parameters and on-disk artefacts.
+
+    Captures:
+      * SHA-256 of the medium CSV and curation database (so re-runs can be
+        verified bit-for-bit against the original inputs).
+      * The soft-core threshold actually used by PPanGGOLiN, recovered from
+        the ``01-pangenome/pangenome_meta.json`` sidecar that
+        :func:`build_pangenome` writes.
+
+    Every field is best-effort — missing inputs are simply omitted so the
+    summary survives runs that skip stages (e.g. ``pan`` only).
+    """
+    from parmmosahn.utils import sha256_file
+
+    prov: dict = {}
+
+    medium = parameters.get("medium")
+    if medium:
+        medium_path = Path(medium)
+        if medium_path.exists():
+            prov["medium_path"] = str(medium_path)
+            prov["medium_sha256"] = sha256_file(medium_path)
+
+    curation_db = parameters.get("curation_db")
+    if curation_db:
+        db_path = Path(curation_db)
+        if db_path.exists():
+            prov["curation_db_path"] = str(db_path)
+            prov["curation_db_sha256"] = sha256_file(db_path)
+
+    meta_path = output_dir / "01-pangenome" / "pangenome_meta.json"
+    if meta_path.exists():
+        try:
+            pan_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            prov["pangenome"] = pan_meta
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return prov
+
+
 def write_pipeline_summary(
     output_dir: Path,
     steps: dict,
@@ -119,15 +162,59 @@ def write_pipeline_summary(
     started_at: str = "",
     total_elapsed: float = 0.0,
 ) -> Path:
-    """Write a pipeline_summary.json file summarizing the run."""
+    """Write a pipeline_summary.json file summarizing the run.
+
+    Merges with any existing summary so that resumed or re-run pipelines
+    preserve prior step timings and parameters instead of overwriting them.
+    """
+    summary_path = output_dir / "pipeline_summary.json"
+
+    # Load existing summary to preserve prior run data
+    existing: dict = {}
+    if summary_path.exists():
+        try:
+            existing = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Merge steps: prior steps preserved, new/updated steps take precedence
+    merged_steps = existing.get("steps", {})
+    merged_steps.update(steps)
+
+    # Merge parameters: prior values preserved, new ones added/updated
+    merged_params = existing.get("parameters", {})
+    merged_params.update(parameters)
+
+    # Capture external tool versions for reproducibility. Probe once per
+    # write and merge with any previously recorded versions so the entry
+    # survives across resumed runs.
+    from parmmosahn.utils import check_environment, get_system_resources
+
+    env_probe = check_environment()
+    external_versions = existing.get("external_tool_versions", {})
+    for tool, info in env_probe.items():
+        if info.get("found") and info.get("version"):
+            external_versions[tool] = info["version"]
+
+    # Run environment is captured once and pinned to the first successful
+    # summary write; later writes only add fields, not overwrite them, so
+    # a resumed run preserves the host where the bulk of work was done.
+    run_environment = existing.get("run_environment") or get_system_resources()
+
+    provenance = existing.get("provenance", {})
+    provenance.update(_collect_provenance(output_dir, merged_params))
+
     summary = {
         "parmmosahn_version": pkg_version("parmmosahn"),
+        "external_tool_versions": external_versions,
         "command": command,
-        "started_at": started_at,
+        "started_at": existing.get("started_at") or started_at,
         "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "elapsed": _format_elapsed(total_elapsed),
-        "steps": steps,
-        "parameters": parameters,
+        "run_environment": run_environment,
+        "provenance": provenance,
+        "steps": merged_steps,
+        "parameters": merged_params,
     }
 
     # Collect biological statistics from final models
@@ -196,8 +283,18 @@ def run_downstream(
     curated_out.mkdir(exist_ok=True)
 
     logger.info(step_banner(4))
-    for draft_model in draft_models_dir.rglob("*.xml"):
-        apply_curations(draft_model, curation_db, curated_out)
+    # Per-row hit counts accumulate across strains so we can emit an
+    # applicability report — addresses the A9 §F finding that the DB's
+    # `corrected_balances` sheet silently fired on 0/216 strains.
+    models = sorted(draft_models_dir.rglob("*.xml"))
+    curation_stats: dict = {}
+    for draft_model in models:
+        apply_curations(draft_model, curation_db, curated_out, stats=curation_stats)
+    if curation_stats:
+        report_path = curated_out / "curation_application_report.tsv"
+        write_curation_application_report(
+            curation_stats, n_strains=len(models), output_path=report_path
+        )
 
     current_models_dir = curated_out
 
