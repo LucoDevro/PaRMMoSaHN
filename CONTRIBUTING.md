@@ -71,6 +71,51 @@ Thank you for your interest in contributing to PaRMMoSaHN! This document provide
 - Aim for high test coverage
 - Use pytest for writing tests
 
+### Biological integration tests
+
+The `pytest -m biological` suite validates real pipeline outputs against
+biological invariants (FBA feasibility, reaction-count ranges, compartment
+layout, regression checks for past bugs). It is **opt-in** and excluded
+from the default `pytest` invocation because it requires:
+
+1. A `test_run/` directory at the repo root with pre-computed pangenome +
+   pan-model + strain-model artefacts.
+2. External tools available on `$PATH`: PPanGGOLiN, gapseq, DIAMOND.
+
+The strain set is pinned in [`tests/conftest.py`](tests/conftest.py): four
+RefSeq members of the Neal et al. 2024 *B. subtilis* cohort
+(`GCF_000009045.1`, `GCF_000155325.1`, `GCF_000209795.2`, `GCF_000227485.1`).
+Each test gracefully skips for strains that are missing from `test_run/`,
+so partial coverage is acceptable.
+
+#### Bootstrapping `test_run/` from a fresh run
+
+```bash
+# 1. Stage the four genomes + medium CSV
+mkdir -p test_run/genomes
+for s in GCF_000009045.1 GCF_000155325.1 GCF_000209795.2 GCF_000227485.1; do
+  ln -sf /path/to/$s.gbff test_run/genomes/$s.gbff
+done
+ln -sf /path/to/M9_glc_aerobic.csv test_run/M9_glc_aerobic.csv
+
+# 2. Run the pipeline through Step 3 (~50-90 min on 4 small genomes)
+parmmosahn run \
+  -g test_run/genomes -o test_run -l test_run \
+  -m test_run/M9_glc_aerobic.csv \
+  -t 8 --strain-workers 2 --pause-for-curation
+
+# 3. Run the suite
+pytest -m biological
+```
+
+The `--pause-for-curation` flag halts after Step 3 (Steps 4–7 are not
+exercised by the biological tests and add ~30 min of memote runtime).
+`test_run/` is in `.gitignore` and should not be committed.
+
+For long pipeline runs, wrapping the `parmmosahn run` invocation in
+`tmux new -s parmmosahn_testrun '...'` is recommended so the run
+survives terminal detach.
+
 ## Documentation
 
 - Update the README.md if you change functionality

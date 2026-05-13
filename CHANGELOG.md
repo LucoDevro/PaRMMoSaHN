@@ -8,6 +8,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.2.1] - 2026-05-13
+
+### Added
+- `pipeline_summary.json` `provenance` block: SHA-256 of the medium CSV
+  and curation database, plus the soft-core threshold and full PPanGGOLiN
+  configuration actually used. Lets a reviewer reconstruct any v0.2.1 run
+  from the summary alone.
+- `pipeline_summary.json` `run_environment` block: host CPU count,
+  total and available RAM, platform string, Python version.
+- `01-pangenome/pangenome_meta.json` sidecar written during pangenome
+  construction; records the parameters that produced the soft-core
+  proteome for provenance recovery by `write_pipeline_summary`.
+- `04-curated_models/curation_application_report.tsv` listing per-row
+  hit counts across strains; rows that fired on 0 strains emit a
+  WARNING. Addresses the silent-no-op behaviour of stale curation-DB
+  sheets documented during thesis validation.
+- `parmmosahn doctor` "Host resources" block reporting CPU/RAM/OS, a
+  recommended memote-worker count, and a low-RAM warning below 8 GB.
+- `parmmosahn evaluate --workers N / --skip-existing` flags for parallel
+  memote evaluation with per-strain checkpointing; runtime warning when
+  `--workers N` exceeds the ~4 GB/worker memote memory budget — surfaces
+  the WSL2 `BrokenProcessPool` footgun that previously required reading
+  the docs to discover.
+- `apply_curations` now accepts an optional `stats` accumulator dict so
+  callers can aggregate per-row hit counts across strains without
+  re-walking the SBML files. Public signature is otherwise unchanged.
+- Helpers `parmmosahn.utils.sha256_file` and
+  `parmmosahn.utils.get_system_resources`.
+
+### Changed
+- `EXPECTED_STRAINS` (tests) updated to four members of the Neal et al.
+  2024 *B. subtilis* cohort: `GCF_000009045.1`, `GCF_000155325.1`,
+  `GCF_000209795.2`, `GCF_000227485.1`. The previous list mixed a stray
+  `GCA_000227485.1` (GenBank prefix; every other entry was RefSeq) with
+  a `GCF_000146565.1` that was not present in any local artefact.
+- `cli.run` and `cli.project` parameter dictionaries now include
+  `curation_db`, `add_unique`, `diamond_bits`, `gapseq_bits`, `biomass`,
+  and `parallel_strains` so the summary captures the complete invocation.
+
+### Tests
+- Added 11 unit tests covering the new provenance helpers, summary
+  fields, curation-applicability report, and the doctor host-resources
+  block.
+- Added integration tests under the `biological` mark that verify
+  `pipeline_summary.json` provenance and `pangenome_meta.json` sidecar
+  contents on a real 4-genome run.
+
+### Notes
+- v0.2.1 contains no changes to reaction stoichiometry, gap-fill logic,
+  curation rules, or annotation enrichment. Every SBML produced by
+  v0.2.0 is reproduced byte-for-byte by v0.2.1, so all validation
+  results in the companion thesis repository remain valid.
+
+
 ## [0.2.0] - 2026-04-15
 
 ### Added

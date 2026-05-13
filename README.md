@@ -54,18 +54,26 @@ Existing tools either reconstruct each strain independently (gapseq, CarveMe) or
 
 ```
 output/
-├── 01-pangenome/          # PPanGGOLiN pangenome + soft-core FASTA
-├── 02-panmodel/           # gapseq reaction/pathway tables
-├── 03-strain_models/      # Per-strain DIAMOND matches, proteomes, draft models
-├── 04-curated_models/     # Models after automated curation
-├── 05-polished_models/    # ModelPolisher output (if enabled)
-├── 05b-annotated_models/  # SBML enriched with NCBI/BRENDA/RHEA annotations
-├── 06-final_models/       # Final models in XML, JSON, and MATLAB formats
-├── 07-memote_reports/     # draft/ and final/ memote HTML+JSON reports
-├── curation_template.xlsx # Memote-derived spreadsheet for manual curation
-├── pipeline_summary.json  # Run metadata, timing, parameters, model statistics
-└── errors.log             # WARNING+ messages (only if errors occurred)
+├── 01-pangenome/                       # PPanGGOLiN pangenome + soft-core FASTA
+│   └── pangenome_meta.json             # n_genomes, soft-core threshold, cluster params
+├── 02-panmodel/                        # gapseq reaction/pathway tables
+├── 03-strain_models/                   # Per-strain DIAMOND matches, proteomes, draft models
+├── 04-curated_models/                  # Models after automated curation
+│   └── curation_application_report.tsv # Per-row hit counts across strains (v0.2.1)
+├── 05-polished_models/                 # ModelPolisher output (if enabled)
+├── 05b-annotated_models/               # SBML enriched with NCBI/BRENDA/RHEA annotations
+├── 06-final_models/                    # Final models in XML, JSON, and MATLAB formats
+├── 07-memote_reports/                  # draft/ and final/ memote HTML+JSON reports
+├── curation_template.xlsx              # Memote-derived spreadsheet for manual curation
+├── pipeline_summary.json               # Run metadata, parameters, provenance, model statistics
+├── run.log                             # Full INFO-level run log
+└── errors.log                          # WARNING+ messages (only if errors occurred)
 ```
+
+The `pipeline_summary.json` file includes a `provenance` block (SHA-256 of
+the medium CSV and curation database, soft-core threshold actually used,
+external tool versions) and a `run_environment` block (host CPU/RAM/OS), so
+a reviewer can verify a run is reproducible without re-running anything.
 
 ## Installation
 
@@ -97,7 +105,12 @@ pip install "git+https://github.com/robbedewin/PaRMMoSaHN.git"
 parmmosahn doctor
 ```
 
-This checks that all required external tools (PPanGGOLiN, gapseq, DIAMOND) and optional container engines (Docker, Podman, Apptainer) are available.
+This checks that all required external tools (PPanGGOLiN, gapseq, DIAMOND)
+and optional container engines (Docker, Podman, Apptainer) are available,
+and reports host CPU/RAM with a recommended memote-worker count for the
+`evaluate` step (helpful on memory-constrained hosts such as default WSL2
+installations, where the default worker count can trigger
+`BrokenProcessPool` errors).
 
 ## Quick Start
 
@@ -109,7 +122,7 @@ parmmosahn run \
   -o ./results/ \
   -l clostridiales \
   -m medium.csv \
-  -t 14
+  -t 14 --strain-workers 2
 ```
 
 **Required inputs:**
@@ -123,16 +136,18 @@ parmmosahn run \
 **Optional parameters:**
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-t, --threads` | 75% of CPUs | Number of CPU threads |
+| `-t, --threads` | 75% of CPUs | Total CPU threads |
+| `--strain-workers` | 1 | Strains processed in parallel; each worker gets `threads / strain-workers` CPU threads |
 | `--diamond-bits` | 150 | DIAMOND blastp bitscore threshold |
 | `--gapseq-bits` | 150 | gapseq pathway search bitscore threshold |
-| `--biomass` | `pos` | Biomass reaction type (`pos` or `neg`) |
-| `--add-unique` | off | Include unique/cloud genes in pan-model |
-| `--soft-core` | 2/N | Override soft-core frequency threshold |
-| `--no-polish` | off | Skip ModelPolisher step |
-| `-e, --engine` | `docker` | Container engine (`docker`, `podman`, `apptainer`) |
-| `-c, --curation-db` | none | Path to existing curation spreadsheet |
-| `--pause-for-curation` | off | Pause after draft evaluation for manual curation |
+| `--biomass` | `pos` | Biomass reaction type (`pos` or `neg`, matches gapseq's gram-stain templates) |
+| `--add-unique` | off | Include unique/cloud genes (singletons) in the pan-model |
+| `--soft-core` | 2/N | Override the soft-core frequency threshold (fraction in 0–1) |
+| `--polish` | off | Enable ModelPolisher (requires Docker/Podman/Apptainer; see [ModelPolisher](#modelpolisher) below) |
+| `-e, --engine` | `docker` | Container engine when `--polish` is enabled |
+| `--skip-memote` | off | Skip memote evaluation (Steps 4a + 7); run `parmmosahn evaluate` later instead |
+| `-c, --curation-db` | none | Path to an existing curation spreadsheet (skips auto-template generation) |
+| `--pause-for-curation` | off | Pause after Step 3 for manual curation; resume with `parmmosahn project --resume` |
 
 ### Workflow B: Human-in-the-loop curation
 
@@ -286,23 +301,33 @@ CLI arguments always override config file values. All options can also be set vi
 
 ## ModelPolisher
 
-ModelPolisher (v2.1-beta) enriches SBML models with BiGG database annotations and standardized identifiers. It requires a container engine:
+ModelPolisher (v2.1-beta) enriches SBML models with BiGG database annotations
+and standardised identifiers. It runs inside a container, so it requires
+Docker, Podman, or Apptainer on the host.
+
+**ModelPolisher is OFF by default**, both because of the container dependency
+and because the bundled beta version of ModelPolisher uses a fragile network
+fetch at startup. Enable it explicitly with `--polish`, optionally picking an
+engine with `-e`:
 
 ```bash
-# Docker (default)
-parmmosahn run ... -e docker
+# Default container engine (docker)
+parmmosahn run ... --polish
 
 # Podman (rootless, HPC-friendly)
-parmmosahn run ... -e podman
+parmmosahn run ... --polish -e podman
 
 # Apptainer/Singularity (HPC clusters)
-parmmosahn run ... -e apptainer
-
-# Skip polishing entirely
-parmmosahn run ... --no-polish
+parmmosahn run ... --polish -e apptainer
 ```
 
-> **Note:** ModelPolisher v2.1 (release) has a known bug with a broken URL pattern regex in the DataONE namespace. PaRMMoSaHN uses the v2.1-beta which works correctly. SBML headers are temporarily downgraded from L3V2 to L3V1 for beta compatibility.
+If no container engine is detected at runtime, Step 5 is silently skipped and
+the pipeline continues with the pre-polish models.
+
+> **Note:** ModelPolisher v2.1 (stable release) has a known bug with a broken
+> URL pattern regex in the DataONE namespace and crashes at startup. PaRMMoSaHN
+> bundles the v2.1-beta which works correctly. SBML headers are temporarily
+> downgraded from L3V2 to L3V1 for beta compatibility.
 
 ## Known Limitations
 
@@ -319,7 +344,7 @@ If you use PaRMMoSaHN in your research, please cite:
 @software{dewin2026parmmosahn,
   author = {De Win, Robbe and De Vrieze, Lucas},
   title = {PaRMMoSaHN: Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks},
-  version = {0.1.0},
+  version = {0.2.1},
   year = {2026},
   url = {https://github.com/robbedewin/PaRMMoSaHN}
 }

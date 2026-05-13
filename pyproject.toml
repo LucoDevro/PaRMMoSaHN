@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parmmosahn"
-version = "0.2.0"
+version = "0.2.1"
 description = "PaRMMoSaHN - Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks"
 authors = [{name = "Robbe De Win", email = "robbedewin@hotmail.com"}, {name = "Lucas De Vrieze", email = "lucas.devrieze@kuleuven.be"}]
 license = {text = "MIT"}
