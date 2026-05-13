@@ -468,14 +468,23 @@ def derive_strain_models(
             ): genome
             for genome in processed_genomes
         }
-        for future in as_completed(futures):
-            try:
-                _, was_skipped = future.result()
-                if was_skipped:
-                    skipped += 1
-            except Exception as exc:
-                genome = futures[future]
-                logger.error(f"Strain {genome.stem} failed: {exc}")
+        try:
+            for future in as_completed(futures):
+                try:
+                    _, was_skipped = future.result()
+                    if was_skipped:
+                        skipped += 1
+                except Exception as exc:
+                    genome = futures[future]
+                    logger.error(f"Strain {genome.stem} failed: {exc}")
+        except KeyboardInterrupt:
+            # On Ctrl-C, cancel any queued strain jobs so the user gets a
+            # prompt back quickly instead of waiting for the rest of the
+            # ThreadPoolExecutor to drain (multi-hour pipeline matter).
+            logger.warning("Interrupted — cancelling queued strain jobs.")
+            for f in futures:
+                f.cancel()
+            raise
 
     if skipped:
         logger.info(

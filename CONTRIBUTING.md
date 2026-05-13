@@ -102,7 +102,7 @@ ln -sf /path/to/M9_glc_aerobic.csv test_run/M9_glc_aerobic.csv
 parmmosahn run \
   -g test_run/genomes -o test_run -l test_run \
   -m test_run/M9_glc_aerobic.csv \
-  -t 8 --strain-workers 2 --pause-for-curation
+  -t 8 --parallel-strains 2 --pause-for-curation
 
 # 3. Run the suite
 pytest -m biological

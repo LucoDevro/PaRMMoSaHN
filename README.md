@@ -122,7 +122,7 @@ parmmosahn run \
   -o ./results/ \
   -l clostridiales \
   -m medium.csv \
-  -t 14 --strain-workers 2
+  -t 14 --parallel-strains 2
 ```
 
 **Required inputs:**
@@ -137,7 +137,7 @@ parmmosahn run \
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-t, --threads` | 75% of CPUs | Total CPU threads |
-| `--strain-workers` | 1 | Strains processed in parallel; each worker gets `threads / strain-workers` CPU threads |
+| `--parallel-strains` | auto (`threads // 4`) | Strains processed in parallel in Step 3; each worker gets `threads / N` CPU threads (peaks ~1.5 GB RAM each) |
 | `--diamond-bits` | 150 | DIAMOND blastp bitscore threshold |
 | `--gapseq-bits` | 150 | gapseq pathway search bitscore threshold |
 | `--biomass` | `pos` | Biomass reaction type (`pos` or `neg`, matches gapseq's gram-stain templates) |
@@ -145,7 +145,6 @@ parmmosahn run \
 | `--soft-core` | 2/N | Override the soft-core frequency threshold (fraction in 0–1) |
 | `--polish` | off | Enable ModelPolisher (requires Docker/Podman/Apptainer; see [ModelPolisher](#modelpolisher) below) |
 | `-e, --engine` | `docker` | Container engine when `--polish` is enabled |
-| `--skip-memote` | off | Skip memote evaluation (Steps 4a + 7); run `parmmosahn evaluate` later instead |
 | `-c, --curation-db` | none | Path to an existing curation spreadsheet (skips auto-template generation) |
 | `--pause-for-curation` | off | Pause after Step 3 for manual curation; resume with `parmmosahn project --resume` |
 

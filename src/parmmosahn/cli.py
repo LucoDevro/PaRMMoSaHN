@@ -227,9 +227,10 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
     help="Override the soft-core frequency threshold (fraction 0-1).",
 )
 @click.option(
-    "--no-polish",
+    "--polish",
     is_flag=True,
-    help="Skip the ModelPolisher execution step.",
+    default=False,
+    help="Enable ModelPolisher (requires Docker/Podman/Apptainer). Off by default.",
 )
 @click.option(
     "-e",
@@ -237,7 +238,7 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
     type=click.Choice(["docker", "podman", "apptainer"]),
     default="docker",
     show_default=True,
-    help="Container engine for ModelPolisher.",
+    help="Container engine for ModelPolisher (only relevant with --polish).",
 )
 @click.option(
     "-c",
@@ -271,7 +272,7 @@ def run_pipeline(
     biomass,
     add_unique,
     soft_core,
-    no_polish,
+    polish,
     engine,
     curation_db,
     pause_for_curation,
@@ -324,7 +325,7 @@ def run_pipeline(
         "soft_core": soft_core,
         "add_unique": add_unique,
         "engine": engine,
-        "no_polish": no_polish,
+        "polish": polish,
         "curation_db": str(curation_db) if curation_db else None,
         "parallel_strains": parallel_strains,
         "pause_for_curation": pause_for_curation,
@@ -417,7 +418,7 @@ def run_pipeline(
         draft_models_dir=draft_models_dir,
         output_dir=out_path,
         curation_db=Path(curation_db) if curation_db else None,
-        no_polish=no_polish,
+        no_polish=not polish,
         engine=engine,
     )
     steps["04-07 downstream"] = {
@@ -717,7 +718,10 @@ def gather(models, output):
     help="Biomass reaction type for gapseq draft model generation (e.g. 'pos', 'neg').",
 )
 @click.option(
-    "--no-polish", is_flag=True, help="Skip the ModelPolisher execution step."
+    "--polish",
+    is_flag=True,
+    default=False,
+    help="Enable ModelPolisher (requires Docker/Podman/Apptainer). Off by default.",
 )
 @click.option(
     "-e",
@@ -766,7 +770,7 @@ def project(
     diamond_bits,
     gapseq_bits,
     biomass,
-    no_polish,
+    polish,
     engine,
     pause_for_curation,
     parallel_strains,
@@ -851,7 +855,7 @@ def project(
             draft_models_dir=drafts,
             output_dir=out_path,
             curation_db=curation_db,
-            no_polish=no_polish,
+            no_polish=not polish,
             engine=engine,
         )
         write_pipeline_summary(
@@ -866,7 +870,7 @@ def project(
                 "output": str(out_path),
                 "curation_db": str(curation_db),
                 "medium": str(medium) if medium else None,
-                "no_polish": no_polish,
+                "polish": polish,
                 "engine": engine,
             },
             command=command,
@@ -926,7 +930,7 @@ def project(
         draft_models_dir=draft_models_dir,
         output_dir=out_path,
         curation_db=Path(curation_db) if curation_db else None,
-        no_polish=no_polish,
+        no_polish=not polish,
         engine=engine,
     )
     write_pipeline_summary(
@@ -950,7 +954,7 @@ def project(
             "diamond_bits": diamond_bits,
             "gapseq_bits": gapseq_bits,
             "biomass": biomass,
-            "no_polish": no_polish,
+            "polish": polish,
             "engine": engine,
             "curation_db": str(curation_db) if curation_db else None,
             "parallel_strains": parallel_strains,

@@ -38,6 +38,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `parmmosahn.utils.get_system_resources`.
 
 ### Changed
+- ModelPolisher (Step 5) is now **opt-in** rather than opt-out. The CLI
+  flag changed from `--no-polish` (polishing ON by default) to `--polish`
+  (polishing OFF by default). Rationale: the bundled ModelPolisher 2.1-beta
+  performs a fragile MIRIAM/identifiers.org network fetch at startup that
+  intermittently fails, the container engine is an extra dependency, and
+  running polishing on PaRMMoSaHN but not on comparator pipelines (CarveMe,
+  gapseq) inflates memote's annotation sub-score for the wrong reason. This
+  is the only user-visible flag change in v0.2.1 — anyone scripting
+  `--no-polish` will need to remove that flag; anyone who wants polishing
+  must now pass `--polish` explicitly.
+- `derive_strain_models` now cancels queued strain jobs on `KeyboardInterrupt`
+  rather than waiting for the ThreadPoolExecutor to drain naturally. On
+  multi-hour pipeline runs this means `Ctrl-C` returns a prompt within
+  seconds instead of after the next strain finishes.
 - `EXPECTED_STRAINS` (tests) updated to four members of the Neal et al.
   2024 *B. subtilis* cohort: `GCF_000009045.1`, `GCF_000155325.1`,
   `GCF_000209795.2`, `GCF_000227485.1`. The previous list mixed a stray
