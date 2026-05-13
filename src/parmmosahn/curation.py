@@ -301,7 +301,12 @@ def extract_memote_problems(
 # ==========================================
 
 
-def _apply_duplicate_decisions(model: "Model", df_dupl: "pl.DataFrame") -> int:
+def _apply_duplicate_decisions(
+    model: "Model",
+    df_dupl: "pl.DataFrame",
+    stats: dict | None = None,
+    model_name: str | None = None,
+) -> int:
     """Apply duplicate reaction removal decisions from the curation DB.
 
     Decision logic:
@@ -311,14 +316,37 @@ def _apply_duplicate_decisions(model: "Model", df_dupl: "pl.DataFrame") -> int:
       3: Keep both (do nothing)
       blank: Skip and continue
 
+    When *stats* is given, each row's hit count is accumulated under the key
+    ``duplicate_reactions`` keyed by ``"<ID 1>|<ID 2>"`` so the orchestrator
+    can emit a per-row applicability report across strains.
+
     Returns:
         Number of reactions removed.
     """
+    sheet_stats = None
+    if stats is not None:
+        sheet_stats = stats.setdefault("duplicate_reactions", {})
+
     changes_made = 0
     for row in df_dupl.iter_rows(named=True):
         decision = row.get("Decision")
         id1 = row.get("ID 1")
         id2 = row.get("ID 2")
+        row_key = f"{id1}|{id2}"
+        row_entry = (
+            sheet_stats.setdefault(
+                row_key,
+                {
+                    "id1": id1,
+                    "id2": id2,
+                    "decision": str(decision).strip() if decision is not None else "",
+                    "strains_hit": 0,
+                    "reactions_removed": 0,
+                },
+            )
+            if sheet_stats is not None
+            else None
+        )
 
         if decision is None or str(decision).strip() == "":
             continue
@@ -340,27 +368,56 @@ def _apply_duplicate_decisions(model: "Model", df_dupl: "pl.DataFrame") -> int:
             )
             continue
 
+        hit_this_strain = False
         for rxn_id in to_drop:
             if rxn_id and rxn_id in model.reactions:
                 rxn_to_drop = cast(Reaction, model.reactions.get_by_id(rxn_id))
                 rxn_to_drop.remove_from_model(remove_orphans=True)
                 changes_made += 1
+                if row_entry is not None:
+                    row_entry["reactions_removed"] += 1
+                hit_this_strain = True
+        if row_entry is not None and hit_this_strain:
+            row_entry["strains_hit"] += 1
 
     return changes_made
 
 
 def _apply_formula_fixes(
-    model: "Model", df_cur: "pl.DataFrame", model_name: str
+    model: "Model",
+    df_cur: "pl.DataFrame",
+    model_name: str,
+    stats: dict | None = None,
 ) -> int:
     """Apply stoichiometric formula corrections from the curated_imbalances sheet.
+
+    When *stats* is given, each row's hit count is accumulated under
+    ``curated_imbalances`` keyed by ``reaction_id`` so the orchestrator can
+    surface DB rows that fired on zero strains (i.e. stale corrections).
 
     Returns:
         Number of reactions updated.
     """
+    sheet_stats = None
+    if stats is not None:
+        sheet_stats = stats.setdefault("curated_imbalances", {})
+
     changes_made = 0
     for row in df_cur.iter_rows(named=True):
         rxn_id = row.get("reaction_id")
         new_formula = row.get("new_formula")
+        row_entry = (
+            sheet_stats.setdefault(
+                str(rxn_id) if rxn_id is not None else "",
+                {
+                    "reaction_id": rxn_id,
+                    "new_formula": new_formula,
+                    "strains_hit": 0,
+                },
+            )
+            if sheet_stats is not None and rxn_id is not None
+            else None
+        )
 
         if rxn_id is None or new_formula is None or str(rxn_id) not in model.reactions:
             continue
@@ -372,6 +429,8 @@ def _apply_formula_fixes(
             try:
                 rxn.build_reaction_from_string(str(new_formula).strip())
                 changes_made += 1
+                if row_entry is not None:
+                    row_entry["strains_hit"] += 1
             except Exception as e:
                 logger.warning(
                     f"Could not apply new formula for {rxn_id} in {model_name}: {e}"
@@ -381,13 +440,17 @@ def _apply_formula_fixes(
 
 
 def apply_curations(
-    model_path: Path, curation_db_path: Path, output_dir: Path
+    model_path: Path,
+    curation_db_path: Path,
+    output_dir: Path,
+    stats: dict | None = None,
 ) -> Path | None:
     """Read the curation database and apply all fixes to a specific strain model.
 
     Orchestrates duplicate-reaction decisions and formula corrections. The public
-    signature is unchanged; internal logic is delegated to
-    :func:`_apply_duplicate_decisions` and :func:`_apply_formula_fixes`.
+    signature is unchanged for callers that don't care about per-row stats;
+    pass *stats* (a shared dict) to accumulate per-row hit counts across
+    strains for downstream applicability reporting.
     """
     out_file = output_dir / model_path.name
 
@@ -420,13 +483,86 @@ def apply_curations(
         return None
 
     changes_made = 0
-    changes_made += _apply_duplicate_decisions(model, df_dupl)
-    changes_made += _apply_formula_fixes(model, df_cur, model_path.name)
+    changes_made += _apply_duplicate_decisions(
+        model, df_dupl, stats=stats, model_name=model_path.name
+    )
+    changes_made += _apply_formula_fixes(model, df_cur, model_path.name, stats=stats)
 
     cb.io.write_sbml_model(model, str(out_file))
     logger.debug(f"Applied {changes_made} curations to {model_path.name}")
 
     return out_file
+
+
+def write_curation_application_report(
+    stats: dict,
+    n_strains: int,
+    output_path: Path,
+) -> Path:
+    """Write a per-row applicability report from accumulated curation stats.
+
+    Each row of the curation DB is emitted with the number of strains in which
+    its rule fired. Rows with ``strains_hit == 0`` are warned about — they
+    represent DB rules that have no targets in the current cohort (typically
+    stale rules from an earlier gap-fill iteration; see A9 §F).
+
+    Args:
+        stats: dict produced by :func:`apply_curations` across all strains.
+        n_strains: total strains processed (denominator for the report).
+        output_path: target TSV path.
+
+    Returns:
+        Path to the written TSV.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rows: list[str] = [
+        "sheet\tidentifier\tdetail\tstrains_hit\tn_strains\tfraction\tnotes"
+    ]
+    zero_hit_count = 0
+
+    dupl = stats.get("duplicate_reactions", {})
+    for key, entry in sorted(dupl.items()):
+        hit = int(entry.get("strains_hit", 0))
+        frac = (hit / n_strains) if n_strains else 0.0
+        note = "" if hit > 0 else "no targets in cohort"
+        if hit == 0:
+            zero_hit_count += 1
+        detail = f"decision={entry.get('decision', '')}"
+        rows.append(
+            f"duplicate_reactions\t{key}\t{detail}\t"
+            f"{hit}\t{n_strains}\t{frac:.4f}\t{note}"
+        )
+
+    cur = stats.get("curated_imbalances", {})
+    for key, entry in sorted(cur.items()):
+        hit = int(entry.get("strains_hit", 0))
+        frac = (hit / n_strains) if n_strains else 0.0
+        note = "" if hit > 0 else "no targets in cohort"
+        if hit == 0:
+            zero_hit_count += 1
+        nf = entry.get("new_formula") or ""
+        # Keep TSV one-line-per-row; truncate runaway formulas.
+        nf_short = (str(nf)[:120] + "…") if len(str(nf)) > 120 else str(nf)
+        rows.append(
+            f"curated_imbalances\t{key}\tnew_formula={nf_short}\t"
+            f"{hit}\t{n_strains}\t{frac:.4f}\t{note}"
+        )
+
+    output_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    n_dupl = len(dupl)
+    n_cur = len(cur)
+    logger.info(
+        f"Curation applicability report written to {output_path} "
+        f"({n_dupl} duplicate rows + {n_cur} imbalance rows across {n_strains} strains)"
+    )
+    if zero_hit_count:
+        logger.warning(
+            f"{zero_hit_count} curation DB row(s) fired on 0/{n_strains} strains — "
+            f"likely stale rules from an earlier gap-fill iteration "
+            f"(see {output_path.name})."
+        )
+    return output_path
 
 
 def run_model_polisher(

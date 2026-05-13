@@ -11,6 +11,7 @@ from parmmosahn.curation import (
     _apply_formula_fixes,
     apply_curations,
     run_memote_snapshot,
+    write_curation_application_report,
 )
 
 # ---------------------------------------------------------------------------
@@ -433,3 +434,101 @@ def test_run_model_polisher_invalid_engine(tmp_path: Path):
 
     with pytest.raises(ValueError, match="Unsupported container engine"):
         run_model_polisher(tmp_path, tmp_path, engine="virtualbox")
+
+
+# ---------------------------------------------------------------------------
+# Curation DB applicability report (A2)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_duplicate_decisions_accumulates_stats():
+    """When stats is given, per-row hit counts should accumulate by ID pair."""
+    import polars as pl
+
+    df = pl.DataFrame(
+        {
+            "Decision": ["1", "1"],
+            "ID 1": ["RXN_A", "RXN_MISSING_1"],
+            "ID 2": ["RXN_B", "RXN_MISSING_2"],
+        }
+    )
+
+    mock_model = MagicMock()
+    # Only the first pair has a target in this strain
+    mock_model.reactions.__contains__.side_effect = lambda x: x == "RXN_B"
+    mock_model.reactions.get_by_id.side_effect = lambda x: MagicMock()
+
+    stats: dict = {}
+    _apply_duplicate_decisions(mock_model, df, stats=stats)
+
+    sheet = stats["duplicate_reactions"]
+    assert sheet["RXN_A|RXN_B"]["strains_hit"] == 1
+    assert sheet["RXN_A|RXN_B"]["reactions_removed"] == 1
+    assert sheet["RXN_MISSING_1|RXN_MISSING_2"]["strains_hit"] == 0
+
+
+def test_apply_formula_fixes_accumulates_stats():
+    """When stats is given, per-row hit counts for imbalance fixes accumulate."""
+    import polars as pl
+
+    df = pl.DataFrame(
+        {
+            "reaction_id": ["RXN_PRESENT", "RXN_ABSENT"],
+            "new_formula": ["A -> B + C", "X -> Y"],
+        }
+    )
+
+    rxn_present = MagicMock()
+    rxn_present.build_reaction_string.return_value = "A -> B"
+    mock_model = MagicMock()
+    mock_model.reactions.__contains__.side_effect = lambda x: x == "RXN_PRESENT"
+    mock_model.reactions.get_by_id.side_effect = lambda x: rxn_present
+
+    stats: dict = {}
+    _apply_formula_fixes(mock_model, df, "test.xml", stats=stats)
+
+    sheet = stats["curated_imbalances"]
+    assert sheet["RXN_PRESENT"]["strains_hit"] == 1
+    assert sheet["RXN_ABSENT"]["strains_hit"] == 0
+
+
+def test_write_curation_application_report_flags_zero_hit_rows(tmp_path: Path, caplog):
+    """Zero-hit rows should produce a WARNING and appear in the TSV with notes."""
+    import logging
+
+    stats = {
+        "duplicate_reactions": {
+            "RXN_A|RXN_B": {
+                "id1": "RXN_A",
+                "id2": "RXN_B",
+                "decision": "1",
+                "strains_hit": 10,
+                "reactions_removed": 10,
+            },
+            "RXN_X|RXN_Y": {
+                "id1": "RXN_X",
+                "id2": "RXN_Y",
+                "decision": "1",
+                "strains_hit": 0,
+                "reactions_removed": 0,
+            },
+        },
+        "curated_imbalances": {
+            "RXN_STALE": {
+                "reaction_id": "RXN_STALE",
+                "new_formula": "A -> B",
+                "strains_hit": 0,
+            },
+        },
+    }
+    report_path = tmp_path / "curation_application_report.tsv"
+
+    with caplog.at_level(logging.WARNING, logger="parmmosahn.curation"):
+        write_curation_application_report(stats, n_strains=10, output_path=report_path)
+
+    assert report_path.exists()
+    content = report_path.read_text()
+    assert "duplicate_reactions\tRXN_A|RXN_B" in content
+    assert "no targets in cohort" in content
+    # Two of the three rows have zero hits → expect a single aggregate warning
+    assert any("fired on 0/10 strains" in rec.message for rec in caplog.records)
