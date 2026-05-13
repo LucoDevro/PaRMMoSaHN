@@ -848,6 +848,14 @@ def project(
         gapseq_bits = gapseq_bits if gapseq_bits != 150 else cfg.get("gapseq_bits", 150)
         biomass = biomass if biomass != "pos" else cfg.get("biomass", "pos")
         engine = engine if engine != "docker" else cfg.get("engine", "docker")
+        # Downstream / Step-3 knobs newly supported in the v0.3 init-config
+        # template — only override the CLI default if the user didn't pass them.
+        polish = polish or cfg.get("polish", False)
+        pause_for_curation = pause_for_curation or cfg.get("pause_for_curation", False)
+        if parallel_strains is None:
+            parallel_strains = cfg.get("parallel_strains")
+        if curation_db is None:
+            curation_db = cfg.get("curation_db")
 
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -1037,29 +1045,44 @@ _INIT_CONFIG_TEMPLATE = """\
 # CLI flags always override values set here.
 # You can also use environment variables: PARMMOSAHN_THREADS=32, etc.
 
-# --- Input paths ---
+# --- Input paths (pan / run / project) ---
 # genomes: /path/to/genomes          # Directory of genome files (.gbff or .faa)
 # fasta: /path/to/softcore.faa       # Existing soft-core FASTA (project command)
 # panmodel_rxns: /path/to/rxns.tbl   # Existing pan-model reaction table (project command)
 # medium: /path/to/medium.csv        # Media CSV file for gapfilling
 
-# --- Output ---
-# output: .                          # Base output directory (creates 01-pangenome/, 02-panmodel/ inside)
+# --- Output (pan / run / project) ---
+# output: .                          # Base output directory (creates 01-pangenome/, etc.)
 
-# --- Pangenome (pan command) ---
+# --- Pangenome (pan / run commands) ---
 # label: myproject                   # Label for the pangenome
-# add_unique: false                  # Include unique/cloud genes in pan-model
+# add_unique: false                  # Include unique/cloud genes in the pan-model
 # soft_core: null                    # Override soft-core threshold (fraction 0-1).
 #                                    # Default: 2/n_genomes (biologically motivated).
 
-# --- Performance ---
+# --- Performance (run / project / strains) ---
 threads: 14
 diamond_bits: 150
 gapseq_bits: 150
 biomass: pos                         # Biomass reaction type: 'pos' or 'neg'
+# parallel_strains: null             # Strains processed in parallel in Step 3.
+#                                    # null = auto (threads // 4); each worker
+#                                    # peaks at ~1.5 GB RAM. Lower this if
+#                                    # memote OOMs under WSL2.
 
-# --- Downstream ---
-engine: docker                       # Container engine: docker, podman, or apptainer
+# --- Downstream (run / project) ---
+polish: false                        # Run ModelPolisher (requires Docker/Podman/Apptainer).
+                                     # Off by default — the bundled v2.1-beta
+                                     # has a fragile MIRIAM/identifiers.org
+                                     # network fetch at startup.
+engine: docker                       # Container engine when polish: true.
+# curation_db: /path/to/curation.xlsx  # Existing curation Excel. If set, Step
+#                                      # 4a (memote on drafts → template
+#                                      # generation) is skipped and Step 4b
+#                                      # applies this DB directly.
+# pause_for_curation: false          # If true, Steps 1-3 + 4a run, then the
+#                                    # pipeline pauses for manual curation
+#                                    # edits before continuing to 4b-7.
 """
 
 

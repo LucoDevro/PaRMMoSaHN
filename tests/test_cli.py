@@ -508,6 +508,107 @@ def test_cli_init_config(tmp_path: Path):
     assert "biomass" in content
 
 
+def test_cli_init_config_template_is_complete_and_parseable(tmp_path: Path):
+    """Generated template must mention every config-loadable flag the project
+    and pan commands honour, and must round-trip through YAML parsing."""
+    pytest_importorskip_yaml()
+    import yaml
+
+    runner = CliRunner()
+    out_file = tmp_path / "config.yml"
+    runner.invoke(cli, ["init-config", "-o", str(out_file)])
+
+    content = out_file.read_text()
+
+    # Every key that `pan` and `project` look up via cfg.get must appear in
+    # the template — either uncommented (defaults) or commented (examples).
+    expected_keys = [
+        "genomes",
+        "fasta",
+        "panmodel_rxns",
+        "medium",
+        "output",
+        "label",
+        "add_unique",
+        "soft_core",
+        "threads",
+        "diamond_bits",
+        "gapseq_bits",
+        "biomass",
+        "parallel_strains",
+        "polish",
+        "engine",
+        "curation_db",
+        "pause_for_curation",
+    ]
+    missing = [k for k in expected_keys if k not in content]
+    assert not missing, f"Template is missing keys: {missing}"
+
+    # The non-commented portion must parse as valid YAML on its own.
+    uncommented = "\n".join(
+        line for line in content.splitlines() if not line.lstrip().startswith("#")
+    )
+    parsed = yaml.safe_load(uncommented)
+    # Defaults that the template sets explicitly:
+    assert parsed["threads"] == 14
+    assert parsed["diamond_bits"] == 150
+    assert parsed["gapseq_bits"] == 150
+    assert parsed["biomass"] == "pos"
+    assert parsed["polish"] is False
+    assert parsed["engine"] == "docker"
+
+
+def test_cli_project_config_loads_downstream_keys(tmp_path: Path):
+    """v0.3 init-config keys (parallel_strains, polish, curation_db,
+    pause_for_curation) must reach derive_strain_models / run_downstream
+    when the user supplies them via --config rather than CLI flags."""
+    pytest_importorskip_yaml()
+
+    genomes = tmp_path / "g"
+    genomes.mkdir()
+    fasta = tmp_path / "f.faa"
+    fasta.touch()
+    rxns = tmp_path / "r.tbl"
+    rxns.touch()
+    medium = tmp_path / "m.csv"
+    medium.touch()
+    curation_db = tmp_path / "curation.xlsx"
+    curation_db.touch()
+    out = tmp_path / "out"
+
+    config_file = tmp_path / "config.yml"
+    config_file.write_text(
+        f"genomes: {genomes}\n"
+        f"fasta: {fasta}\n"
+        f"panmodel_rxns: {rxns}\n"
+        f"medium: {medium}\n"
+        f"curation_db: {curation_db}\n"
+        f"parallel_strains: 3\n"
+        f"polish: true\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    with (
+        patch("parmmosahn.models.derive_strain_models") as mock_derive,
+        patch("parmmosahn.pipeline.run_downstream") as mock_downstream,
+    ):
+        mock_derive.return_value = out / "03-strain_models" / "models"
+        mock_downstream.return_value = {}
+        result = runner.invoke(
+            cli, ["project", "-o", str(out), "--config", str(config_file)]
+        )
+
+    assert result.exit_code == 0, result.output
+    _, derive_kwargs = mock_derive.call_args
+    assert derive_kwargs["parallel_strains"] == 3
+
+    _, downstream_kwargs = mock_downstream.call_args
+    # polish=True in config means no_polish=not polish=False reaches downstream
+    assert downstream_kwargs["no_polish"] is False
+    assert downstream_kwargs["curation_db"] == curation_db
+
+
 def test_cli_project_config_file(tmp_path: Path):
     """'project --config' should load defaults from the YAML file."""
     pytest_importorskip_yaml()
