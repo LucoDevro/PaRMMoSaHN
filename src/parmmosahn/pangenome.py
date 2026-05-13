@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import shutil
@@ -205,5 +206,24 @@ def build_pangenome(
         raise ToolExecutionError(
             f"Expected output file {extracted_fasta} was not generated."
         )
+
+    # Record the parameters actually used so write_pipeline_summary() can
+    # capture them as provenance without re-deriving them from the log.
+    meta_path = output_dir / "pangenome_meta.json"
+    meta_path.write_text(
+        json.dumps(
+            {
+                "n_genomes": no_genomes,
+                "soft_core_threshold": soft_core_threshold,
+                "soft_core_override_used": soft_core_override is not None,
+                "partitions": partitions,
+                "cluster_identity": cluster_id,
+                "cluster_coverage": cluster_cov,
+                "add_unique": add_unique,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     return final_fasta
