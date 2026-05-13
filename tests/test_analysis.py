@@ -492,3 +492,89 @@ def test_cli_analyze_essentiality(tmp_path: Path):
 
     assert result.exit_code == 0, result.output
     mock_ess.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# prune_report (B2 dry-run stub)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_dead_end_irreversible_producer_only():
+    """A metabolite produced by an irreversible reaction has 1 producer / 0 consumers."""
+    from unittest.mock import MagicMock
+
+    from parmmosahn.analysis import _classify_dead_end
+
+    met = MagicMock()
+    rxn = MagicMock()
+    rxn.lower_bound, rxn.upper_bound = 0, 1000
+    # Stoichiometry: producing met (positive coefficient in forward direction)
+    rxn.metabolites = {met: 1.0}
+    met.reactions = [rxn]
+
+    producers, consumers = _classify_dead_end(met)
+    assert producers == 1
+    assert consumers == 0  # no reaction consumes it → dead-end metabolite
+
+
+def test_classify_dead_end_reversible_counts_both_sides():
+    """A reversible reaction counts as both producer and consumer."""
+    from unittest.mock import MagicMock
+
+    from parmmosahn.analysis import _classify_dead_end
+
+    met = MagicMock()
+    rxn = MagicMock()
+    rxn.lower_bound, rxn.upper_bound = -1000, 1000  # reversible
+    rxn.metabolites = {met: 1.0}
+    met.reactions = [rxn]
+
+    producers, consumers = _classify_dead_end(met)
+    assert producers == 1
+    assert consumers == 1  # not dead-end under reversibility
+
+
+def test_prune_report_runs_on_tiny_model(dummy_sbml: Path, tmp_path: Path):
+    """End-to-end: prune_report writes a TSV with one data row per model."""
+    from parmmosahn.analysis import prune_report
+
+    models_dir = dummy_sbml.parent  # tiny_model.xml lives here
+    out_tsv = tmp_path / "prune.tsv"
+
+    prune_report(models_dir=models_dir, output_path=out_tsv)
+
+    assert out_tsv.exists()
+    lines = out_tsv.read_text().strip().splitlines()
+    # Header + at least 1 data row
+    assert len(lines) >= 2
+    header = lines[0].split("\t")
+    for col in (
+        "strain",
+        "total_metabolites",
+        "dead_end_metabolites",
+        "reactions_all_dead_end",
+        "growth_rate_baseline",
+    ):
+        assert col in header
+
+
+def test_cli_analyze_prune_report(tmp_path: Path):
+    """'analyze prune-report' should wire through to prune_report."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "s1.xml").touch()
+    out = tmp_path / "prune.tsv"
+    runner = CliRunner()
+
+    with patch("parmmosahn.analysis.prune_report") as mock_prune:
+        mock_prune.return_value = out
+        result = runner.invoke(
+            cli,
+            ["analyze", "prune-report", "-M", str(models_dir), "-o", str(out)],
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_prune.assert_called_once()
+    _, kwargs = mock_prune.call_args
+    assert kwargs["models_dir"] == models_dir
+    assert kwargs["output_path"] == out

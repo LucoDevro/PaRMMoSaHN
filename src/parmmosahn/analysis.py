@@ -811,3 +811,147 @@ def _plot_heatmap(
 
     logger.info(f"Heatmap saved to {png_path}")
     return png_path
+
+
+# ---------------------------------------------------------------------------
+# Dead-end metabolite + reaction report (B2 dry-run stub)
+# ---------------------------------------------------------------------------
+
+
+def _classify_dead_end(metabolite) -> tuple[int, int]:
+    """Return (producer_count, consumer_count) for a metabolite.
+
+    Accounts for reaction reversibility: a reaction with a negative lower
+    bound is a potential producer-or-consumer in both stoichiometric
+    directions. A metabolite with zero producers is an orphan source;
+    zero consumers is an orphan sink; either condition makes every
+    reaction touching it unable to carry steady-state flux.
+    """
+    producers = 0
+    consumers = 0
+    for rxn in metabolite.reactions:
+        coef = rxn.metabolites[metabolite]
+        lb, ub = rxn.lower_bound, rxn.upper_bound
+        if ub > 0:
+            if coef > 0:
+                producers += 1
+            elif coef < 0:
+                consumers += 1
+        if lb < 0:
+            if coef > 0:
+                consumers += 1
+            elif coef < 0:
+                producers += 1
+    return producers, consumers
+
+
+def prune_report(
+    models_dir: Path,
+    output_path: Path,
+) -> Path:
+    """Report dead-end metabolites + unambiguously-blocked reactions per model.
+
+    Dry-run analogue of the future ``parmmosahn prune`` command: walks
+    each strain SBML and identifies the metabolites that have either
+    zero producers or zero consumers under their reactions' reversibility
+    bounds (the structural source of the ~42 % blocked-fraction baseline
+    documented in A9 Phase A). Also flags reactions whose participants are
+    all dead-end metabolites — those are guaranteed-prunable without
+    affecting any connected pathway.
+
+    **Writes no SBML files**; produces a TSV report only. The actual
+    pruning step is B2 in the v0.3 roadmap and requires per-reaction FBA
+    rollback logic that is out of scope for the thesis-safe v0.3-prep work.
+
+    Output columns:
+
+    ``strain, total_metabolites, dead_end_metabolites, dead_end_fraction,
+    total_reactions, reactions_all_dead_end, prunable_fraction,
+    growth_rate_baseline, fba_status``
+
+    Returns the path to the written TSV.
+    """
+    import cobra as cb
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    rows: list[str] = [
+        "\t".join(
+            [
+                "strain",
+                "total_metabolites",
+                "dead_end_metabolites",
+                "dead_end_fraction",
+                "total_reactions",
+                "reactions_all_dead_end",
+                "prunable_fraction",
+                "growth_rate_baseline",
+                "fba_status",
+            ]
+        )
+    ]
+
+    # Suppress cobra's per-load INFO chatter — same trick as _iter_models.
+    cobra_logger = logging.getLogger("cobra")
+    prev_level = cobra_logger.level
+    cobra_logger.setLevel(logging.WARNING)
+
+    try:
+        for name, model in _load_models(models_dir):
+            mets = list(model.metabolites)
+            dead_end_ids: set[str] = set()
+            for met in mets:
+                prods, cons = _classify_dead_end(met)
+                if prods == 0 or cons == 0:
+                    dead_end_ids.add(met.id)
+
+            n_total = len(mets)
+            n_dead = len(dead_end_ids)
+            dead_frac = (n_dead / n_total) if n_total else 0.0
+
+            rxns = list(model.reactions)
+            n_rxns = len(rxns)
+            all_dead_rxns = sum(
+                1
+                for r in rxns
+                if r.metabolites and all(m.id in dead_end_ids for m in r.metabolites)
+            )
+            prun_frac = (all_dead_rxns / n_rxns) if n_rxns else 0.0
+
+            try:
+                sol = model.optimize()
+                growth = (
+                    f"{sol.objective_value:.6f}"
+                    if sol.objective_value is not None
+                    else "NA"
+                )
+                status = sol.status
+            except Exception as exc:
+                growth = "NA"
+                status = f"error: {exc}"
+
+            rows.append(
+                "\t".join(
+                    [
+                        name,
+                        str(n_total),
+                        str(n_dead),
+                        f"{dead_frac:.4f}",
+                        str(n_rxns),
+                        str(all_dead_rxns),
+                        f"{prun_frac:.4f}",
+                        growth,
+                        status,
+                    ]
+                )
+            )
+            logger.info(
+                f"  {name}: {n_dead}/{n_total} dead-end mets "
+                f"({dead_frac:.1%}), {all_dead_rxns}/{n_rxns} fully-dead-end rxns"
+            )
+    finally:
+        cobra_logger.setLevel(prev_level)
+
+    output_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    logger.info(f"Prune dry-run report written to {output_path}")
+    return output_path

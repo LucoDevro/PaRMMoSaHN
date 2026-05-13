@@ -1339,6 +1339,41 @@ def panreactome(models, output, plot):
     click.echo(f"Pan-reactome analysis saved alongside {output}")
 
 
+@analyze.command(name="prune-report")
+@click.option(
+    "-M",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Directory containing SBML models (.xml).",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output TSV file path.",
+)
+def prune_report(models, output):
+    """Report dead-end metabolites + fully-blocked reactions per model.
+
+    This is a DRY-RUN diagnostic — no SBML files are modified. It identifies
+    metabolites with zero producers or zero consumers (the structural source
+    of the cohort-wide ~42% blocked-fraction baseline) and reactions whose
+    participants are all dead-end (guaranteed-prunable without affecting any
+    connected pathway).
+
+    Scaffolding for the full `parmmosahn prune` step on the v0.3 roadmap
+    (item B2); use the output to size the prune-step impact before
+    committing to a destructive pass.
+    """
+    from parmmosahn.analysis import prune_report as prune_report_fn
+
+    click.echo(f"Building prune dry-run report from models in {models}...")
+    prune_report_fn(models_dir=Path(models), output_path=Path(output))
+    click.echo(f"Prune dry-run report saved to {output}")
+
+
 @analyze.command()
 @click.option(
     "-M",
