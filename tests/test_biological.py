@@ -10,6 +10,7 @@ Run with:  pytest -m biological
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -319,7 +320,108 @@ class TestRegressions:
 
 
 # ===================================================================
-# Section E: Live Pipeline Execution Tests (slow, require tools)
+# Section E: v0.2.1 provenance verification at integration scale
+# ===================================================================
+
+
+def _load_summary_or_skip(test_run_dir: Path) -> dict:
+    summary_path = test_run_dir / "pipeline_summary.json"
+    if not summary_path.exists():
+        pytest.skip("pipeline_summary.json not present in test_run/")
+    try:
+        return json.loads(summary_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        pytest.fail(f"pipeline_summary.json is not valid JSON: {e}")
+    return {}  # unreachable, satisfies type checkers
+
+
+class TestPipelineSummary:
+    """Integration-scale verification of the v0.2.1 provenance outputs.
+
+    The unit suite mocks these paths; these tests confirm that a real
+    pipeline run writes the documented JSON shape.
+    """
+
+    def test_pipeline_summary_exists_and_parseable(self, test_run_dir: Path):
+        summary = _load_summary_or_skip(test_run_dir)
+        assert summary.get("parmmosahn_version"), "missing parmmosahn_version"
+        assert summary.get("command"), "missing command"
+        assert summary.get("started_at"), "missing started_at"
+        assert summary.get("finished_at"), "missing finished_at"
+
+    def test_pipeline_summary_records_step_provenance(self, test_run_dir: Path):
+        """Steps 1-3 must be present and completed for a --pause-for-curation run."""
+        summary = _load_summary_or_skip(test_run_dir)
+        steps = summary.get("steps", {})
+        for key in ("01-pangenome", "02-panmodel", "03-strain_models"):
+            assert key in steps, f"step {key} missing from summary"
+            assert (
+                steps[key].get("status") == "completed"
+            ), f"step {key} not completed: {steps[key]}"
+            assert steps[key].get("elapsed"), f"step {key} missing elapsed time"
+
+    def test_pipeline_summary_has_run_environment(self, test_run_dir: Path):
+        """run_environment captures host CPU/RAM/OS for reproducibility."""
+        summary = _load_summary_or_skip(test_run_dir)
+        env = summary.get("run_environment", {})
+        assert env, "run_environment block missing"
+        assert "platform" in env, "platform string missing"
+        assert "python_version" in env, "python_version missing"
+        # cpu_count + RAM are best-effort on Linux; require them only there
+        if Path("/proc/meminfo").exists():
+            assert env.get("cpu_count", 0) >= 1
+            assert env.get("total_ram_gb", 0) > 0
+
+    def test_pipeline_summary_has_medium_provenance(self, test_run_dir: Path):
+        """provenance.medium_sha256 pins the medium CSV used for the run."""
+        summary = _load_summary_or_skip(test_run_dir)
+        prov = summary.get("provenance", {})
+        assert prov, "provenance block missing"
+        assert "medium_path" in prov, "medium_path missing"
+        digest = prov.get("medium_sha256")
+        assert isinstance(digest, str), "medium_sha256 must be a string"
+        assert (
+            len(digest) == 64
+        ), f"medium_sha256 must be 64 hex chars, got {len(digest)}"
+        assert all(c in "0123456789abcdef" for c in digest), "non-hex chars in sha256"
+
+    def test_pipeline_summary_has_pangenome_provenance(self, test_run_dir: Path):
+        """provenance.pangenome reflects the actual soft-core threshold used."""
+        summary = _load_summary_or_skip(test_run_dir)
+        pan = summary.get("provenance", {}).get("pangenome")
+        assert pan, "provenance.pangenome missing — sidecar not picked up?"
+        assert (
+            pan.get("n_genomes") == 4
+        ), f"expected n_genomes=4 for the bootstrapped test_run, got {pan.get('n_genomes')}"
+        # f = 2/N for the default soft-core formula
+        assert pan.get("soft_core_threshold") == pytest.approx(0.5, abs=0.01)
+        assert pan.get("partitions") == "softcore"
+
+    def test_pipeline_summary_records_external_tool_versions(self, test_run_dir: Path):
+        """ppanggolin/gapseq/diamond versions are captured for reproducibility."""
+        summary = _load_summary_or_skip(test_run_dir)
+        ext = summary.get("external_tool_versions", {})
+        for tool in ("ppanggolin", "gapseq", "diamond"):
+            assert tool in ext, f"{tool} version missing"
+            assert (
+                isinstance(ext[tool], str) and ext[tool]
+            ), f"{tool} version must be a non-empty string"
+
+    def test_pangenome_meta_sidecar_valid(self, test_run_dir: Path):
+        """01-pangenome/pangenome_meta.json must be well-formed and consistent."""
+        meta_path = test_run_dir / "01-pangenome" / "pangenome_meta.json"
+        if not meta_path.exists():
+            pytest.skip("pangenome_meta.json not present")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert meta.get("n_genomes") == 4
+        assert meta.get("soft_core_threshold") == pytest.approx(0.5, abs=0.01)
+        assert meta.get("partitions") == "softcore"
+        assert "cluster_identity" in meta
+        assert "cluster_coverage" in meta
+
+
+# ===================================================================
+# Section F: Live Pipeline Execution Tests (slow, require tools)
 # ===================================================================
 
 
