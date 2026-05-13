@@ -201,3 +201,54 @@ def test_extract_version_empty_output():
 
     assert _extract_version("") == "unknown"
     assert _extract_version("   \n  \n") == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# sha256_file + get_system_resources (A1 + A3 helpers)
+# ---------------------------------------------------------------------------
+
+
+def test_sha256_file_returns_hex_digest(tmp_path: Path):
+    """sha256_file should compute a stable hex digest for an existing file."""
+    from parmmosahn.utils import sha256_file
+
+    target = tmp_path / "medium.csv"
+    target.write_text("compounds,name,maxFlux\ncpd00001,water,1000\n")
+
+    digest = sha256_file(target)
+    assert isinstance(digest, str)
+    assert len(digest) == 64
+    # Stable across calls
+    assert sha256_file(target) == digest
+
+
+def test_sha256_file_missing_returns_none(tmp_path: Path):
+    """sha256_file should return None for non-existent paths instead of raising."""
+    from parmmosahn.utils import sha256_file
+
+    assert sha256_file(tmp_path / "does_not_exist") is None
+
+
+def test_get_system_resources_basic_fields():
+    """get_system_resources should always return platform + python_version."""
+    from parmmosahn.utils import get_system_resources
+
+    info = get_system_resources()
+    assert "platform" in info
+    assert "python_version" in info
+    # cpu_count is best-effort but always present on supported hosts
+    if "cpu_count" in info:
+        assert info["cpu_count"] >= 1
+
+
+def test_get_system_resources_includes_ram_on_linux():
+    """On Linux, /proc/meminfo is the source of total/available RAM."""
+    from parmmosahn.utils import get_system_resources
+
+    if not Path("/proc/meminfo").exists():
+        pytest.skip("non-Linux host")
+
+    info = get_system_resources()
+    assert "total_ram_gb" in info
+    assert info["total_ram_gb"] > 0
+    assert "available_ram_gb" in info

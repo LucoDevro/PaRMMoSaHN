@@ -19,10 +19,10 @@ import pytest
 pytestmark = pytest.mark.biological
 
 EXPECTED_STRAINS = [
-    "GCA_000227485.1",
     "GCF_000009045.1",
-    "GCF_000146565.1",
+    "GCF_000155325.1",
     "GCF_000209795.2",
+    "GCF_000227485.1",
 ]
 
 
