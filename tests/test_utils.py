@@ -241,6 +241,21 @@ def test_get_system_resources_basic_fields():
         assert info["cpu_count"] >= 1
 
 
+def test_check_bundled_data_finds_required_tsvs():
+    """All three runtime TSV lookups must be reachable from an editable install."""
+    from parmmosahn.utils import check_bundled_data
+
+    result = check_bundled_data()
+    for name in ("mnxr_to_rhea.tsv", "seed_to_rhea.tsv", "seed_to_bigg.tsv"):
+        assert name in result, f"{name} not probed"
+        info = result[name]
+        assert info[
+            "found"
+        ], f"{name} missing — check pyproject.toml package-data and MANIFEST.in"
+        assert info["rows"] is not None and info["rows"] > 0
+        assert info["size_bytes"] is not None and info["size_bytes"] > 0
+
+
 def test_get_system_resources_includes_ram_on_linux():
     """On Linux, /proc/meminfo is the source of total/available RAM."""
     from parmmosahn.utils import get_system_resources

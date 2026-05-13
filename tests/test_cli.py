@@ -491,6 +491,49 @@ def test_cli_doctor():
     # A3: host resources block must appear so users see RAM before launching
     # memory-hungry steps (memote).
     assert "Host resources:" in result.output
+    # #7: bundled data files block lists the runtime TSV lookups.
+    assert "Bundled data files" in result.output
+    assert "seed_to_bigg.tsv" in result.output
+
+
+def test_cli_doctor_warns_on_missing_data_file():
+    """doctor surfaces a WARNING when a bundled TSV is unreachable."""
+    runner = CliRunner()
+
+    env_ok = {
+        name: {"found": True, "version": "x", "path": "/x"}
+        for name in ("ppanggolin", "gapseq", "diamond", "docker", "podman", "apptainer")
+    }
+    fake_data = {
+        "mnxr_to_rhea.tsv": {
+            "found": True,
+            "size_bytes": 100,
+            "rows": 10,
+            "path": "/x",
+        },
+        "seed_to_rhea.tsv": {
+            "found": True,
+            "size_bytes": 100,
+            "rows": 10,
+            "path": "/x",
+        },
+        "seed_to_bigg.tsv": {
+            "found": False,
+            "size_bytes": None,
+            "rows": None,
+            "path": None,
+        },
+    }
+
+    with (
+        patch("parmmosahn.utils.check_environment", return_value=env_ok),
+        patch("parmmosahn.utils.check_bundled_data", return_value=fake_data),
+    ):
+        result = runner.invoke(cli, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "[MISSING] seed_to_bigg.tsv" in result.output
+    assert "Annotation enrichment (Step 5b) will fail" in result.output
 
 
 def test_cli_init_config(tmp_path: Path):

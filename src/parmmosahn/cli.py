@@ -1577,7 +1577,11 @@ def annotate(models, output):
 @cli.command()
 def doctor():
     """Check for required external tools and report their versions."""
-    from parmmosahn.utils import check_environment, get_system_resources
+    from parmmosahn.utils import (
+        check_bundled_data,
+        check_environment,
+        get_system_resources,
+    )
 
     REQUIRED = {"ppanggolin", "gapseq", "diamond"}
     ENGINES = {"docker", "podman", "apptainer"}
@@ -1606,6 +1610,20 @@ def doctor():
             any_engine_ok = True
         else:
             click.echo(f"  [--]  {name}: not found")
+
+    # Bundled data files — fails fast if the wheel is missing a TSV that
+    # would otherwise crash the annotation step at runtime.
+    click.echo("\nBundled data files (annotation enrichment):")
+    bundled = check_bundled_data()
+    all_data_ok = True
+    for name in sorted(bundled):
+        info = bundled[name]
+        if info["found"]:
+            kb = info["size_bytes"] / 1024 if info["size_bytes"] else 0
+            click.echo(f"  [OK]      {name}: {info['rows']} rows, {kb:.1f} KB")
+        else:
+            click.echo(f"  [MISSING] {name}: not in the installed package")
+            all_data_ok = False
 
     resources = get_system_resources()
     click.echo("\nHost resources:")
@@ -1644,6 +1662,13 @@ def doctor():
             f"WARNING: only {avail_gb:.1f} GB RAM available — memote evaluation "
             f"may OOM. Run with `--workers 1` and consider setting "
             f"MALLOC_ARENA_MAX=2 in the environment."
+        )
+    if not all_data_ok:
+        click.echo(
+            "WARNING: One or more bundled TSV lookup tables are missing from the "
+            "installed package. Annotation enrichment (Step 5b) will fail. "
+            "Re-install with `pip install --force-reinstall -e .` "
+            "or rebuild the wheel."
         )
 
 

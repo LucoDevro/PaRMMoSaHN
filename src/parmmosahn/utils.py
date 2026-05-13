@@ -345,6 +345,44 @@ def _extract_version(output: str) -> str:
     return lines[0] if lines else "unknown"
 
 
+def check_bundled_data() -> dict[str, dict[str, Any]]:
+    """Verify that runtime-required TSV lookup tables are reachable.
+
+    Each entry of the form ``{found: bool, size_bytes: int | None,
+    rows: int | None, path: str | None}``. Catches the failure mode where
+    a wheel is installed but a ``package-data`` / ``MANIFEST.in`` entry
+    is missing — the rest of the pipeline then runs until the first
+    annotation step before crashing with ``FileNotFoundError``. Running
+    ``parmmosahn doctor`` after install surfaces this before any
+    pipeline work is done.
+    """
+    from importlib.resources import as_file, files
+
+    required = ("mnxr_to_rhea.tsv", "seed_to_rhea.tsv", "seed_to_bigg.tsv")
+    results: dict[str, dict[str, Any]] = {}
+    for name in required:
+        info: dict[str, Any] = {
+            "found": False,
+            "size_bytes": None,
+            "rows": None,
+            "path": None,
+        }
+        try:
+            resource = files("parmmosahn.data").joinpath(name)
+            with as_file(resource) as path:
+                if path.is_file():
+                    info["found"] = True
+                    info["size_bytes"] = path.stat().st_size
+                    info["path"] = str(path)
+                    # Row count is a cheap sanity check against truncation.
+                    with path.open("rb") as fh:
+                        info["rows"] = sum(1 for _ in fh)
+        except (FileNotFoundError, ModuleNotFoundError):
+            pass
+        results[name] = info
+    return results
+
+
 def check_environment() -> dict[str, dict[str, str | bool | None]]:
     """Check for required external tools and container engines.
 
