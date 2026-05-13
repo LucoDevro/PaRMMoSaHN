@@ -41,6 +41,36 @@ def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
+def _echo_and_log(message: str) -> None:
+    """Echo a message to stdout AND tee it into any active run.log file.
+
+    Plain ``click.echo`` writes only to stdout, which means user-facing
+    progress lines emitted from ``run`` / ``project`` were missing from
+    ``run.log`` even though logger.info() messages from pipeline modules
+    were captured. This helper keeps the click.echo terminal output and
+    additionally emits the same message via every FileHandler attached
+    to the root logger — but NOT via the basicConfig StreamHandler, so
+    nothing double-prints on the terminal.
+
+    Used for status lines emitted from inside ``run`` / ``project``.
+    Other commands have no run.log, so the FileHandler loop is a no-op
+    and behaviour matches plain ``click.echo``.
+    """
+    click.echo(message)
+    record = logging.LogRecord(
+        name="parmmosahn.cli",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg=message,
+        args=None,
+        exc_info=None,
+    )
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.handle(record)
+
+
 def _setup_logging(verbose: bool, quiet: bool) -> None:
     """Configure logging level based on CLI flags."""
     if verbose:
@@ -405,12 +435,12 @@ def run_pipeline(
     validate_input_genomes(Path(genomes))
 
     # --- Steps 1-2: Pangenome & Pan-model ---
-    click.echo(f"Input:  {genomes}")
-    click.echo(f"Output: {out_path}")
-    click.echo(f"Label:  {label}")
-    click.echo("")
+    _echo_and_log(f"Input:  {genomes}")
+    _echo_and_log(f"Output: {out_path}")
+    _echo_and_log(f"Label:  {label}")
+    _echo_and_log("")
 
-    click.echo("Steps 1-2: Building pangenome and pan-model...")
+    _echo_and_log("Steps 1-2: Building pangenome and pan-model...")
     t_step = time.time()
     rxn_table, fasta = run_pan(
         Path(genomes),
@@ -434,7 +464,7 @@ def run_pipeline(
     )
 
     # --- Step 3: Strain models ---
-    click.echo("Step 3: Deriving strain-specific models...")
+    _echo_and_log("Step 3: Deriving strain-specific models...")
     t_step = time.time()
     strains_out = out_path / "03-strain_models"
     draft_models_dir = derive_strain_models(
@@ -540,8 +570,8 @@ def run_pipeline(
     if error_log.exists() and error_log.stat().st_size == 0:
         error_log.unlink()
 
-    click.echo(f"\nPipeline complete! ({_format_elapsed(total_elapsed)} total)")
-    click.echo(f"Results: {out_path}")
+    _echo_and_log(f"\nPipeline complete! ({_format_elapsed(total_elapsed)} total)")
+    _echo_and_log(f"Results: {out_path}")
 
 
 @cli.command()
@@ -948,7 +978,7 @@ def project(
                 hint="Could not find the curation template. If you renamed or moved it, specify its path via --curation-db.",
             )
 
-        click.echo(
+        _echo_and_log(
             f"Resuming pipeline using defined curation database: {curation_db.name}"
         )
 
@@ -1574,58 +1604,111 @@ def annotate(models, output):
     )
 
 
-@cli.command()
-def doctor():
-    """Check for required external tools and report their versions."""
+_DOCTOR_REQUIRED_TOOLS = ("ppanggolin", "gapseq", "diamond")
+_DOCTOR_ENGINES = ("docker", "podman", "apptainer")
+
+
+def _collect_doctor_report() -> dict:
+    """Single source of truth for the data both --text and --json render.
+
+    Splitting the data collection from the rendering keeps the two output
+    modes from drifting and makes the JSON shape testable independently of
+    the human-readable layout.
+    """
     from parmmosahn.utils import (
         check_bundled_data,
         check_environment,
         get_system_resources,
     )
 
-    REQUIRED = {"ppanggolin", "gapseq", "diamond"}
-    ENGINES = {"docker", "podman", "apptainer"}
+    env = check_environment()
+    bundled = check_bundled_data()
+    resources = get_system_resources()
 
+    required = {name: env[name] for name in _DOCTOR_REQUIRED_TOOLS}
+    engines = {name: env[name] for name in _DOCTOR_ENGINES}
+
+    avail_gb = resources.get("available_ram_gb")
+    memote_workers_recommended = (
+        max(1, int(avail_gb // 4)) if avail_gb is not None else None
+    )
+
+    all_required_ok = all(info["found"] for info in required.values())
+    any_engine_ok = any(info["found"] for info in engines.values())
+    all_data_ok = all(info["found"] for info in bundled.values())
+
+    warnings: list[str] = []
+    if not all_required_ok:
+        warnings.append(
+            "Some required external tools are missing. The pipeline will fail."
+        )
+    if not any_engine_ok:
+        warnings.append(
+            "No container engine found. ModelPolisher (Step 5) will be skipped."
+        )
+    if avail_gb is not None and avail_gb < 8:
+        warnings.append(
+            f"Only {avail_gb:.1f} GB RAM available — memote evaluation may "
+            f"OOM. Run with `--workers 1` and consider setting "
+            f"MALLOC_ARENA_MAX=2 in the environment."
+        )
+    if not all_data_ok:
+        warnings.append(
+            "One or more bundled TSV lookup tables are missing from the "
+            "installed package. Annotation enrichment (Step 5b) will fail. "
+            "Re-install with `pip install --force-reinstall -e .` "
+            "or rebuild the wheel."
+        )
+
+    from importlib.metadata import version as _pkg_version
+
+    return {
+        "parmmosahn_version": _pkg_version("parmmosahn"),
+        "required_tools": required,
+        "container_engines": engines,
+        "bundled_data": bundled,
+        "host_resources": resources,
+        "memote_workers_recommended": memote_workers_recommended,
+        "checks": {
+            "all_required_tools_ok": all_required_ok,
+            "any_container_engine_ok": any_engine_ok,
+            "all_bundled_data_ok": all_data_ok,
+        },
+        "warnings": warnings,
+    }
+
+
+def _render_doctor_text(report: dict) -> None:
+    """Print the human-readable doctor report."""
     click.echo("PaRMMoSaHN Environment Check")
     click.echo("=" * 40)
 
-    results = check_environment()
-
     click.echo("\nRequired tools:")
-    all_required_ok = True
-    for name in sorted(REQUIRED):
-        info = results[name]
+    for name in sorted(report["required_tools"]):
+        info = report["required_tools"][name]
         if info["found"]:
             click.echo(f"  [OK]      {name}: {info['version']}  ({info['path']})")
         else:
             click.echo(f"  [MISSING] {name}: not found in PATH")
-            all_required_ok = False
 
     click.echo("\nContainer engines (at least one needed for ModelPolisher, Step 5):")
-    any_engine_ok = False
-    for name in sorted(ENGINES):
-        info = results[name]
+    for name in sorted(report["container_engines"]):
+        info = report["container_engines"][name]
         if info["found"]:
             click.echo(f"  [OK]  {name}: {info['version']}  ({info['path']})")
-            any_engine_ok = True
         else:
             click.echo(f"  [--]  {name}: not found")
 
-    # Bundled data files — fails fast if the wheel is missing a TSV that
-    # would otherwise crash the annotation step at runtime.
     click.echo("\nBundled data files (annotation enrichment):")
-    bundled = check_bundled_data()
-    all_data_ok = True
-    for name in sorted(bundled):
-        info = bundled[name]
+    for name in sorted(report["bundled_data"]):
+        info = report["bundled_data"][name]
         if info["found"]:
             kb = info["size_bytes"] / 1024 if info["size_bytes"] else 0
             click.echo(f"  [OK]      {name}: {info['rows']} rows, {kb:.1f} KB")
         else:
             click.echo(f"  [MISSING] {name}: not in the installed package")
-            all_data_ok = False
 
-    resources = get_system_resources()
+    resources = report["host_resources"]
     click.echo("\nHost resources:")
     if "cpu_count" in resources:
         click.echo(f"  CPUs:           {resources['cpu_count']}")
@@ -1635,41 +1718,41 @@ def doctor():
         click.echo(f"  Available RAM:  {resources['available_ram_gb']:.1f} GB")
     if "platform" in resources:
         click.echo(f"  Platform:       {resources['platform']}")
-
-    # Heuristic memote workers recommendation: each memote worker peaks
-    # around 3-4 GB on a typical strain model, so cap workers at
-    # floor(available_ram / 4). Surfaces the BrokenProcessPool footgun
-    # documented in suggestions_code.md §5.
-    avail_gb = resources.get("available_ram_gb")
-    if avail_gb is not None:
-        safe_workers = max(1, int(avail_gb // 4))
+    safe_workers = report["memote_workers_recommended"]
+    if safe_workers is not None:
         click.echo(
             f"  Memote workers: recommended max {safe_workers} "
             f"(~4 GB per worker; lower on systems where other jobs share RAM)"
         )
 
     click.echo()
-    if all_required_ok:
+    if report["checks"]["all_required_tools_ok"]:
         click.echo("All required tools are available.")
+    for w in report["warnings"]:
+        click.echo(f"WARNING: {w}")
+
+
+@cli.command()
+@click.option(
+    "--json",
+    "json_out",
+    is_flag=True,
+    default=False,
+    help=(
+        "Emit the environment report as a single JSON object on stdout "
+        "instead of the human-readable text. Useful for CI gates and "
+        "automation (pipe to `jq` to filter on specific tools / versions)."
+    ),
+)
+def doctor(json_out: bool):
+    """Check for required external tools and report their versions."""
+    import json as _json
+
+    report = _collect_doctor_report()
+    if json_out:
+        click.echo(_json.dumps(report, indent=2, sort_keys=True, default=str))
     else:
-        click.echo("WARNING: Some required tools are missing. The pipeline will fail.")
-    if not any_engine_ok:
-        click.echo(
-            "WARNING: No container engine found. ModelPolisher (Step 5) will be skipped."
-        )
-    if avail_gb is not None and avail_gb < 8:
-        click.echo(
-            f"WARNING: only {avail_gb:.1f} GB RAM available — memote evaluation "
-            f"may OOM. Run with `--workers 1` and consider setting "
-            f"MALLOC_ARENA_MAX=2 in the environment."
-        )
-    if not all_data_ok:
-        click.echo(
-            "WARNING: One or more bundled TSV lookup tables are missing from the "
-            "installed package. Annotation enrichment (Step 5b) will fail. "
-            "Re-install with `pip install --force-reinstall -e .` "
-            "or rebuild the wheel."
-        )
+        _render_doctor_text(report)
 
 
 def main():

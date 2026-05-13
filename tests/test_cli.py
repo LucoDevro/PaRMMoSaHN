@@ -496,6 +496,141 @@ def test_cli_doctor():
     assert "seed_to_bigg.tsv" in result.output
 
 
+def test_echo_and_log_writes_to_file_handler(tmp_path: Path):
+    """_echo_and_log must mirror its message into any FileHandler on the root
+    logger (the mechanism run/project use to capture status into run.log)."""
+    import logging
+
+    from parmmosahn.cli import _echo_and_log
+
+    log_path = tmp_path / "run.log"
+    handler = logging.FileHandler(str(log_path), mode="w")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        _echo_and_log("hello from a pipeline step")
+        handler.flush()
+        assert "hello from a pipeline step" in log_path.read_text()
+    finally:
+        root.removeHandler(handler)
+        handler.close()
+
+
+def test_echo_and_log_no_file_handler_is_a_noop_beyond_echo():
+    """Without a FileHandler the helper just behaves like click.echo —
+    no exception, no implicit logger.info on the root StreamHandler."""
+    from parmmosahn.cli import _echo_and_log
+
+    # No FileHandler installed; this should not raise.
+    _echo_and_log("standalone command output")
+
+
+def test_cli_doctor_json_output():
+    """doctor --json emits a single parseable JSON object on stdout."""
+    import json as _json
+
+    runner = CliRunner()
+    fake_env = {
+        "ppanggolin": {
+            "found": True,
+            "version": "2.2.6",
+            "path": "/usr/bin/ppanggolin",
+        },
+        "gapseq": {"found": True, "version": "1.4.2", "path": "/usr/bin/gapseq"},
+        "diamond": {"found": True, "version": "2.1.8", "path": "/usr/bin/diamond"},
+        "docker": {"found": True, "version": "24.0", "path": "/usr/bin/docker"},
+        "podman": {"found": False, "version": None, "path": None},
+        "apptainer": {"found": False, "version": None, "path": None},
+    }
+    fake_data = {
+        "mnxr_to_rhea.tsv": {
+            "found": True,
+            "size_bytes": 100,
+            "rows": 10,
+            "path": "/x",
+        },
+        "seed_to_rhea.tsv": {
+            "found": True,
+            "size_bytes": 100,
+            "rows": 10,
+            "path": "/x",
+        },
+        "seed_to_bigg.tsv": {
+            "found": True,
+            "size_bytes": 200,
+            "rows": 20,
+            "path": "/x",
+        },
+    }
+
+    fake_resources = {
+        "platform": "Linux-x86_64",
+        "python_version": "3.12.0",
+        "cpu_count": 16,
+        "total_ram_gb": 32.0,
+        "available_ram_gb": 24.0,
+    }
+
+    with (
+        patch("parmmosahn.utils.check_environment", return_value=fake_env),
+        patch("parmmosahn.utils.check_bundled_data", return_value=fake_data),
+        patch("parmmosahn.utils.get_system_resources", return_value=fake_resources),
+    ):
+        result = runner.invoke(cli, ["doctor", "--json"])
+
+    assert result.exit_code == 0, result.output
+    # In JSON mode, NONE of the human-readable headers should appear.
+    assert "PaRMMoSaHN Environment Check" not in result.output
+    assert "Required tools:" not in result.output
+
+    # The output must be a single valid JSON object covering all blocks.
+    payload = _json.loads(result.output)
+    assert set(payload["required_tools"]) == {"ppanggolin", "gapseq", "diamond"}
+    assert set(payload["container_engines"]) == {"docker", "podman", "apptainer"}
+    assert set(payload["bundled_data"]) == {
+        "mnxr_to_rhea.tsv",
+        "seed_to_rhea.tsv",
+        "seed_to_bigg.tsv",
+    }
+    assert payload["checks"]["all_required_tools_ok"] is True
+    assert payload["checks"]["any_container_engine_ok"] is True
+    assert payload["checks"]["all_bundled_data_ok"] is True
+    assert payload["warnings"] == []  # nothing wrong → no warnings
+    assert "parmmosahn_version" in payload
+    assert "host_resources" in payload
+
+
+def test_cli_doctor_json_surfaces_warnings_as_list():
+    """A missing required tool should appear in `warnings` (machine-readable)."""
+    import json as _json
+
+    runner = CliRunner()
+    fake_env = {
+        "ppanggolin": {"found": True, "version": "2.2", "path": "/x"},
+        "gapseq": {"found": False, "version": None, "path": None},  # MISSING
+        "diamond": {"found": True, "version": "2.1", "path": "/x"},
+        "docker": {"found": True, "version": "24", "path": "/x"},
+        "podman": {"found": False, "version": None, "path": None},
+        "apptainer": {"found": False, "version": None, "path": None},
+    }
+    fake_data = {
+        n: {"found": True, "size_bytes": 1, "rows": 1, "path": "/x"}
+        for n in ("mnxr_to_rhea.tsv", "seed_to_rhea.tsv", "seed_to_bigg.tsv")
+    }
+
+    with (
+        patch("parmmosahn.utils.check_environment", return_value=fake_env),
+        patch("parmmosahn.utils.check_bundled_data", return_value=fake_data),
+    ):
+        result = runner.invoke(cli, ["doctor", "--json"])
+
+    payload = _json.loads(result.output)
+    assert payload["checks"]["all_required_tools_ok"] is False
+    assert any("required external tools" in w for w in payload["warnings"])
+
+
 def test_cli_doctor_warns_on_missing_data_file():
     """doctor surfaces a WARNING when a bundled TSV is unreachable."""
     runner = CliRunner()
