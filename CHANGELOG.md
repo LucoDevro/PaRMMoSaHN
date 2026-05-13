@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.2.2] - 2026-05-13
+
+### Added
+- BiGG cross-references on exchange reactions, internal metabolites, and
+  boundary metabolites via a curated `seed_to_bigg.tsv` table (~2,900
+  entries, built from MetaNetX with supervisor-verified overrides).
+  Bundled in the wheel.
+- SBO term assignment per reaction class (exchange / demand / sink /
+  biomass / biochemical) and for all metabolites (SBO:0000247).
+- `annotation.annotate_exchanges`, `annotation.annotate_metabolites`,
+  `annotation.annotate_sbo_terms`. All three are now invoked by
+  `enrich_model_annotations` and `enrich_models_directory`.
+- 9 unit tests covering the new BiGG and SBO enrichment paths.
+
+### Fixed
+- The BiGG and SBO enrichment described in the thesis methods chapter
+  (Methods §3.3.5) was inadvertently dropped from the v0.2.1 release
+  during a surgical cherry-pick. v0.2.2 restores it. v0.2.0 outputs
+  (which carried the enrichment) and v0.2.2 outputs now match
+  byte-for-byte on the annotation fields; v0.2.1 SBMLs are missing
+  these annotation classes.
+
+### Notes
+- This release is the result of a 2026-05-12 internal methods audit
+  flagging that the BiGG enrichment was in code but not documented.
+  The audit (committed in the companion thesis repo) prompted both the
+  thesis methods description and this release; v0.2.1 should have
+  included it but did not. Anyone re-running validation against
+  v0.2.1 SBMLs should re-run on v0.2.2 to regenerate models with the
+  full annotation set the thesis Results chapter assumes.
+
+
 ## [0.2.1] - 2026-05-13
 
 ### Added
@@ -168,7 +200,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test suite (pytest), type checking (mypy), and code formatting (black/isort)
 - CI/CD pipeline with GitHub Actions
 
-[unreleased]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.2.1...HEAD
+[unreleased]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/robbedewin/PaRMMoSaHN/releases/tag/v0.1.0

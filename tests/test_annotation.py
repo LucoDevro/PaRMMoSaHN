@@ -6,8 +6,11 @@ from click.testing import CliRunner
 from parmmosahn.annotation import (
     _add_annotation,
     _get_annotation,
+    annotate_exchanges,
     annotate_genes,
+    annotate_metabolites,
     annotate_reactions,
+    annotate_sbo_terms,
     enrich_model_annotations,
 )
 from parmmosahn.cli import cli
@@ -267,34 +270,363 @@ def test_annotate_reactions_rhea_skips_existing():
 
 
 # ---------------------------------------------------------------------------
+# Unit tests: annotate_exchanges
+# ---------------------------------------------------------------------------
+def _make_metabolite(met_id: str, annotation: dict | None = None) -> MagicMock:
+    met = MagicMock()
+    met.id = met_id
+    met.annotation = annotation if annotation is not None else {}
+    return met
+
+
+def _make_exchange_reaction(
+    rxn_id: str, met_id: str, met_annotation: dict | None = None
+):
+    """Return (reaction_mock, metabolite_mock) for an exchange reaction."""
+    met = MagicMock()
+    met.id = met_id
+    met.annotation = met_annotation if met_annotation is not None else {}
+    rxn = MagicMock()
+    rxn.id = rxn_id
+    rxn.annotation = {}
+    rxn.metabolites = {met: -1.0}
+    return rxn, met
+
+
+def test_annotate_exchanges_adds_bigg_annotation():
+    """EX_cpd00027_e0 → bigg.metabolite on boundary met + bigg.reaction on reaction."""
+    seed_bigg = {"cpd00027": "glc__D", "cpd00082": "fru"}
+    rxn1, met1 = _make_exchange_reaction("EX_cpd00027_e0", "cpd00027_e0")
+    rxn2, met2 = _make_exchange_reaction("EX_cpd00082_e0", "cpd00082_e0")
+    model = MagicMock()
+    model.exchanges = [rxn1, rxn2]
+
+    count = annotate_exchanges(model, seed_bigg=seed_bigg)
+
+    assert count == 2
+    assert met1.annotation["bigg.metabolite"] == "glc__D"
+    assert rxn1.annotation["bigg.reaction"] == "EX_glc__D_e"
+    assert met2.annotation["bigg.metabolite"] == "fru"
+    assert rxn2.annotation["bigg.reaction"] == "EX_fru_e"
+
+
+def test_annotate_exchanges_skips_unmapped_seed_cpd():
+    """SEED IDs not in seed_bigg are silently skipped."""
+    seed_bigg = {"cpd00027": "glc__D"}
+    rxn, met = _make_exchange_reaction("EX_cpd99999_e0", "cpd99999_e0")
+    model = MagicMock()
+    model.exchanges = [rxn]
+
+    count = annotate_exchanges(model, seed_bigg=seed_bigg)
+
+    assert count == 0
+    assert "bigg.metabolite" not in met.annotation
+    assert "bigg.reaction" not in rxn.annotation
+
+
+def test_annotate_exchanges_skips_non_seed_exchange_ids():
+    """BiGG-style exchange IDs (from ModelPolisher) don't match the SEED pattern."""
+    seed_bigg = {"cpd00027": "glc__D"}
+    rxn, met = _make_exchange_reaction("EX_glc__D_e", "glc__D_e")
+    model = MagicMock()
+    model.exchanges = [rxn]
+
+    count = annotate_exchanges(model, seed_bigg=seed_bigg)
+
+    assert count == 0
+    assert "bigg.reaction" not in rxn.annotation
+
+
+def test_annotate_exchanges_skips_existing_bigg_reaction():
+    """Exchange reactions already annotated with bigg.reaction are not re-added."""
+    seed_bigg = {"cpd00027": "glc__D"}
+    rxn, met = _make_exchange_reaction("EX_cpd00027_e0", "cpd00027_e0")
+    rxn.annotation = {"bigg.reaction": "EX_glc__D_e"}
+    model = MagicMock()
+    model.exchanges = [rxn]
+
+    count = annotate_exchanges(model, seed_bigg=seed_bigg)
+
+    assert count == 0  # bigg.reaction already present
+
+
+def test_annotate_exchanges_empty_exchange_list():
+    """A model with no exchange reactions returns 0."""
+    model = MagicMock()
+    model.exchanges = []
+
+    count = annotate_exchanges(model, seed_bigg={"cpd00027": "glc__D"})
+    assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: annotate_metabolites
+# ---------------------------------------------------------------------------
+def test_annotate_metabolites_adds_bigg_internal():
+    """Intracellular SEED metabolites (cpd#####_c0) get bigg.metabolite."""
+    seed_bigg = {"cpd00027": "glc__D", "cpd00004": "nadh"}
+    mets = [
+        _make_metabolite("cpd00027_c0"),
+        _make_metabolite("cpd00004_c0"),
+    ]
+    model = MagicMock()
+    model.metabolites = mets
+
+    count = annotate_metabolites(model, seed_bigg=seed_bigg)
+
+    assert count == 2
+    assert mets[0].annotation["bigg.metabolite"] == "glc__D"
+    assert mets[1].annotation["bigg.metabolite"] == "nadh"
+
+
+def test_annotate_metabolites_all_compartments():
+    """Matches cytoplasm (_c0), external (_e0), and periplasm (_p0)."""
+    seed_bigg = {"cpd00027": "glc__D"}
+    mets = [
+        _make_metabolite("cpd00027_c0"),
+        _make_metabolite("cpd00027_e0"),
+        _make_metabolite("cpd00027_p0"),
+    ]
+    model = MagicMock()
+    model.metabolites = mets
+
+    count = annotate_metabolites(model, seed_bigg=seed_bigg)
+    assert count == 3
+
+
+def test_annotate_metabolites_skips_non_seed_ids():
+    """BiGG-style metabolite IDs (from ModelPolisher) are not matched."""
+    seed_bigg = {"cpd00027": "glc__D"}
+    mets = [_make_metabolite("glc__D_c"), _make_metabolite("glc__D_e")]
+    model = MagicMock()
+    model.metabolites = mets
+
+    count = annotate_metabolites(model, seed_bigg=seed_bigg)
+    assert count == 0
+
+
+def test_annotate_metabolites_skips_unmapped():
+    """SEED metabolites not in seed_bigg are silently skipped."""
+    seed_bigg = {"cpd00027": "glc__D"}
+    mets = [_make_metabolite("cpd99999_c0")]
+    model = MagicMock()
+    model.metabolites = mets
+
+    count = annotate_metabolites(model, seed_bigg=seed_bigg)
+    assert count == 0
+
+
+def test_annotate_metabolites_skips_already_annotated():
+    """Metabolites already carrying bigg.metabolite are not re-annotated."""
+    seed_bigg = {"cpd00027": "glc__D"}
+    mets = [_make_metabolite("cpd00027_c0", {"bigg.metabolite": "glc__D"})]
+    model = MagicMock()
+    model.metabolites = mets
+
+    count = annotate_metabolites(model, seed_bigg=seed_bigg)
+    assert count == 0
+
+
+def test_annotate_metabolites_idempotent_after_annotate_exchanges():
+    """Boundary metabolites annotated by annotate_exchanges are skipped by annotate_metabolites."""
+    seed_bigg = {"cpd00027": "glc__D"}
+    rxn, boundary_met = _make_exchange_reaction("EX_cpd00027_e0", "cpd00027_e0")
+    model_ex = MagicMock()
+    model_ex.exchanges = [rxn]
+    # First pass: annotate_exchanges annotates boundary_met and rxn
+    exch_count = annotate_exchanges(model_ex, seed_bigg=seed_bigg)
+    assert exch_count == 1
+    assert boundary_met.annotation["bigg.metabolite"] == "glc__D"
+
+    # Second pass: annotate_metabolites skips boundary_met (already annotated)
+    model_ex.metabolites = [boundary_met]
+    met_count = annotate_metabolites(model_ex, seed_bigg=seed_bigg)
+    assert met_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: annotate_sbo_terms
+# ---------------------------------------------------------------------------
+def _make_sbo_model(
+    exchange_ids=(), demand_ids=(), sink_ids=(), extra_rxn_ids=(), met_ids=()
+):
+    """Minimal model mock for SBO tests."""
+
+    def _rxn(rid, name=""):
+        r = MagicMock()
+        r.id = rid
+        r.name = name
+        r.annotation = {}
+        return r
+
+    exchanges = [_rxn(i) for i in exchange_ids]
+    demands = [_rxn(i) for i in demand_ids]
+    sinks = [_rxn(i) for i in sink_ids]
+    extras = [_rxn(i) for i in extra_rxn_ids]
+    mets = [_make_metabolite(m) for m in met_ids]
+
+    model = MagicMock()
+    model.exchanges = exchanges
+    model.demands = demands
+    model.sinks = sinks
+    model.reactions = exchanges + demands + sinks + extras
+    model.metabolites = mets
+    return model, exchanges, demands, sinks, extras, mets
+
+
+def test_annotate_sbo_exchange_reactions():
+    """Exchange reactions get SBO:0000627."""
+    model, exchanges, *_ = _make_sbo_model(
+        exchange_ids=["EX_cpd00027_e0", "EX_cpd00082_e0"]
+    )
+
+    counts = annotate_sbo_terms(model)
+
+    assert counts["reactions"] == 2
+    assert exchanges[0].annotation["sbo"] == "SBO:0000627"
+    assert exchanges[1].annotation["sbo"] == "SBO:0000627"
+
+
+def test_annotate_sbo_demand_and_sink():
+    """Demand → SBO:0000628, sink → SBO:0000632."""
+    model, _, demands, sinks, *_ = _make_sbo_model(
+        demand_ids=["DM_cpd00001_c0"], sink_ids=["SK_cpd00002_c0"]
+    )
+
+    annotate_sbo_terms(model)
+
+    assert demands[0].annotation["sbo"] == "SBO:0000628"
+    assert sinks[0].annotation["sbo"] == "SBO:0000632"
+
+
+def test_annotate_sbo_biomass_by_id():
+    """Reactions with 'biomass' in ID get SBO:0000629."""
+    model, _, _, _, extras, _ = _make_sbo_model(extra_rxn_ids=["biomass_reaction"])
+
+    annotate_sbo_terms(model)
+
+    assert extras[0].annotation["sbo"] == "SBO:0000629"
+
+
+def test_annotate_sbo_biomass_by_name():
+    """Reactions with 'biomass' in name (not ID) also get SBO:0000629."""
+
+    def _rxn_named(rid, name):
+        r = MagicMock()
+        r.id = rid
+        r.name = name
+        r.annotation = {}
+        return r
+
+    rxn = _rxn_named("OBJSYN", "Biomass production")
+    model = MagicMock()
+    model.exchanges = []
+    model.demands = []
+    model.sinks = []
+    model.reactions = [rxn]
+    model.metabolites = []
+
+    annotate_sbo_terms(model)
+
+    assert rxn.annotation["sbo"] == "SBO:0000629"
+
+
+def test_annotate_sbo_biochemical_default():
+    """Non-classified reactions fall back to SBO:0000176."""
+    model, _, _, _, extras, _ = _make_sbo_model(extra_rxn_ids=["PGI", "PFK"])
+
+    annotate_sbo_terms(model)
+
+    assert extras[0].annotation["sbo"] == "SBO:0000176"
+    assert extras[1].annotation["sbo"] == "SBO:0000176"
+
+
+def test_annotate_sbo_metabolites():
+    """All metabolites receive SBO:0000247."""
+    model, *_, mets = _make_sbo_model(met_ids=["cpd00027_c0", "cpd00027_e0"])
+
+    counts = annotate_sbo_terms(model)
+
+    assert counts["metabolites"] == 2
+    assert mets[0].annotation["sbo"] == "SBO:0000247"
+    assert mets[1].annotation["sbo"] == "SBO:0000247"
+
+
+def test_annotate_sbo_skips_existing():
+    """Entities already carrying an sbo annotation are not overwritten."""
+    model, _, _, _, extras, mets = _make_sbo_model(
+        extra_rxn_ids=["PGI"], met_ids=["cpd00027_c0"]
+    )
+    extras[0].annotation["sbo"] = "SBO:0000176"
+    mets[0].annotation["sbo"] = "SBO:0000247"
+
+    counts = annotate_sbo_terms(model)
+
+    assert counts["reactions"] == 0
+    assert counts["metabolites"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Integration test: enrich_model_annotations
 # ---------------------------------------------------------------------------
 def test_enrich_model_annotations(tmp_path: Path):
-    """Full enrichment pipeline: genes + reactions."""
+    """Full enrichment pipeline: genes + reactions + exchanges + internal metabolites."""
     in_file = tmp_path / "model.xml"
     out_file = tmp_path / "out" / "model.xml"
 
     genes = [_make_gene("AEP93129_1_1_308")]
     rxns = [_make_reaction("rxn1", {"ec-code": "3.6.1.1", "seed.reaction": "rxn00001"})]
+
+    ex_met = MagicMock()
+    ex_met.id = "cpd00027_e0"
+    ex_met.annotation = {}
+    ex_rxn = MagicMock()
+    ex_rxn.id = "EX_cpd00027_e0"
+    ex_rxn.annotation = {}
+    ex_rxn.metabolites = {ex_met: -1.0}
+
+    int_met = MagicMock()
+    int_met.id = "cpd00082_c0"  # fructose, cytoplasmic
+    int_met.annotation = {}
+
     mock_model = _make_model(genes=genes, reactions=rxns)
+    mock_model.exchanges = [ex_rxn]
+    mock_model.demands = []
+    mock_model.sinks = []
+    mock_model.metabolites = [ex_met, int_met]
 
     seed_rhea = {"rxn00001": "24576"}
+    seed_bigg = {"cpd00027": "glc__D", "cpd00082": "fru"}
+
+    def _mock_load(name):
+        if "seed_to_rhea" in name:
+            return seed_rhea
+        if "seed_to_bigg" in name:
+            return seed_bigg
+        return {}
 
     with (
         patch(
             "parmmosahn.annotation.cobra.io.read_sbml_model", return_value=mock_model
         ),
         patch("parmmosahn.annotation.cobra.io.write_sbml_model") as mock_write,
-        patch(
-            "parmmosahn.annotation._load_tsv_mapping",
-            side_effect=lambda name: seed_rhea if "seed" in name else {},
-        ),
+        patch("parmmosahn.annotation._load_tsv_mapping", side_effect=_mock_load),
     ):
         summary = enrich_model_annotations(in_file, out_file)
 
     assert summary["genes_ncbiprotein"] == 1
     assert summary["reactions_brenda"] == 1
     assert summary["reactions_rhea"] == 1
+    # exchange: bigg.metabolite on boundary met, bigg.reaction on reaction
+    assert summary["exchanges_bigg"] == 1
+    assert ex_met.annotation["bigg.metabolite"] == "glc__D"
+    assert ex_rxn.annotation["bigg.reaction"] == "EX_glc__D_e"
+    # intracellular: only int_met gets bigg.metabolite (ex_met already done)
+    assert summary["metabolites_bigg"] == 1
+    assert int_met.annotation["bigg.metabolite"] == "fru"
+    # SBO terms: rxn1 (biochemical) + ex_met + int_met
+    assert summary["sbo_reactions"] == 1
+    assert summary["sbo_metabolites"] == 2
     mock_write.assert_called_once()
 
 
