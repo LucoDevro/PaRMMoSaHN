@@ -388,6 +388,9 @@ def test_cli_doctor():
     assert "[MISSING]" in result.output
     assert "diamond" in result.output
     assert "WARNING" in result.output  # diamond missing → warning
+    # A3: host resources block must appear so users see RAM before launching
+    # memory-hungry steps (memote).
+    assert "Host resources:" in result.output
 
 
 def test_cli_init_config(tmp_path: Path):

@@ -310,7 +310,9 @@ def run_pipeline(
     command = " ".join(sys.argv)
     steps = {}
 
-    # Define parameters early so incremental summary writes have full context
+    # Define parameters early so incremental summary writes have full context.
+    # Curation DB and add_unique are included so provenance picks up the
+    # actual values used (sha256 of DB, threshold actually applied).
     parameters = {
         "genomes": str(genomes),
         "medium": str(medium),
@@ -320,8 +322,12 @@ def run_pipeline(
         "gapseq_bits": gapseq_bits,
         "biomass": biomass,
         "soft_core": soft_core,
+        "add_unique": add_unique,
         "engine": engine,
         "no_polish": no_polish,
+        "curation_db": str(curation_db) if curation_db else None,
+        "parallel_strains": parallel_strains,
+        "pause_for_curation": pause_for_curation,
     }
 
     # --- Pre-flight validation ---
@@ -859,6 +865,7 @@ def project(
             parameters={
                 "output": str(out_path),
                 "curation_db": str(curation_db),
+                "medium": str(medium) if medium else None,
                 "no_polish": no_polish,
                 "engine": engine,
             },
@@ -940,8 +947,13 @@ def project(
             "panmodel_rxns": str(panmodel_rxns),
             "medium": str(medium),
             "threads": threads,
+            "diamond_bits": diamond_bits,
+            "gapseq_bits": gapseq_bits,
+            "biomass": biomass,
             "no_polish": no_polish,
             "engine": engine,
+            "curation_db": str(curation_db) if curation_db else None,
+            "parallel_strains": parallel_strains,
         },
         command=command,
         started_at=started_at,
@@ -1318,6 +1330,25 @@ def evaluate(models, output, curation_template, workers, skip_existing):
             click.echo(f"Curation template saved to {out_excel}")
         return
 
+    # Sanity-check RAM before launching parallel memote workers. memote peaks
+    # around 3-4 GB per worker on typical strain models; on memory-constrained
+    # hosts (e.g. default WSL2 caps) requesting too many workers triggers
+    # BrokenProcessPool errors. Suggest a safer count instead of letting the
+    # pool fail mid-run. See suggestions_code.md §5.
+    from parmmosahn.utils import get_system_resources
+
+    resources = get_system_resources()
+    avail_gb = resources.get("available_ram_gb")
+    if avail_gb is not None and workers > 1:
+        safe_workers = max(1, int(avail_gb // 4))
+        if workers > safe_workers:
+            click.echo(
+                f"WARNING: requested workers={workers} but only "
+                f"{avail_gb:.1f} GB RAM available "
+                f"(~4 GB/worker recommended). Consider `--workers {safe_workers}` "
+                f"if memote crashes with BrokenProcessPool."
+            )
+
     click.echo(f"Evaluating {n} model(s) with memote (workers={workers})...")
     t_start = time.time()
 
@@ -1401,7 +1432,7 @@ def annotate(models, output):
 @cli.command()
 def doctor():
     """Check for required external tools and report their versions."""
-    from parmmosahn.utils import check_environment
+    from parmmosahn.utils import check_environment, get_system_resources
 
     REQUIRED = {"ppanggolin", "gapseq", "diamond"}
     ENGINES = {"docker", "podman", "apptainer"}
@@ -1431,6 +1462,29 @@ def doctor():
         else:
             click.echo(f"  [--]  {name}: not found")
 
+    resources = get_system_resources()
+    click.echo("\nHost resources:")
+    if "cpu_count" in resources:
+        click.echo(f"  CPUs:           {resources['cpu_count']}")
+    if "total_ram_gb" in resources:
+        click.echo(f"  Total RAM:      {resources['total_ram_gb']:.1f} GB")
+    if "available_ram_gb" in resources:
+        click.echo(f"  Available RAM:  {resources['available_ram_gb']:.1f} GB")
+    if "platform" in resources:
+        click.echo(f"  Platform:       {resources['platform']}")
+
+    # Heuristic memote workers recommendation: each memote worker peaks
+    # around 3-4 GB on a typical strain model, so cap workers at
+    # floor(available_ram / 4). Surfaces the BrokenProcessPool footgun
+    # documented in suggestions_code.md §5.
+    avail_gb = resources.get("available_ram_gb")
+    if avail_gb is not None:
+        safe_workers = max(1, int(avail_gb // 4))
+        click.echo(
+            f"  Memote workers: recommended max {safe_workers} "
+            f"(~4 GB per worker; lower on systems where other jobs share RAM)"
+        )
+
     click.echo()
     if all_required_ok:
         click.echo("All required tools are available.")
@@ -1439,6 +1493,12 @@ def doctor():
     if not any_engine_ok:
         click.echo(
             "WARNING: No container engine found. ModelPolisher (Step 5) will be skipped."
+        )
+    if avail_gb is not None and avail_gb < 8:
+        click.echo(
+            f"WARNING: only {avail_gb:.1f} GB RAM available — memote evaluation "
+            f"may OOM. Run with `--workers 1` and consider setting "
+            f"MALLOC_ARENA_MAX=2 in the environment."
         )
 
 
