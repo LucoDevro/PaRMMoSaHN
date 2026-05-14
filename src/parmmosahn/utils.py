@@ -358,7 +358,12 @@ def check_bundled_data() -> dict[str, dict[str, Any]]:
     """
     from importlib.resources import as_file, files
 
-    required = ("mnxr_to_rhea.tsv", "seed_to_rhea.tsv", "seed_to_bigg.tsv")
+    required = (
+        "mnxr_to_rhea.tsv",
+        "seed_to_rhea.tsv",
+        "seed_to_bigg.tsv",
+        "seed_rxn_to_bigg.tsv",
+    )
     results: dict[str, dict[str, Any]] = {}
     for name in required:
         info: dict[str, Any] = {

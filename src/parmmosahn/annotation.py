@@ -15,12 +15,11 @@ import cobra
 
 logger = logging.getLogger(__name__)
 
-# identifiers.org URI prefixes used in SBML annotation RDF
-_URI_PREFIX = {
-    "ncbiprotein": "https://identifiers.org/ncbiprotein:",
-    "brenda": "https://identifiers.org/brenda:",
-    "rhea": "https://identifiers.org/rhea:",
-}
+# Note: bare IDs in cobra's `annotation` dict (e.g. "glc__D") are wrapped into
+# MIRIAM identifiers.org URIs (e.g. https://identifiers.org/bigg.metabolite/glc__D)
+# by cobra.io.write_sbml_model at write time. We deliberately store bare IDs in
+# the dict — this is cobrapy's convention and produces the canonical URI form
+# in the on-disk SBML. See tests/test_annotation.py for the regression test.
 
 # SBO terms for SBML reaction/metabolite classification (MIRIAM standard)
 _SBO = {
@@ -44,6 +43,14 @@ _SEED_EXCHANGE_RE = re.compile(r"^EX_(cpd\d+)_e0$")
 # Metabolite ID pattern for gapseq/SEED models: cpd#####_{compartment}
 # Matches cytoplasm (c0), external (e0), periplasm (p0), etc.
 _SEED_MET_RE = re.compile(r"^(cpd\d+)_[a-z]\d*$")
+
+# Internal reaction ID pattern: rxn#####_{compartment}
+_SEED_RXN_RE = re.compile(r"^(rxn\d+)_[a-z]\d*$")
+
+# SEED -> BiGG compartment-suffix translation. SEED uses {letter}{digit}
+# (e.g. c0, e0, p0); BiGG drops the digit. We expose this as a separate
+# constant so rename_to_bigg's behaviour is greppable.
+_SEED_TO_BIGG_COMPARTMENT = {"c0": "c", "e0": "e", "p0": "p"}
 
 # Pattern for Bakta-style gene IDs produced by PPanGGOLiN + gapseq:
 #   G_gnl_Bakta_{assembly}_{ver}_{locus}_{start}_{end}
@@ -341,9 +348,147 @@ def annotate_sbo_terms(model: cobra.Model) -> dict[str, int]:
     return {"reactions": rxn_count, "metabolites": met_count}
 
 
+def _pick_bigg_reaction_id(
+    rxn: "cobra.Reaction", seed_rxn_bigg: dict[str, str]
+) -> str | None:
+    """Policy B: prefer an existing bigg.reaction annotation over the TSV.
+
+    Gapseq sometimes emits a list of compartment-pinned BiGG variants on a
+    single SEED reaction (e.g. ['PPA', 'PPA_1pp', 'IDPh', 'IDPm']). When such
+    a list is present we take the first entry — it has compartment context
+    that the MNX chain in the bundled TSV lacks. Only when no bigg.reaction
+    annotation exists at all do we fall back to seed_rxn_bigg.
+    """
+    existing = (rxn.annotation or {}).get("bigg.reaction")
+    if existing:
+        if isinstance(existing, list):
+            return existing[0] if existing else None
+        return existing
+    m = _SEED_RXN_RE.match(rxn.id)
+    if not m:
+        return None
+    return seed_rxn_bigg.get(m.group(1))
+
+
+def rename_to_bigg(
+    model: cobra.Model,
+    seed_bigg: dict[str, str] | None = None,
+    seed_rxn_bigg: dict[str, str] | None = None,
+) -> dict[str, int]:
+    """Rewrite SEED-namespace primary IDs to BiGG IDs in-place (opt-in).
+
+    Three rename classes:
+    - Metabolites ``cpd#####_{c0,e0,p0}`` -> ``{bigg}_{c,e,p}`` via
+      ``seed_to_bigg.tsv`` (~52 % coverage on the audit cohort).
+    - Exchange reactions ``EX_cpd#####_e0`` -> ``EX_{bigg}_e``, driven by the
+      same metabolite mapping.
+    - Internal reactions ``rxn#####_{c0,...}`` -> BiGG ID. Policy B (see
+      :func:`_pick_bigg_reaction_id`): prefer any pre-existing ``bigg.reaction``
+      annotation (gapseq writes these with compartment context); fall back to
+      ``seed_rxn_to_bigg.tsv``.
+
+    The original SEED ID is already carried in ``seed.compound`` /
+    ``seed.reaction`` for >99 % / >91 % of entities post-gapseq, so renaming
+    does not lose provenance. Collisions with an ID already in the model are
+    skipped with a WARN log; running on an already-renamed model is a no-op
+    (the regex match fails on BiGG-form IDs).
+
+    Returns ``{'metabolites', 'reactions_internal', 'reactions_exchange',
+    'collisions_skipped'}``.
+    """
+    if seed_bigg is None:
+        seed_bigg = _load_tsv_mapping("seed_to_bigg.tsv")
+    if seed_rxn_bigg is None:
+        seed_rxn_bigg = _load_tsv_mapping("seed_rxn_to_bigg.tsv")
+
+    counts = {
+        "metabolites": 0,
+        "reactions_internal": 0,
+        "reactions_exchange": 0,
+        "collisions_skipped": 0,
+    }
+
+    taken_met_ids = {met.id for met in model.metabolites}
+    for met in list(model.metabolites):
+        mt = _SEED_MET_RE.match(met.id)
+        if not mt:
+            continue
+        cpd, seed_comp = mt.group(1), met.id[len(mt.group(1)) + 1 :]
+        bigg = seed_bigg.get(cpd)
+        if not bigg:
+            continue
+        new_comp = _SEED_TO_BIGG_COMPARTMENT.get(seed_comp, seed_comp)
+        new_id = f"{bigg}_{new_comp}"
+        if new_id == met.id:
+            continue
+        if new_id in taken_met_ids:
+            counts["collisions_skipped"] += 1
+            logger.warning(
+                "rename_to_bigg: metabolite %s -> %s collides; keeping SEED ID",
+                met.id,
+                new_id,
+            )
+            continue
+        taken_met_ids.discard(met.id)
+        taken_met_ids.add(new_id)
+        met.id = new_id
+        counts["metabolites"] += 1
+
+    exchange_id_set = {ex.id for ex in model.exchanges}
+    taken_rxn_ids = {rxn.id for rxn in model.reactions}
+    for rxn in list(model.reactions):
+        if rxn.id not in exchange_id_set:
+            continue
+        em = _SEED_EXCHANGE_RE.match(rxn.id)
+        if not em:
+            continue
+        bigg = seed_bigg.get(em.group(1))
+        if not bigg:
+            continue
+        new_id = f"EX_{bigg}_e"
+        if new_id == rxn.id:
+            continue
+        if new_id in taken_rxn_ids:
+            counts["collisions_skipped"] += 1
+            logger.warning(
+                "rename_to_bigg: exchange %s -> %s collides; keeping SEED ID",
+                rxn.id,
+                new_id,
+            )
+            continue
+        taken_rxn_ids.discard(rxn.id)
+        taken_rxn_ids.add(new_id)
+        rxn.id = new_id
+        counts["reactions_exchange"] += 1
+
+    for rxn in list(model.reactions):
+        # _SEED_RXN_RE only matches `rxn\d+_x\d*`, so non-SEED reactions
+        # (biomass, demand, sink, exchanges, already-renamed) are skipped.
+        if not _SEED_RXN_RE.match(rxn.id):
+            continue
+        picked = _pick_bigg_reaction_id(rxn, seed_rxn_bigg)
+        if not picked or picked == rxn.id:
+            continue
+        if picked in taken_rxn_ids:
+            counts["collisions_skipped"] += 1
+            logger.warning(
+                "rename_to_bigg: reaction %s -> %s collides; keeping SEED ID",
+                rxn.id,
+                picked,
+            )
+            continue
+        taken_rxn_ids.discard(rxn.id)
+        taken_rxn_ids.add(picked)
+        rxn.id = picked
+        counts["reactions_internal"] += 1
+
+    return counts
+
+
 def enrich_model_annotations(
     model_path: Path,
     output_path: Path,
+    rename: bool = False,
 ) -> dict[str, int]:
     """Load an SBML model, enrich annotations, and write back.
 
@@ -364,12 +509,23 @@ def enrich_model_annotations(
     seed_rhea = _load_tsv_mapping("seed_to_rhea.tsv")
     mnxr_rhea = _load_tsv_mapping("mnxr_to_rhea.tsv")
     seed_bigg = _load_tsv_mapping("seed_to_bigg.tsv")
+    seed_rxn_bigg = _load_tsv_mapping("seed_rxn_to_bigg.tsv") if rename else {}
 
     gene_count = annotate_genes(model)
     rxn_counts = annotate_reactions(model, seed_rhea=seed_rhea, mnxr_rhea=mnxr_rhea)
     exch_count = annotate_exchanges(model, seed_bigg=seed_bigg)
     met_count = annotate_metabolites(model, seed_bigg=seed_bigg)
     sbo_counts = annotate_sbo_terms(model)
+    rename_counts = (
+        rename_to_bigg(model, seed_bigg=seed_bigg, seed_rxn_bigg=seed_rxn_bigg)
+        if rename
+        else {
+            "metabolites": 0,
+            "reactions_internal": 0,
+            "reactions_exchange": 0,
+            "collisions_skipped": 0,
+        }
+    )
 
     summary = {
         "genes_ncbiprotein": gene_count,
@@ -379,17 +535,36 @@ def enrich_model_annotations(
         "metabolites_bigg": met_count,
         "sbo_reactions": sbo_counts["reactions"],
         "sbo_metabolites": sbo_counts["metabolites"],
+        "renamed_metabolites": rename_counts["metabolites"],
+        "renamed_reactions_internal": rename_counts["reactions_internal"],
+        "renamed_reactions_exchange": rename_counts["reactions_exchange"],
+        "rename_collisions_skipped": rename_counts["collisions_skipped"],
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cobra.io.write_sbml_model(model, str(output_path))
 
-    logger.info(
-        f"{model_path.name}: +{gene_count} ncbiprotein genes, "
-        f"+{rxn_counts['brenda']} brenda, +{rxn_counts['rhea']} rhea, "
-        f"+{exch_count} bigg.reaction, +{met_count} bigg.metabolite, "
-        f"+{sbo_counts['reactions']} sbo reactions, +{sbo_counts['metabolites']} sbo metabolites"
-    )
+    log_parts = [
+        f"+{gene_count} ncbiprotein genes",
+        f"+{rxn_counts['brenda']} brenda",
+        f"+{rxn_counts['rhea']} rhea",
+        f"+{exch_count} bigg.reaction",
+        f"+{met_count} bigg.metabolite",
+        f"+{sbo_counts['reactions']} sbo reactions",
+        f"+{sbo_counts['metabolites']} sbo metabolites",
+    ]
+    if rename:
+        log_parts.append(
+            f"renamed {rename_counts['metabolites']} mets, "
+            f"{rename_counts['reactions_internal']} internal rxns, "
+            f"{rename_counts['reactions_exchange']} exchanges"
+            + (
+                f" ({rename_counts['collisions_skipped']} collisions skipped)"
+                if rename_counts["collisions_skipped"]
+                else ""
+            )
+        )
+    logger.info(f"{model_path.name}: " + ", ".join(log_parts))
     return summary
 
 
@@ -397,6 +572,7 @@ def enrich_models_directory(
     models_dir: Path,
     output_dir: Path,
     proteomes_dir: Path | None = None,
+    rename: bool = False,
 ) -> Path:
     """Enrich all SBML models in a directory. Returns the output directory.
 
@@ -409,6 +585,9 @@ def enrich_models_directory(
     proteomes_dir : Path, optional
         Directory containing ``*.gene_mapping.tsv`` files (one per strain).
         If provided, Bakta-style gene IDs are resolved to NCBI accessions.
+    rename : bool
+        If True, also rewrite SEED-namespace primary IDs to BiGG IDs via
+        :func:`rename_to_bigg` after annotation enrichment. Opt-in.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     xml_files = list(models_dir.rglob("*.xml"))
@@ -423,6 +602,7 @@ def enrich_models_directory(
     seed_rhea = _load_tsv_mapping("seed_to_rhea.tsv")
     mnxr_rhea = _load_tsv_mapping("mnxr_to_rhea.tsv")
     seed_bigg = _load_tsv_mapping("seed_to_bigg.tsv")
+    seed_rxn_bigg = _load_tsv_mapping("seed_rxn_to_bigg.tsv") if rename else {}
 
     totals: dict[str, int] = {
         "genes_ncbiprotein": 0,
@@ -432,6 +612,10 @@ def enrich_models_directory(
         "metabolites_bigg": 0,
         "sbo_reactions": 0,
         "sbo_metabolites": 0,
+        "renamed_metabolites": 0,
+        "renamed_reactions_internal": 0,
+        "renamed_reactions_exchange": 0,
+        "rename_collisions_skipped": 0,
     }
 
     n = len(xml_files)
@@ -451,6 +635,17 @@ def enrich_models_directory(
         exch_count = annotate_exchanges(model, seed_bigg=seed_bigg)
         met_count = annotate_metabolites(model, seed_bigg=seed_bigg)
         sbo_counts = annotate_sbo_terms(model)
+        if rename:
+            rename_counts = rename_to_bigg(
+                model, seed_bigg=seed_bigg, seed_rxn_bigg=seed_rxn_bigg
+            )
+        else:
+            rename_counts = {
+                "metabolites": 0,
+                "reactions_internal": 0,
+                "reactions_exchange": 0,
+                "collisions_skipped": 0,
+            }
 
         cobra.io.write_sbml_model(model, str(out_file))
 
@@ -461,6 +656,10 @@ def enrich_models_directory(
         totals["metabolites_bigg"] += met_count
         totals["sbo_reactions"] += sbo_counts["reactions"]
         totals["sbo_metabolites"] += sbo_counts["metabolites"]
+        totals["renamed_metabolites"] += rename_counts["metabolites"]
+        totals["renamed_reactions_internal"] += rename_counts["reactions_internal"]
+        totals["renamed_reactions_exchange"] += rename_counts["reactions_exchange"]
+        totals["rename_collisions_skipped"] += rename_counts["collisions_skipped"]
 
         logger.debug(
             f"  [{i}/{n}] {xml.name}: +{gene_count} ncbiprotein, "

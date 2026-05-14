@@ -92,4 +92,5 @@ parmmosahn = [
     "data/mnxr_to_rhea.tsv",
     "data/seed_to_rhea.tsv",
     "data/seed_to_bigg.tsv",
+    "data/seed_rxn_to_bigg.tsv",
 ]

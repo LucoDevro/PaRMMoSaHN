@@ -1621,7 +1621,17 @@ def evaluate(models, output, curation_template, workers, skip_existing):
     type=click.Path(),
     help="Directory for the annotation-enriched models.",
 )
-def annotate(models, output):
+@click.option(
+    "--rename-to-bigg",
+    is_flag=True,
+    default=False,
+    help=(
+        "After annotation enrichment, rewrite SEED-namespace primary IDs to "
+        "BiGG IDs where a mapping exists (metabolites, exchanges, internal "
+        "reactions). Opt-in; default off. Unmapped IDs keep their SEED form."
+    ),
+)
+def annotate(models, output, rename_to_bigg):
     """Enrich model annotations for FAIR compliance (genes, reactions)."""
     from parmmosahn.annotation import enrich_models_directory
 
@@ -1631,9 +1641,11 @@ def annotate(models, output):
     xml_count = len(list(models_path.rglob("*.xml")))
     click.echo(f"Input:  {models_path} ({xml_count} models)")
     click.echo(f"Output: {output_path}")
+    if rename_to_bigg:
+        click.echo("Rename: SEED -> BiGG primary IDs (--rename-to-bigg)")
 
     t_start = time.time()
-    enrich_models_directory(models_path, output_path)
+    enrich_models_directory(models_path, output_path, rename=rename_to_bigg)
     click.echo(
         f"Enriched models saved to {output_path} ({_format_elapsed(time.time() - t_start)} total)"
     )

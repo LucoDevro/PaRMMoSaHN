@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from parmmosahn.annotation import (
@@ -12,6 +13,7 @@ from parmmosahn.annotation import (
     annotate_reactions,
     annotate_sbo_terms,
     enrich_model_annotations,
+    rename_to_bigg,
 )
 from parmmosahn.cli import cli
 
@@ -569,6 +571,201 @@ def test_annotate_sbo_skips_existing():
 # ---------------------------------------------------------------------------
 # Integration test: enrich_model_annotations
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Unit tests: rename_to_bigg
+# ---------------------------------------------------------------------------
+def _real_model_for_rename():
+    """Build a small real cobra.Model — needed because cobra's id setter
+    enforces uniqueness through the model.dicts, which MagicMock can't fake.
+    """
+    import cobra
+
+    m = cobra.Model("rename_test")
+    # Two metabolites in c0 + one in e0, plus an exchange.
+    for met_id in ("cpd00027_c0", "cpd00001_c0", "cpd00027_e0"):
+        m.add_metabolites([cobra.Metabolite(met_id, compartment=met_id.split("_")[1])])
+    # One internal reaction (rxn pattern) — gapseq-style with a bigg.reaction list
+    r_internal = cobra.Reaction("rxn00001_c0")
+    r_internal.add_metabolites(
+        {
+            m.metabolites.get_by_id("cpd00027_c0"): -1,
+            m.metabolites.get_by_id("cpd00001_c0"): 1,
+        }
+    )
+    r_internal.annotation["seed.reaction"] = "rxn00001"
+    r_internal.annotation["bigg.reaction"] = ["PPA", "PPA_1pp"]
+    m.add_reactions([r_internal])
+    # One internal with NO existing bigg.reaction — TSV-only path
+    r_internal_2 = cobra.Reaction("rxn00099_c0")
+    r_internal_2.add_metabolites({m.metabolites.get_by_id("cpd00001_c0"): -1})
+    r_internal_2.annotation["seed.reaction"] = "rxn00099"
+    m.add_reactions([r_internal_2])
+    # One exchange
+    r_ex = cobra.Reaction("EX_cpd00027_e0")
+    r_ex.add_metabolites({m.metabolites.get_by_id("cpd00027_e0"): -1})
+    m.add_reactions([r_ex])
+    return m
+
+
+def test_rename_metabolite_with_compartment_translation():
+    m = _real_model_for_rename()
+    rename_to_bigg(m, seed_bigg={"cpd00027": "glc__D"}, seed_rxn_bigg={})
+    assert "glc__D_c" in [met.id for met in m.metabolites]
+    assert "cpd00027_c0" not in [met.id for met in m.metabolites]
+
+
+def test_rename_exchange_pair():
+    """The exchange reaction AND its boundary metabolite are renamed together."""
+    m = _real_model_for_rename()
+    rename_to_bigg(m, seed_bigg={"cpd00027": "glc__D"}, seed_rxn_bigg={})
+    rxn_ids = {r.id for r in m.reactions}
+    met_ids = {met.id for met in m.metabolites}
+    assert "EX_glc__D_e" in rxn_ids
+    assert "EX_cpd00027_e0" not in rxn_ids
+    assert "glc__D_e" in met_ids
+
+
+def test_rename_internal_reaction_via_tsv():
+    """When no bigg.reaction annotation exists, fall back to the TSV."""
+    m = _real_model_for_rename()
+    rename_to_bigg(m, seed_bigg={}, seed_rxn_bigg={"rxn00099": "FOO_TSV_HIT"})
+    rxn_ids = {r.id for r in m.reactions}
+    assert "FOO_TSV_HIT" in rxn_ids
+    assert "rxn00099_c0" not in rxn_ids
+
+
+def test_rename_internal_reaction_prefers_existing_annotation():
+    """Policy B: prefer first existing bigg.reaction over a TSV hit."""
+    m = _real_model_for_rename()
+    # The internal rxn00001 reaction has bigg.reaction = ['PPA', 'PPA_1pp']
+    rename_to_bigg(m, seed_bigg={}, seed_rxn_bigg={"rxn00001": "WRONG_TSV_VALUE"})
+    rxn_ids = {r.id for r in m.reactions}
+    assert "PPA" in rxn_ids
+    assert "WRONG_TSV_VALUE" not in rxn_ids
+
+
+def test_rename_skips_unmapped_ids():
+    m = _real_model_for_rename()
+    counts = rename_to_bigg(m, seed_bigg={}, seed_rxn_bigg={})
+    # No mappings provided -> only annotation-driven internal rename fires (rxn00001 -> PPA)
+    assert counts["metabolites"] == 0
+    assert counts["reactions_exchange"] == 0
+    assert (
+        counts["reactions_internal"] == 1
+    )  # only the one with bigg.reaction annotation
+    # Other entities keep SEED IDs
+    assert "cpd00027_c0" in [m_.id for m_ in m.metabolites]
+    assert "EX_cpd00027_e0" in [r.id for r in m.reactions]
+
+
+def test_rename_skips_collision_with_existing_id():
+    """Two cpd IDs that map to the same BiGG id collide; second skipped."""
+    import cobra
+
+    m = cobra.Model("c")
+    m.add_metabolites(
+        [
+            cobra.Metabolite("cpd00027_c0", compartment="c0"),
+            cobra.Metabolite("cpd99999_c0", compartment="c0"),
+        ]
+    )
+    counts = rename_to_bigg(
+        m,
+        seed_bigg={"cpd00027": "glc__D", "cpd99999": "glc__D"},
+        seed_rxn_bigg={},
+    )
+    met_ids = {met.id for met in m.metabolites}
+    assert "glc__D_c" in met_ids
+    assert ("cpd00027_c0" in met_ids) ^ (
+        "cpd99999_c0" in met_ids
+    )  # exactly one kept SEED
+    assert counts["metabolites"] == 1
+    assert counts["collisions_skipped"] == 1
+
+
+def test_rename_is_idempotent():
+    """A second rename pass is a no-op (regex doesn't match BiGG-form IDs)."""
+    m = _real_model_for_rename()
+    seed_bigg = {"cpd00027": "glc__D", "cpd00001": "h2o"}
+    first = rename_to_bigg(m, seed_bigg=seed_bigg, seed_rxn_bigg={})
+    second = rename_to_bigg(m, seed_bigg=seed_bigg, seed_rxn_bigg={})
+    assert first["metabolites"] > 0
+    assert second["metabolites"] == 0
+    assert second["reactions_exchange"] == 0
+
+
+def test_rename_preserves_seed_compound_annotation():
+    """Pre-existing seed.compound / seed.reaction annotations survive renaming."""
+    m = _real_model_for_rename()
+    met = m.metabolites.get_by_id("cpd00027_c0")
+    met.annotation["seed.compound"] = "cpd00027"  # gapseq native
+    rename_to_bigg(m, seed_bigg={"cpd00027": "glc__D"}, seed_rxn_bigg={})
+    renamed = m.metabolites.get_by_id("glc__D_c")
+    assert renamed.annotation.get("seed.compound") == "cpd00027"
+    # seed.reaction on the rxn00001 reaction stays after rename to PPA
+    rxn = m.reactions.get_by_id("PPA")
+    assert rxn.annotation.get("seed.reaction") == "rxn00001"
+
+
+def test_rename_preserves_fba_growth_rate(tmp_path: Path):
+    """Renaming must not change FBA biomass flux (cobrapy stoichiometry by reference)."""
+    import cobra
+    import cobra.io
+
+    src = Path(__file__).parent / "data" / "tiny_model.xml"
+    if not src.exists():
+        pytest.skip("tests/data/tiny_model.xml fixture not present")
+    m = cobra.io.read_sbml_model(str(src))
+    try:
+        biomass_before = m.slim_optimize()
+    except Exception:
+        pytest.skip(
+            "tiny_model has no objective / not solvable; FBA invariance untested"
+        )
+    if biomass_before is None or biomass_before == 0:
+        pytest.skip("tiny_model returns 0 / None biomass; FBA invariance untested")
+
+    rename_to_bigg(m)
+    biomass_after = m.slim_optimize()
+    assert (
+        abs(biomass_before - biomass_after) < 1e-6
+    ), f"FBA invariance broken: {biomass_before} -> {biomass_after}"
+
+
+def test_bare_ids_emit_miriam_uris_in_sbml_output(tmp_path: Path):
+    """Pins the cobrapy convention: bare IDs in `annotation` are wrapped into
+    https://identifiers.org/<ns>/<id> URIs by write_sbml_model. This is the
+    reason annotate_* writes bare IDs (not URIs) into the dict — and the reason
+    no explicit URI-emission step is needed in this module.
+    """
+    import cobra
+    import cobra.io
+
+    m = cobra.Model("uri_test")
+    met = cobra.Metabolite("cpd00027_e0", compartment="e0")
+    m.add_metabolites([met])
+    rxn = cobra.Reaction("EX_cpd00027_e0")
+    rxn.add_metabolites({met: -1})
+    m.add_reactions([rxn])
+
+    met.annotation["bigg.metabolite"] = "glc__D"
+    met.annotation["seed.compound"] = "cpd00027"
+    rxn.annotation["bigg.reaction"] = "EX_glc__D_e"
+    rxn.annotation["seed.reaction"] = "rxn00001"
+
+    out = tmp_path / "m.xml"
+    cobra.io.write_sbml_model(m, str(out))
+    text = out.read_text()
+
+    for uri in (
+        "https://identifiers.org/bigg.metabolite/glc__D",
+        "https://identifiers.org/seed.compound/cpd00027",
+        "https://identifiers.org/bigg.reaction/EX_glc__D_e",
+        "https://identifiers.org/seed.reaction/rxn00001",
+    ):
+        assert uri in text, f"expected MIRIAM URI {uri!r} missing from SBML output"
+
+
 def test_enrich_model_annotations(tmp_path: Path):
     """Full enrichment pipeline: genes + reactions + exchanges + internal metabolites."""
     in_file = tmp_path / "model.xml"
