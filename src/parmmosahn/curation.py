@@ -35,6 +35,15 @@ def _run_memote_snapshot_inprocess(
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
 
+    # cobra's SBML reader logs one INFO/WARNING line per boundary metabolite
+    # ("Adding exchange reaction EX_..."), which floods the J9 log with
+    # hundreds of lines per model and buries the per-strain progress. These
+    # are informational, not actionable. Silence the cobra logger here (this
+    # runs in the spawned memote child, so it does not affect the parent's
+    # logging) before validate_model triggers the SBML read.
+    for _name in ("cobra", "cobra.io.sbml", "cobra.core"):
+        logging.getLogger(_name).setLevel(logging.ERROR)
+
     model_obj, sbml_ver, notifications = memote_api.validate_model(str(model_path))
     if model_obj is None:
         logger.error(
