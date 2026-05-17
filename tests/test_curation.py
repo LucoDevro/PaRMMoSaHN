@@ -75,6 +75,90 @@ def test_run_memote_snapshot_invalid_model(tmp_path: Path, caplog):
         assert not output_html.exists()
 
 
+def test_run_memote_snapshot_timeout_kills_and_skips(tmp_path: Path, caplog):
+    """A hung memote child must be killed within ``timeout`` and skipped.
+
+    Regression for the deadlock_capture_20260517 hang: the model that never
+    finishes must not freeze the run. The spawned child is faked so the test
+    stays fast and never launches memote; it asserts the kill + cleanup +
+    False-return contract that lets ``--skip-existing`` resume.
+    """
+    model_path = tmp_path / "hung_model.xml"
+    output_json = tmp_path / "reports" / "hung_model.json"
+    output_html = tmp_path / "reports" / "hung_model.html"
+    model_path.touch()
+    # Simulate the orphan .tmp a SIGKILL-mid-write leaves behind.
+    output_json.parent.mkdir(parents=True, exist_ok=True)
+    leftover = output_json.with_suffix(output_json.suffix + ".tmp")
+    leftover.write_text("partial")
+
+    class FakeProc:
+        def __init__(self, *a, **k):
+            self._terminated = False
+            self.exitcode = None
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            # Alive until terminate() is called -> forces the timeout branch.
+            return not self._terminated
+
+        def terminate(self):
+            self._terminated = True
+
+        def kill(self):
+            self._terminated = True
+
+    fake_ctx = MagicMock()
+    fake_ctx.Process = FakeProc
+
+    with patch(
+        "parmmosahn.curation.multiprocessing.get_context", return_value=fake_ctx
+    ):
+        ok = run_memote_snapshot(model_path, output_json, output_html, timeout=1)
+
+    assert ok is False
+    assert "exceeded 1s" in caplog.text
+    assert not leftover.exists()  # partial .tmp cleaned -> skip-existing retries
+    assert not output_json.exists()
+
+
+def test_run_memote_snapshot_nonzero_exit_skips(tmp_path: Path, caplog):
+    """A crashed memote child (non-zero exit) is skipped, not fatal."""
+    model_path = tmp_path / "crash_model.xml"
+    output_json = tmp_path / "crash_model.json"
+    output_html = tmp_path / "crash_model.html"
+    model_path.touch()
+
+    class FakeProc:
+        def __init__(self, *a, **k):
+            self.exitcode = 1
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+    fake_ctx = MagicMock()
+    fake_ctx.Process = FakeProc
+
+    with patch(
+        "parmmosahn.curation.multiprocessing.get_context", return_value=fake_ctx
+    ):
+        ok = run_memote_snapshot(model_path, output_json, output_html)
+
+    assert ok is False
+    assert "exited with 1" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # extract_memote_problems
 # ---------------------------------------------------------------------------

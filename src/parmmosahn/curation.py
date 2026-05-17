@@ -1,11 +1,11 @@
 import contextlib
 import json
 import logging
+import multiprocessing
 import os
 import re
 import subprocess
 import time
-from concurrent.futures import ProcessPoolExecutor
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Dict, Tuple, cast
@@ -99,23 +99,69 @@ def run_memote_snapshot(
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
 
-    with ProcessPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            _run_memote_snapshot_inprocess,
-            model_path,
-            output_json,
-            output_html,
+    # A plain ``spawn`` Process, not ProcessPoolExecutor. Two deadlocks were
+    # observed when the executor variant ran inside the ThreadPoolExecutor that
+    # ``parmmosahn evaluate --workers N`` uses (deadlock_capture_20260517):
+    #
+    #   1. ProcessPoolExecutor defaults to the ``fork`` start method. Forking a
+    #      multi-threaded process (the outer thread pool + jemalloc bg threads)
+    #      wedged the child at bootstrap in multiprocessing/util.py
+    #      _flush_std_streams, holding a stdio lock copied from the parent.
+    #   2. Even when future.result(timeout=) raised, leaving the
+    #      ``with ProcessPoolExecutor`` block called shutdown(wait=True), which
+    #      os.waitpid()-blocked forever on the still-running hung memote child.
+    #      The timeout cancelled the *future*, never the *process*.
+    #
+    # ``spawn`` gives the child a fresh interpreter with no inherited locks
+    # (kills cause 1). join(timeout) + terminate() + kill() guarantees the
+    # child is reaped within ``timeout`` no matter how memote hangs (kills
+    # cause 2): a pathological model can never freeze the run.
+    ctx = multiprocessing.get_context("spawn")
+    proc = ctx.Process(
+        target=_run_memote_snapshot_inprocess,
+        args=(model_path, output_json, output_html),
+        name=f"memote-{model_path.stem}",
+    )
+    proc.start()
+    proc.join(timeout)
+
+    if proc.is_alive():
+        logger.error(
+            f"Memote exceeded {timeout}s for {model_path.name}; killing and "
+            "skipping (run continues, --skip-existing will retry)."
         )
-        try:
-            future.result(timeout=timeout)
-            logger.debug(f"Memote snapshot completed for {model_path.name}.")
-            return True
-        except TimeoutError:
-            logger.error(f"Memote timed out after {timeout}s for {model_path.name}.")
-            return False
-        except Exception as e:
-            logger.error(f"Memote failed for {model_path.name}: {e}")
-            return False
+        proc.terminate()
+        proc.join(30)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        _cleanup_partial_outputs(output_json, output_html)
+        return False
+
+    if proc.exitcode != 0:
+        logger.error(
+            f"Memote subprocess for {model_path.name} exited with "
+            f"{proc.exitcode}; skipping."
+        )
+        _cleanup_partial_outputs(output_json, output_html)
+        return False
+
+    logger.debug(f"Memote snapshot completed for {model_path.name}.")
+    return True
+
+
+def _cleanup_partial_outputs(output_json: Path, output_html: Path) -> None:
+    """Remove half-written ``.tmp`` files left by a killed memote child.
+
+    ``_run_memote_snapshot_inprocess`` writes atomically (``.tmp`` then
+    ``replace``), so a kill never produces a corrupt final file; it can only
+    leave an orphan ``.tmp``. Removing it keeps the output dir clean so
+    ``--skip-existing`` sees the model as not-yet-done and retries it.
+    """
+    for path in (output_json, output_html):
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def extract_memote_problems(
