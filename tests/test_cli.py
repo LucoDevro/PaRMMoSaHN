@@ -430,6 +430,40 @@ def test_cli_evaluate(tmp_path: Path):
     assert "Evaluating 2 model(s)" in result.output
 
 
+def test_cli_evaluate_dedupes_stems_across_subdirs(tmp_path: Path):
+    """Same stem in nested sub-dirs (gapseq trees) must be evaluated once.
+
+    Regression: rglob over a gapseq tree returns {strain}.xml plus copies
+    in per-strain working sub-dirs; both map to the same {stem}.json, so
+    without dedupe --workers>1 ran the same strain concurrently, twice.
+    """
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "strain_A.xml").touch()
+    (models_dir / "strain_B.xml").touch()
+    # gapseq-style per-strain working sub-dir copies, same stems.
+    sub_a = models_dir / "strain_A"
+    sub_a.mkdir()
+    (sub_a / "strain_A.xml").touch()
+    sub_b = models_dir / "strain_B"
+    sub_b.mkdir()
+    (sub_b / "strain_B.xml").touch()
+    out_dir = tmp_path / "reports"
+    runner = CliRunner()
+
+    with patch("parmmosahn.curation.run_memote_snapshot") as mock_memote:
+        result = runner.invoke(
+            cli, ["evaluate", "-M", str(models_dir), "-o", str(out_dir)]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert mock_memote.call_count == 2  # not 4
+    assert "Evaluating 2 model(s)" in result.output
+    assert "collapse to 2 unique strains" in result.output
+    evaluated_stems = {c.args[0].stem for c in mock_memote.call_args_list}
+    assert evaluated_stems == {"strain_A", "strain_B"}
+
+
 def test_cli_evaluate_with_curation_template(tmp_path: Path):
     """'evaluate --curation-template' should also generate the Excel file."""
     models_dir = tmp_path / "models"

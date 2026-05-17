@@ -1512,12 +1512,37 @@ def evaluate(models, output, curation_template, workers, skip_existing):
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    xml_files = sorted(models_path.rglob("*.xml"))
-    if not xml_files:
+    all_xml = sorted(models_path.rglob("*.xml"))
+    if not all_xml:
         click.echo(f"No XML models found in {models_path}")
         return
 
+    # Outputs are keyed by stem ({stem}.json/.html), so two .xml files sharing
+    # a stem would both target the same report and be evaluated as separate
+    # tasks. This happens with gapseq trees, which keep a flat
+    # {strain}.xml *and* a per-strain working subdir containing more SBML:
+    # rglob then returns the stem 2-3x. --skip-existing cannot dedupe these
+    # (neither output exists yet when both are queued), so with --workers>1
+    # the same strain runs concurrently, twice. Collapse by stem here, first
+    # path wins, so each strain is evaluated exactly once.
+    xml_files = []
+    seen_stems: set[str] = set()
+    dupe_stems: set[str] = set()
+    for xml in all_xml:
+        if xml.stem in seen_stems:
+            dupe_stems.add(xml.stem)
+            continue
+        seen_stems.add(xml.stem)
+        xml_files.append(xml)
+
     n_total = len(xml_files)
+    if dupe_stems:
+        click.echo(
+            f"Note: {len(all_xml)} .xml files collapse to {n_total} unique "
+            f"strains ({len(dupe_stems)} stem(s) had extra copies in "
+            f"sub-directories; first path used)."
+        )
+
     todo = []
     for xml in xml_files:
         out_json = output_path / f"{xml.stem}.json"
