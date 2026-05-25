@@ -1326,7 +1326,21 @@ def heatmap(models, output, plot):
     is_flag=True,
     help="Also generate a dendrogram PNG (requires pip install 'parmmosahn[viz]' scipy).",
 )
-def panreactome(models, output, plot):
+@click.option(
+    "--core-threshold",
+    type=float,
+    default=0.99,
+    show_default=True,
+    help="Core if a reaction occurs in strictly more than this fraction of strains (>99% thesis convention).",
+)
+@click.option(
+    "--cloud-threshold",
+    type=float,
+    default=0.05,
+    show_default=True,
+    help="Unique (cloud) if a reaction occurs in strictly fewer than this fraction of strains (<5%).",
+)
+def panreactome(models, output, plot, core_threshold, cloud_threshold):
     """Characterize the pan-reactome: core/accessory/unique reactions, Jaccard similarity, accumulation curve."""
     from parmmosahn.analysis import panreactome as panreactome_fn
 
@@ -1335,6 +1349,8 @@ def panreactome(models, output, plot):
         models_dir=Path(models),
         output_path=Path(output),
         plot=plot,
+        core_threshold=core_threshold,
+        cloud_threshold=cloud_threshold,
     )
     click.echo(f"Pan-reactome analysis saved alongside {output}")
 

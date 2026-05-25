@@ -308,6 +308,8 @@ def panreactome(
     models_dir: Path,
     output_path: Path,
     plot: bool = False,
+    core_threshold: float = 0.99,
+    cloud_threshold: float = 0.05,
 ) -> Path:
     """Characterize the pan-reactome across all strain models.
 
@@ -328,6 +330,17 @@ def panreactome(
         If *True*, save a dendrogram PNG showing strain clustering by
         metabolic similarity.  Requires ``matplotlib`` (``pip install
         'parmmosahn[viz]'``).
+    core_threshold:
+        A reaction is *core* if it occurs in strictly more than this fraction
+        of strains. Default ``0.99`` (present in >99% of strains), the
+        reaction-level adaptation of the Tettelin core/accessory/unique
+        framework used throughout the thesis. The strictly-greater comparison
+        matches ``pmth-gene-partition`` on the gene side: for ``N=794``,
+        ``0.99 * 794 = 786.06`` so core requires ``>= 787`` strains.
+    cloud_threshold:
+        A reaction is *unique* (cloud) if it occurs in strictly fewer than this
+        fraction of strains. Default ``0.05`` (<5%). Everything between the two
+        thresholds is *accessory* (5-99%).
 
     Returns
     -------
@@ -350,13 +363,19 @@ def panreactome(
     rxn_list = sorted(all_rxns)
 
     # --- Classify reactions ---
+    # Thesis convention (reaction-level Tettelin core/accessory/unique):
+    # core present in >core_threshold of strains (strictly greater), unique
+    # in <cloud_threshold, accessory in between. Strictly-greater on the core
+    # side matches the gene-side pmth-gene-partition classifier.
+    core_cut = core_threshold * n_strains
+    cloud_cut = cloud_threshold * n_strains
     rxn_class: dict[str, dict[str, Any]] = {}
     for rxn in rxn_list:
         present_in = [s for s in strain_names if rxn in rxn_sets[s]]
         count = len(present_in)
-        if count == n_strains:
+        if count > core_cut:
             category = "core"
-        elif count == 1:
+        elif count < cloud_cut:
             category = "unique"
         else:
             category = "accessory"
@@ -396,6 +415,8 @@ def panreactome(
         f"accessory_reactions\t{accessory_count}",
         f"unique_reactions\t{unique_count}",
         f"core_fraction\t{core_count / len(rxn_list):.4f}",
+        f"core_threshold\t{core_threshold}",
+        f"cloud_threshold\t{cloud_threshold}",
         f"mean_model_size\t{mean_size:.1f}",
         f"std_model_size\t{std_size:.1f}",
         f"min_model_size\t{min(model_sizes)}",

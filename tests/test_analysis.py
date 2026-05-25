@@ -317,48 +317,80 @@ def test_cli_analyze_auxotrophy_with_threshold(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
+def _mock_cohort(plan: dict[str, int], n: int):
+    """Build *n* mock strains where reaction ``rxn`` is present in ``plan[rxn]``
+    of them (the first ``plan[rxn]`` strains)."""
+    strains = []
+    for i in range(n):
+        rids = [rxn for rxn, k in plan.items() if i < k]
+        strains.append((f"s{i:02d}", _make_mock_model(f"s{i:02d}", rids)))
+    return strains
+
+
 @patch("parmmosahn.analysis._load_models")
 def test_panreactome_classification(mock_load, tmp_path: Path):
-    """panreactome should classify reactions as core/accessory/unique."""
+    """Default thresholds: core >99%, unique <5%, accessory in between.
+
+    N=25 so the <5% cloud cut (1.25) admits singletons and the >99% core cut
+    (24.75) admits only all-present reactions.
+    """
     from parmmosahn.analysis import panreactome
 
-    m1 = _make_mock_model("s1", ["CORE_1", "ACC_1", "UNIQUE_S1"])
-    m2 = _make_mock_model("s2", ["CORE_1", "ACC_1", "UNIQUE_S2"])
-    m3 = _make_mock_model("s3", ["CORE_1", "UNIQUE_S3"])
-    mock_load.return_value = [("s1", m1), ("s2", m2), ("s3", m3)]
+    plan = {
+        "CORE_ALL": 25,  # 25/25 = 1.00  > 0.99   -> core
+        "NEAR_CORE_24": 24,  # 24/25 = 0.96  not >0.99 -> accessory
+        "ACC_MID": 13,  # 13/25 = 0.52           -> accessory
+        "ACC_LOW_2": 2,  # 2/25 = 0.08   not <0.05 -> accessory
+        "UNIQUE_1": 1,  # 1/25 = 0.04   < 0.05    -> unique
+    }
+    mock_load.return_value = _mock_cohort(plan, 25)
 
     out = tmp_path / "panreactome.tsv"
     result = panreactome(tmp_path, out)
-
     assert result == out
-    content = out.read_text()
-    lines = content.strip().splitlines()
 
-    # Parse into dict for easier assertions
     data = {}
-    for line in lines[1:]:
+    for line in out.read_text().strip().splitlines()[1:]:
         parts = line.split("\t")
         data[parts[0]] = parts[3]  # category column
 
-    assert data["CORE_1"] == "core"
-    assert data["ACC_1"] == "accessory"
-    assert data["UNIQUE_S1"] == "unique"
-    assert data["UNIQUE_S2"] == "unique"
+    assert data["CORE_ALL"] == "core"
+    assert data["NEAR_CORE_24"] == "accessory"  # 96% is not > 99%
+    assert data["ACC_MID"] == "accessory"
+    assert data["ACC_LOW_2"] == "accessory"  # 8% is not < 5%
+    assert data["UNIQUE_1"] == "unique"
 
-    # Check summary file exists
-    summary = tmp_path / "panreactome_summary.tsv"
-    assert summary.exists()
-    summary_content = summary.read_text()
+    summary_content = (tmp_path / "panreactome_summary.tsv").read_text()
     assert "pan_reactome_size\t5" in summary_content
     assert "core_reactions\t1" in summary_content
+    assert "unique_reactions\t1" in summary_content
+    assert "accessory_reactions\t3" in summary_content
+    assert "core_threshold\t0.99" in summary_content
+    assert "cloud_threshold\t0.05" in summary_content
 
-    # Check Jaccard file exists
-    jaccard = tmp_path / "panreactome_jaccard.tsv"
-    assert jaccard.exists()
+    assert (tmp_path / "panreactome_jaccard.tsv").exists()
+    assert (tmp_path / "panreactome_accumulation.tsv").exists()
 
-    # Check accumulation file exists
-    accum = tmp_path / "panreactome_accumulation.tsv"
-    assert accum.exists()
+
+@patch("parmmosahn.analysis._load_models")
+def test_panreactome_custom_thresholds(mock_load, tmp_path: Path):
+    """core_threshold / cloud_threshold are honoured."""
+    from parmmosahn.analysis import panreactome
+
+    plan = {"R_ALL": 10, "R_HALF": 5, "R_ONE": 1}
+    mock_load.return_value = _mock_cohort(plan, 10)
+
+    out = tmp_path / "panreactome.tsv"
+    # cloud_threshold 0.6 makes R_HALF (0.5) and R_ONE (0.1) unique; core_threshold
+    # 0.9 keeps R_ALL (1.0) core.
+    panreactome(tmp_path, out, core_threshold=0.9, cloud_threshold=0.6)
+    data = {}
+    for line in out.read_text().strip().splitlines()[1:]:
+        parts = line.split("\t")
+        data[parts[0]] = parts[3]
+    assert data["R_ALL"] == "core"
+    assert data["R_HALF"] == "unique"
+    assert data["R_ONE"] == "unique"
 
 
 # ---------------------------------------------------------------------------
