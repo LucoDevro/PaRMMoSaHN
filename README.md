@@ -219,6 +219,8 @@ parmmosahn analyze panreactome \
 
 The accumulation curve shows whether the pan-reactome is "open" (still growing) or "closed" (saturated), which has implications for how representative your strain collection is.
 
+By default a reaction is classified **core** if it occurs in more than 99% of strains and **unique** (cloud) if it occurs in fewer than 5%; adjust these cutoffs with `--core-threshold` and `--cloud-threshold`.
+
 ### Phenotype validation
 
 Model predictions are only as trustworthy as their agreement with experimental data. The `validate` command compares in silico growth predictions against experimental growth phenotypes (e.g., Biolog plates, carbon source utilization assays) and computes standard classification metrics.
@@ -277,6 +279,20 @@ parmmosahn analyze heatmap \
   --plot
 ```
 
+### Prune dry-run (diagnostic)
+
+> **Read-only diagnostic — modifies no models.** This reports what *could* be pruned; the destructive `prune` step it scaffolds is still on the roadmap.
+
+Report dead-end metabolites (those with zero producers or zero consumers) and reactions whose participants are all dead-end, per model. Dead-end metabolites are one structural source of the cohort-wide blocked-reaction baseline, so this gives a quick, non-destructive estimate of how many reactions are unambiguously prunable before committing to a clean-up pass.
+
+```bash
+parmmosahn analyze prune-report \
+  -M ./results/06-final_models/ \
+  -o ./analysis/prune_report.tsv
+```
+
+**Output:** one row per model with dead-end metabolite counts (`dead_end_metabolites`, `dead_end_fraction`), unambiguously-prunable reaction counts (`reactions_all_dead_end`, `prunable_fraction`), plus an FBA `growth_rate_baseline` and `fba_status` so you can confirm the models still grow.
+
 ## Modular usage
 
 Each pipeline step can be run independently:
@@ -288,7 +304,7 @@ parmmosahn strains -g ./genomes/ -f soft.faa \
 parmmosahn evaluate -M ./models/ -o ./reports/     # Memote evaluation
 parmmosahn annotate -M ./models/ -o ./annotated/   # FAIR annotation
 parmmosahn gather -M ./models/ -o ./final/         # Format conversion
-parmmosahn curate -s model.xml -c out/ -d curation.xlsx  # Apply curations
+parmmosahn curate -s model.xml -o out/ -d curation.xlsx  # Apply curations
 parmmosahn polish -M ./models/ -o ./polished/      # ModelPolisher
 ```
 
