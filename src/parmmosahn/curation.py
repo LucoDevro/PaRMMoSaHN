@@ -667,6 +667,58 @@ def write_curation_application_report(
     return output_path
 
 
+def _await_polisher_databases(
+    base_cmd: list[str],
+    compose_file: Path,
+    compose_dir: Path,
+    run_env: dict,
+    services: tuple[str, ...] = ("biggdb", "adb"),
+    timeout: int = 300,
+) -> None:
+    """Block until the ModelPolisher PostgreSQL backends accept connections.
+
+    Polls ``pg_isready`` per service rather than sleeping a fixed interval, so
+    fast hosts proceed at once and slow ones still get a generous budget. If the
+    probe can't run (engine lacks ``exec``, or no ``pg_isready`` in the image)
+    the poll simply runs to *timeout* and then returns, matching the old
+    fixed-wait behaviour. Factored out so it can be stubbed in tests.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        all_ready = True
+        for svc in services:
+            probe = base_cmd + [
+                "-f",
+                str(compose_file),
+                "exec",
+                "-T",
+                svc,
+                "pg_isready",
+            ]
+            try:
+                rc = subprocess.run(
+                    probe,
+                    cwd=str(compose_dir),
+                    env=run_env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                ).returncode
+            except (subprocess.SubprocessError, OSError):
+                rc = 1
+            if rc != 0:
+                all_ready = False
+                break
+        if all_ready:
+            logger.info("ModelPolisher databases ready.")
+            return
+        time.sleep(5)
+    logger.warning(
+        f"Database readiness probe did not succeed within {timeout}s; "
+        "proceeding anyway (ModelPolisher may fail if a DB is not up)."
+    )
+
+
 def run_model_polisher(
     model_dir: str | Path,
     output_dir: str | Path,
@@ -728,48 +780,9 @@ def run_model_polisher(
         )
 
         # Wait until the PostgreSQL backends actually accept connections —
-        # ModelPolisher fails if it connects too early. Poll pg_isready rather
-        # than sleeping a fixed 4 minutes: fast hosts proceed at once, slow ones
-        # still get a generous budget. If the probe can't run (engine lacks
-        # `exec`, or no pg_isready in the image) the loop simply runs to the
-        # deadline and then proceeds, matching the old fixed-wait behaviour.
+        # ModelPolisher fails if it connects too early.
         logger.info("Waiting for ModelPolisher databases to accept connections...")
-        db_services = ("biggdb", "adb")
-        deadline = time.time() + 300
-        while time.time() < deadline:
-            all_ready = True
-            for svc in db_services:
-                probe = base_cmd + [
-                    "-f",
-                    str(compose_file),
-                    "exec",
-                    "-T",
-                    svc,
-                    "pg_isready",
-                ]
-                try:
-                    rc = subprocess.run(
-                        probe,
-                        cwd=str(compose_dir),
-                        env=run_env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=30,
-                    ).returncode
-                except (subprocess.SubprocessError, OSError):
-                    rc = 1
-                if rc != 0:
-                    all_ready = False
-                    break
-            if all_ready:
-                logger.info("ModelPolisher databases ready.")
-                break
-            time.sleep(5)
-        else:
-            logger.warning(
-                "Database readiness probe did not succeed within 300s; "
-                "proceeding anyway (ModelPolisher may fail if a DB is not up)."
-            )
+        _await_polisher_databases(base_cmd, compose_file, compose_dir, run_env)
 
         # Downgrades SBML headers from L3V2 to L3V1 for compatibility with the beta version of ModelPolisher. This is a temporary workaround until we can upgrade to the latest ModelPolisher release that supports L3V2.
         logger.info("Downgrading SBML headers to L3V1 for beta compatibility...")

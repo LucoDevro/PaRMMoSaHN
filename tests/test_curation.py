@@ -485,11 +485,11 @@ def test_apply_curations_skips_existing_output(tmp_path: Path):
 
 
 @patch("parmmosahn.curation.subprocess.run")
-@patch("parmmosahn.curation.time.sleep")
+@patch("parmmosahn.curation._await_polisher_databases")
 @patch("parmmosahn.curation.files")
 @patch("parmmosahn.curation.as_file")
 def test_run_model_polisher(
-    mock_as_file, mock_files, mock_sleep, mock_subprocess, tmp_path: Path
+    mock_as_file, mock_files, mock_await_dbs, mock_subprocess, tmp_path: Path
 ):
     """run_model_polisher should set up the container environment and loop over models."""
     from parmmosahn.curation import run_model_polisher
@@ -511,7 +511,7 @@ def test_run_model_polisher(
     assert results_path == out_dir / "models"
     assert (out_dir / "models").exists()
     assert (out_dir / "logs").exists()
-    assert mock_sleep.called
+    assert mock_await_dbs.called  # readiness wait was invoked
     # 1 'up' + 2 'run' (strain A + B) + 1 'down' = 4 calls
     assert mock_subprocess.call_count == 4
     first_cmd = mock_subprocess.call_args_list[0][0][0]
