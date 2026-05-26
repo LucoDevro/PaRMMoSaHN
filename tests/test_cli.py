@@ -702,7 +702,7 @@ def test_cli_doctor_warns_on_missing_data_file():
 
     assert result.exit_code == 0
     assert "[MISSING] seed_to_bigg.tsv" in result.output
-    assert "Annotation enrichment (Step 5b) will fail" in result.output
+    assert "Annotation enrichment (Step 5) will fail" in result.output
 
 
 def test_cli_init_config(tmp_path: Path):
@@ -960,6 +960,59 @@ def test_cli_run_cli_flag_overrides_config(tmp_path: Path):
     assert result.exit_code == 0, result.output
     _, pan_kwargs = mock_run_pan.call_args
     assert pan_kwargs["threads"] == 12
+
+
+def test_cli_run_explicit_default_beats_config(tmp_path: Path):
+    """Regression (#1): an explicit CLI value that equals the option default
+    must still beat the config. The old ``x if x != DEFAULT else cfg.get(x)``
+    idiom could not tell 'user typed the default' from 'user omitted it' and
+    silently took the config value instead."""
+    pytest_importorskip_yaml()
+
+    genomes = tmp_path / "g"
+    genomes.mkdir()
+    medium = tmp_path / "m.csv"
+    medium.touch()
+
+    config_file = tmp_path / "config.yml"
+    config_file.write_text(
+        f"genomes: {genomes}\n"
+        f"output: {tmp_path / 'out'}\n"
+        f"label: x\n"
+        f"medium: {medium}\n"
+        f"diamond_bits: 999\n"  # config tries to override the default
+        f"biomass: neg\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    with (
+        patch("parmmosahn.pipeline.run_pan") as mock_run_pan,
+        patch("parmmosahn.models.derive_strain_models") as mock_derive,
+        patch("parmmosahn.pipeline.run_downstream"),
+        patch("parmmosahn.utils.validate_input_genomes"),
+    ):
+        mock_run_pan.return_value = (tmp_path / "rxns.tbl", tmp_path / "pan.faa")
+        mock_derive.return_value = tmp_path / "models"
+
+        # User explicitly types the defaults 150 / pos.
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "--config",
+                str(config_file),
+                "--diamond-bits",
+                "150",
+                "--biomass",
+                "pos",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    _, derive_kwargs = mock_derive.call_args
+    assert derive_kwargs["diamond_bits"] == 150  # explicit default beats 999
+    assert derive_kwargs["biomass"] == "pos"  # explicit default beats "neg"
 
 
 def test_cli_run_missing_required_args_with_no_config(tmp_path: Path):

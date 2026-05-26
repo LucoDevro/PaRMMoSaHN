@@ -10,32 +10,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-05-26
 
-First public release on PyPI. Bundles the develop-branch work accumulated
-since v0.2.2 plus packaging metadata for distribution.
+First public release on PyPI. Bundles the develop-branch work accumulated since
+v0.2.2, a round of robustness hardening, and packaging metadata for
+distribution. This release sets the public baseline; the interface changes under
+**Changed** are noted relative to the internal v0.2.2.
 
 ### Added
-- `parmmosahn run --config`: full YAML config support; `init-config` writes a
-  complete template and downstream keys are loaded by `project`.
+- `parmmosahn run --config` / `project --config`: full YAML config support;
+  `init-config` writes a complete template and downstream keys
+  (`parallel_strains`, `polish`, `curation_db`, `pause_for_curation`) are loaded
+  by both commands.
 - `doctor --json` machine-readable output; `doctor` now probes the bundled data
   files to catch incomplete wheel installs; `_echo_and_log` helper captures
   output to `run.log`.
-- `analyze prune-report`: dry-run dead-end metabolite audit (B2 stub).
-- `analyze panreactome`: parametrised core/cloud thresholds (default >99% /
-  <5%, the thesis convention).
-- Pause-for-curation notices routed through the logger; interactive TTY
-  `click.pause`.
+- `analyze prune-report`: dry-run dead-end metabolite audit.
+- `analyze panreactome`: parametrised `--core-threshold` / `--cloud-threshold`
+  (defaults >99 % / <5 %, the thesis convention).
+- Real streaming model loading: `analysis.py:_load_models()` is now a generator
+  yielding one model at a time, so `analyze` subcommands stay memory-flat at
+  1000-model scale (this was the previously-documented but never-implemented
+  `_iter_models` design).
+- Packaging metadata (`keywords`, `[project.urls]`) and PyPI Trusted Publishing
+  via OIDC, with the publish-job actions SHA-pinned.
 - Additional bundled data files and expanded tests for BiGG renaming.
-- Packaging metadata: `keywords` and `[project.urls]`
-  (Homepage/Repository/Issues/Changelog) for the PyPI project sidebar.
+
+### Changed
+- **Pipeline step renumber:** Step 5 is now Annotation Enrichment and Step 5b is
+  ModelPolisher (the optional `--polish` side-step). Output directories are
+  renamed to match: `05-annotated_models/` and `05b-polished_models/`. Scripts
+  or readers that referenced the previous `05-polished_models/` /
+  `05b-annotated_models/` layout must be updated.
+- `analyze essentiality`: the overloaded `--threshold` is split into
+  `--essential-fraction` (relative cutoff, default `1e-2` = 1 %, matching the
+  Methods + auxotrophy cutoff) and `--min-wt-growth` (absolute viability floor,
+  default `1e-3`). FBA single-KO growth is bimodal in all validation cohorts, so
+  essentiality outputs and MCCs are numerically unchanged by the new default.
+- `--config` merge now keys off Click's parameter source via a shared `_cfg`
+  helper, so an explicit CLI value that equals an option default is no longer
+  lost to a config value, and `pan` / `run` / `project` share one merge path.
+- `curate` takes `-o/--output` (old `--curated-model` kept as an alias);
+  `project` accepts `--pause-for-curation` (alias kept) and warns on inert
+  `--resume` Step-3 arguments.
+- `evaluate` now exits non-zero when any strain fails (was always exit 0) and
+  dedupes models by file stem so each strain is scored exactly once.
 
 ### Fixed
-- memote evaluation deadlock: memote now runs in a kill-safe spawned
-  subprocess.
-- `evaluate` dedupes models by file stem so each strain is scored once.
-- Silenced cobra SBML-reader logging inside the memote child process.
+- memote evaluation deadlock: memote now runs in a kill-safe spawned subprocess
+  (fork + threads left children wedged and `shutdown(wait=True)` blocked on a
+  hung child).
+- Atomic writes (temp file + `os.replace`) for curated SBML, final-model
+  conversion, the gene-id TSV, and `pipeline_summary.json`; partial JSON/MAT
+  outputs are cleaned up on failure.
+- Per-model fault isolation across the curation, annotation, FBA / auxotrophy /
+  essentiality / phenotype, and genome-prep loops, so one bad model or strain no
+  longer aborts the whole run; failed-strain counts are now honest.
+- Strain `.done` sentinel is gated on real model output (no silent cohort
+  shrink); collision-free model IDs pre-assigned; FASTA and GenBank cleaning are
+  non-destructive (operate on copies).
+- `run_command`: kill-safe timeout; a missing tool raises `ToolExecutionError`
+  instead of a raw `FileNotFoundError`; stderr capture is bounded.
+- pangenome: robust ppanggolin genome-count parse, empty soft-core FASTA
+  rejected, `--soft-core` override range validated.
+- curation: unreadable SBML is recorded as FAILED (was a silent pass); Excel
+  formula-injection guard; ModelPolisher gains a per-model timeout and a
+  `pg_isready` readiness poll (replacing a fixed 240 s sleep); bounded LRU model
+  cache in `extract_memote_problems`.
+- Silenced cobra SBML-reader logging in the memote child; guarded medium-CSV
+  parsing; the heatmap dendrogram reuses the Jaccard matrix instead of
+  recomputing it.
 - `__init__.__all__` listed non-existent `core`/`io` submodules (broke
-  `from parmmosahn import *`); it now lists the actual modules.
-- README LICENSE link made absolute so it resolves on the PyPI project page.
+  `from parmmosahn import *`); it now lists the actual modules. README LICENSE
+  link made absolute so it resolves on the PyPI project page.
 
 
 ## [0.2.2] - 2026-05-13

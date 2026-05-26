@@ -23,6 +23,28 @@ def get_default_threads() -> int:
 _DEFAULT_THREADS = get_default_threads()
 
 
+def _cfg(ctx, cfg, name, cli_value):
+    """Resolve a single option against a YAML config.
+
+    The config value wins only when the user did *not* set the option on the
+    command line (its Click parameter source is a default) and the config
+    provides it; otherwise the value Click already parsed -- an explicit CLI
+    value, or the option default -- is kept. This avoids two footguns of the
+    older ``x or cfg.get(x)`` and ``x if x != DEFAULT else cfg.get(x)`` idioms:
+    an explicit CLI value that happens to equal the default is no longer
+    silently lost to config, and a flag the user actually passed is honoured.
+
+    Note: a plain ``is_flag`` option still cannot be forced *off* from the CLI
+    when the config sets it true, since there is no CLI token for ``false`` --
+    that is an inherent ``is_flag`` limitation, not a merge bug.
+    """
+    src = ctx.get_parameter_source(name)
+    user_set = src is not None and src.name not in ("DEFAULT", "DEFAULT_MAP")
+    if not user_set and name in cfg:
+        return cfg[name]
+    return cli_value
+
+
 def _format_elapsed(seconds: float) -> str:
     """Format elapsed seconds into a human-readable string."""
     if seconds < 60:
@@ -203,22 +225,14 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
         from parmmosahn.utils import load_config
 
         cfg = load_config(Path(config))
-        genomes = genomes or cfg.get("genomes")
-        # --output defaults to ".", which is always truthy, so a plain `or`
-        # would always win and silently ignore a config-supplied output. Apply
-        # the config value only when --output was not given on the command line.
-        src = click.get_current_context().get_parameter_source("output")
-        if src is None or src.name == "DEFAULT":
-            output = cfg.get("output", output)
-        label = label or cfg.get("label")
-        threads = (
-            threads
-            if threads != _DEFAULT_THREADS
-            else cfg.get("threads", _DEFAULT_THREADS)
-        )
-        add_unique = add_unique or cfg.get("add_unique", False)
-        if soft_core is None:
-            soft_core = cfg.get("soft_core")
+        ctx = click.get_current_context()
+        # A config value wins only for options the user did not pass on the CLI.
+        genomes = _cfg(ctx, cfg, "genomes", genomes)
+        output = _cfg(ctx, cfg, "output", output)
+        label = _cfg(ctx, cfg, "label", label)
+        threads = _cfg(ctx, cfg, "threads", threads)
+        add_unique = _cfg(ctx, cfg, "add_unique", add_unique)
+        soft_core = _cfg(ctx, cfg, "soft_core", soft_core)
     # Ensure the required values are available (may be provided via config)
     if genomes is None or label is None:
         raise click.UsageError(
@@ -366,36 +380,28 @@ def run_pipeline(
     from parmmosahn.models import derive_strain_models
     from parmmosahn.pipeline import run_downstream, run_pan, write_pipeline_summary
 
-    # Merge YAML config with CLI flags: CLI values win when set; for the
-    # required path args, fall through to config when the CLI omitted them.
+    # Merge YAML config with CLI flags: a config value wins only for options
+    # the user did not set on the command line (see _cfg).
     if config_file:
         from parmmosahn.utils import load_config
 
         cfg = load_config(Path(config_file))
-        genomes = genomes or cfg.get("genomes")
-        output = output or cfg.get("output")
-        label = label or cfg.get("label")
-        medium = medium or cfg.get("medium")
-        threads = (
-            threads
-            if threads != _DEFAULT_THREADS
-            else cfg.get("threads", _DEFAULT_THREADS)
-        )
-        diamond_bits = (
-            diamond_bits if diamond_bits != 150 else cfg.get("diamond_bits", 150)
-        )
-        gapseq_bits = gapseq_bits if gapseq_bits != 150 else cfg.get("gapseq_bits", 150)
-        biomass = biomass if biomass != "pos" else cfg.get("biomass", "pos")
-        engine = engine if engine != "docker" else cfg.get("engine", "docker")
-        add_unique = add_unique or cfg.get("add_unique", False)
-        if soft_core is None:
-            soft_core = cfg.get("soft_core")
-        polish = polish or cfg.get("polish", False)
-        pause_for_curation = pause_for_curation or cfg.get("pause_for_curation", False)
-        if parallel_strains is None:
-            parallel_strains = cfg.get("parallel_strains")
-        if curation_db is None:
-            curation_db = cfg.get("curation_db")
+        ctx = click.get_current_context()
+        genomes = _cfg(ctx, cfg, "genomes", genomes)
+        output = _cfg(ctx, cfg, "output", output)
+        label = _cfg(ctx, cfg, "label", label)
+        medium = _cfg(ctx, cfg, "medium", medium)
+        threads = _cfg(ctx, cfg, "threads", threads)
+        diamond_bits = _cfg(ctx, cfg, "diamond_bits", diamond_bits)
+        gapseq_bits = _cfg(ctx, cfg, "gapseq_bits", gapseq_bits)
+        biomass = _cfg(ctx, cfg, "biomass", biomass)
+        engine = _cfg(ctx, cfg, "engine", engine)
+        add_unique = _cfg(ctx, cfg, "add_unique", add_unique)
+        soft_core = _cfg(ctx, cfg, "soft_core", soft_core)
+        polish = _cfg(ctx, cfg, "polish", polish)
+        pause_for_curation = _cfg(ctx, cfg, "pause_for_curation", pause_for_curation)
+        parallel_strains = _cfg(ctx, cfg, "parallel_strains", parallel_strains)
+        curation_db = _cfg(ctx, cfg, "curation_db", curation_db)
 
     # Runtime validation — required values may come from CLI or config.
     missing = [
@@ -961,29 +967,21 @@ def project(
         from parmmosahn.utils import load_config
 
         cfg = load_config(Path(config_file))
-        genomes = genomes or cfg.get("genomes")
-        fasta = fasta or cfg.get("fasta")
-        panmodel_rxns = panmodel_rxns or cfg.get("panmodel_rxns")
-        medium = medium or cfg.get("medium")
-        threads = (
-            threads
-            if threads != _DEFAULT_THREADS
-            else cfg.get("threads", _DEFAULT_THREADS)
-        )
-        diamond_bits = (
-            diamond_bits if diamond_bits != 150 else cfg.get("diamond_bits", 150)
-        )
-        gapseq_bits = gapseq_bits if gapseq_bits != 150 else cfg.get("gapseq_bits", 150)
-        biomass = biomass if biomass != "pos" else cfg.get("biomass", "pos")
-        engine = engine if engine != "docker" else cfg.get("engine", "docker")
-        # Downstream / Step-3 knobs newly supported in the v0.3 init-config
-        # template — only override the CLI default if the user didn't pass them.
-        polish = polish or cfg.get("polish", False)
-        pause_for_curation = pause_for_curation or cfg.get("pause_for_curation", False)
-        if parallel_strains is None:
-            parallel_strains = cfg.get("parallel_strains")
-        if curation_db is None:
-            curation_db = cfg.get("curation_db")
+        ctx = click.get_current_context()
+        # A config value wins only for options the user did not pass on the CLI.
+        genomes = _cfg(ctx, cfg, "genomes", genomes)
+        fasta = _cfg(ctx, cfg, "fasta", fasta)
+        panmodel_rxns = _cfg(ctx, cfg, "panmodel_rxns", panmodel_rxns)
+        medium = _cfg(ctx, cfg, "medium", medium)
+        threads = _cfg(ctx, cfg, "threads", threads)
+        diamond_bits = _cfg(ctx, cfg, "diamond_bits", diamond_bits)
+        gapseq_bits = _cfg(ctx, cfg, "gapseq_bits", gapseq_bits)
+        biomass = _cfg(ctx, cfg, "biomass", biomass)
+        engine = _cfg(ctx, cfg, "engine", engine)
+        polish = _cfg(ctx, cfg, "polish", polish)
+        pause_for_curation = _cfg(ctx, cfg, "pause_for_curation", pause_for_curation)
+        parallel_strains = _cfg(ctx, cfg, "parallel_strains", parallel_strains)
+        curation_db = _cfg(ctx, cfg, "curation_db", curation_db)
 
     out_path = Path(output)
     out_path.mkdir(parents=True, exist_ok=True)
