@@ -2,12 +2,13 @@
 
 __all__ = [
     "constants",
-    "core",
     "cli",
     "utils",
-    "io",
     "pangenome",
     "models",
     "curation",
     "pipeline",
+    "annotation",
+    "analysis",
+    "results",
 ]

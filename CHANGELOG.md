@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.3.0] - 2026-05-26
+
+First public release on PyPI. Bundles the develop-branch work accumulated
+since v0.2.2 plus packaging metadata for distribution.
+
+### Added
+- `parmmosahn run --config`: full YAML config support; `init-config` writes a
+  complete template and downstream keys are loaded by `project`.
+- `doctor --json` machine-readable output; `doctor` now probes the bundled data
+  files to catch incomplete wheel installs; `_echo_and_log` helper captures
+  output to `run.log`.
+- `analyze prune-report`: dry-run dead-end metabolite audit (B2 stub).
+- `analyze panreactome`: parametrised core/cloud thresholds (default >99% /
+  <5%, the thesis convention).
+- Pause-for-curation notices routed through the logger; interactive TTY
+  `click.pause`.
+- Additional bundled data files and expanded tests for BiGG renaming.
+- Packaging metadata: `keywords` and `[project.urls]`
+  (Homepage/Repository/Issues/Changelog) for the PyPI project sidebar.
+
+### Fixed
+- memote evaluation deadlock: memote now runs in a kill-safe spawned
+  subprocess.
+- `evaluate` dedupes models by file stem so each strain is scored once.
+- Silenced cobra SBML-reader logging inside the memote child process.
+- `__init__.__all__` listed non-existent `core`/`io` submodules (broke
+  `from parmmosahn import *`); it now lists the actual modules.
+- README LICENSE link made absolute so it resolves on the PyPI project page.
+
+
 ## [0.2.2] - 2026-05-13
 
 ### Added
@@ -200,7 +230,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test suite (pytest), type checking (mypy), and code formatting (black/isort)
 - CI/CD pipeline with GitHub Actions
 
-[unreleased]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.2.2...HEAD
+[unreleased]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/robbedewin/PaRMMoSaHN/compare/v0.1.0...v0.2.0

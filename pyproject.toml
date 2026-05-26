@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parmmosahn"
-version = "0.2.2"
+version = "0.3.0"
 description = "PaRMMoSaHN - Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks"
 authors = [{name = "Robbe De Win", email = "robbedewin@hotmail.com"}, {name = "Lucas De Vrieze", email = "lucas.devrieze@kuleuven.be"}]
 license = {text = "MIT"}
@@ -18,6 +18,16 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+]
+keywords = [
+    "bioinformatics",
+    "metabolic-modelling",
+    "genome-scale-metabolic-model",
+    "pangenome",
+    "ppanggolin",
+    "gapseq",
+    "cobra",
+    "flux-balance-analysis",
 ]
 
 dependencies = [
@@ -47,6 +57,12 @@ viz = [
     "matplotlib>=3.5.0",  # Clustered heatmap plotting (analyze heatmap --plot)
     "seaborn>=0.12.0",    # Statistical data visualization
 ]
+
+[project.urls]
+Homepage = "https://github.com/robbedewin/PaRMMoSaHN"
+Repository = "https://github.com/robbedewin/PaRMMoSaHN"
+Issues = "https://github.com/robbedewin/PaRMMoSaHN/issues"
+Changelog = "https://github.com/robbedewin/PaRMMoSaHN/blob/main/CHANGELOG.md"
 
 [project.scripts]
 # This exposes the command 'parmmosahn' to the terminal

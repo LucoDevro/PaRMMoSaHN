@@ -89,8 +89,20 @@ conda activate parmmosahn_env
 
 ### 2. Install PaRMMoSaHN
 
+From PyPI (recommended):
+
 ```bash
-pip install -e .
+pip install parmmosahn
+```
+
+This installs the Python orchestrator and its Python dependencies only. The
+external tools (PPanGGOLiN, gapseq, DIAMOND) come from the Conda environment in
+step 1 — verify them with `parmmosahn doctor`.
+
+For development, from a clone:
+
+```bash
+pip install -e ".[dev]"
 ```
 
 Or directly from GitHub:
@@ -350,7 +362,7 @@ If you use PaRMMoSaHN in your research, please cite:
 @software{dewin2026parmmosahn,
   author = {De Win, Robbe and De Vrieze, Lucas},
   title = {PaRMMoSaHN: Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks},
-  version = {0.2.1},
+  version = {0.3.0},
   year = {2026},
   url = {https://github.com/robbedewin/PaRMMoSaHN}
 }
@@ -358,7 +370,7 @@ If you use PaRMMoSaHN in your research, please cite:
 
 ## License
 
-This project is licensed under the MIT License -- see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License -- see the [LICENSE](https://github.com/robbedewin/PaRMMoSaHN/blob/main/LICENSE) file for details.
 
 ## Acknowledgments
 
