@@ -404,6 +404,9 @@ def test_apply_curations(mock_write, mock_read, tmp_path: Path):
 
     mock_model.reactions.get_by_id.side_effect = get_by_id
     mock_read.return_value = mock_model
+    # apply_curations writes atomically (to a .tmp then os.replace), so the
+    # mocked writer must materialise the temp file for the rename to succeed.
+    mock_write.side_effect = lambda model, path: Path(path).write_text("")
 
     df_dupl = pl.DataFrame({"Decision": ["1"], "ID 1": ["RXN_D1"], "ID 2": ["RXN_D2"]})
     df_cur = pl.DataFrame({"reaction_id": ["RXN_TEST"], "new_formula": ["A -> B + C"]})
@@ -415,9 +418,10 @@ def test_apply_curations(mock_write, mock_read, tmp_path: Path):
         )
 
     assert result_path == out_dir / "tiny_model.xml"
+    assert result_path.exists()  # atomic rename landed the final file
     mock_rxn_d2.remove_from_model.assert_called_once_with(remove_orphans=True)
     mock_rxn_test.build_reaction_from_string.assert_called_once_with("A -> B + C")
-    mock_write.assert_called_once_with(mock_model, str(result_path))
+    mock_write.assert_called_once_with(mock_model, str(result_path) + ".tmp")
 
 
 @patch("parmmosahn.curation.cb.io.read_sbml_model")
@@ -434,6 +438,9 @@ def test_apply_curations_empty_curation_db(mock_write, mock_read, tmp_path: Path
 
     mock_model = MagicMock()
     mock_read.return_value = mock_model
+    # apply_curations writes atomically (to a .tmp then os.replace), so the
+    # mocked writer must materialise the temp file for the rename to succeed.
+    mock_write.side_effect = lambda model, path: Path(path).write_text("")
 
     # Empty DataFrames with correct column schemas
     df_dupl = pl.DataFrame({"Decision": [], "ID 1": [], "ID 2": []}).cast(
@@ -449,7 +456,7 @@ def test_apply_curations_empty_curation_db(mock_write, mock_read, tmp_path: Path
         )
 
     assert result_path == out_dir / "model.xml"
-    mock_write.assert_called_once_with(mock_model, str(result_path))
+    mock_write.assert_called_once_with(mock_model, str(result_path) + ".tmp")
     # No reactions should have been modified
     mock_model.reactions.get_by_id.assert_not_called()
 

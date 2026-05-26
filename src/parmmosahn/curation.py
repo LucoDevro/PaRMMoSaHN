@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import json
 import logging
 import multiprocessing
@@ -19,7 +20,7 @@ from memote.suite import api as memote_api
 from memote.suite.reporting import ReportConfiguration
 
 from parmmosahn.constants import step_banner
-from parmmosahn.utils import ToolExecutionError, run_command
+from parmmosahn.utils import ToolExecutionError
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,13 @@ def _run_memote_snapshot_inprocess(
         logger.error(
             f"Failed to load model {model_path.name} for memote due to SBML errors."
         )
-        return
+        # Raise rather than return: in the spawned child this yields a non-zero
+        # exit code, and in the in-process path it is caught by the caller. Both
+        # then record the model as FAILED instead of silently counting it as a
+        # passed snapshot and dropping it from the curation template / report.
+        raise ToolExecutionError(
+            f"memote could not load {model_path.name} (SBML errors)."
+        )
 
     pytest_args = ["--tb", "no", "-q"]
 
@@ -101,7 +108,12 @@ def run_memote_snapshot(
     logger.debug(f"Running memote snapshot on {model_path.name}...")
 
     if not subprocess_mode:
-        _run_memote_snapshot_inprocess(model_path, output_json, output_html)
+        try:
+            _run_memote_snapshot_inprocess(model_path, output_json, output_html)
+        except Exception as exc:
+            logger.error(f"Memote snapshot failed for {model_path.name}: {exc}")
+            _cleanup_partial_outputs(output_json, output_html)
+            return False
         logger.debug(f"Memote snapshot completed for {model_path.name}.")
         return True
 
@@ -173,6 +185,28 @@ def _cleanup_partial_outputs(output_json: Path, output_html: Path) -> None:
             tmp.unlink(missing_ok=True)
 
 
+def _excel_safe_df(df: "pl.DataFrame") -> "pl.DataFrame":
+    """Prefix any string cell beginning with ``= + - @`` with a quote.
+
+    Spreadsheet apps interpret such a leading character as a formula when the
+    curation template is opened; the leading quote forces literal text (a
+    CSV/XLSX-injection guard). Non-string columns are left untouched.
+    """
+    leading = ("=", "+", "-", "@")
+    str_cols = [c for c in df.columns if df.schema[c] == pl.Utf8]
+    if not str_cols:
+        return df
+    return df.with_columns(
+        [
+            pl.when(pl.col(c).str.slice(0, 1).is_in(leading))
+            .then(pl.concat_str([pl.lit("'"), pl.col(c)]))
+            .otherwise(pl.col(c))
+            .alias(c)
+            for c in str_cols
+        ]
+    )
+
+
 def extract_memote_problems(
     report_dir: Path, model_dir: Path, output_excel: Path
 ) -> None:
@@ -202,37 +236,41 @@ def extract_memote_problems(
                 for r in new_rxns:
                     first_encountered[r] = model_name
                 rxns.update(new_rxns)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Don't let one malformed/corrupt report silently empty the
+                # template — a systematic issue (e.g. a memote schema change)
+                # must be visible in the log.
+                logger.warning(
+                    f"Could not parse memote report {report_file.name} "
+                    f"for {test_key}: {exc}"
+                )
         return first_encountered
 
     first_encounter_charge = read_test_results("test_reaction_charge_balance")
     first_encounter_mass = read_test_results("test_reaction_mass_balance")
     first_encounter_dupl = read_test_results("test_find_duplicate_reactions")
 
-    # Trying to cache loaded models, too avoid loading the same XML 50 times.
-    # TODO check if this actually improves performance or just adds complexity.
-    _loaded_models = {}
-
+    # Cache loaded models to avoid re-reading the same XML for each of its
+    # problem rows, but BOUND the cache (LRU) so a 1000-model cohort cannot pin
+    # hundreds of full cobra models in memory at once. maxsize trades a few
+    # re-reads for a hard memory ceiling.
+    @functools.lru_cache(maxsize=16)
     def get_cached_model(model_name: str):
-        if model_name not in _loaded_models:
-            # Check the new subfolder architecture
-            model_path = model_dir / model_name / f"{model_name}.xml"
-            # Fallback if it's flat
-            if not model_path.exists():
-                model_path = model_dir / f"{model_name}.xml"
+        # Check the new subfolder architecture, then fall back to a flat layout.
+        model_path = model_dir / model_name / f"{model_name}.xml"
+        if not model_path.exists():
+            model_path = model_dir / f"{model_name}.xml"
 
-            if model_path.exists():
-                _loaded_models[model_name] = cast(
-                    Model, cb.io.read_sbml_model(str(model_path))
-                )
-            else:
-                _loaded_models[model_name] = None
-        return _loaded_models[model_name]
+        if model_path.exists():
+            return cast(Model, cb.io.read_sbml_model(str(model_path)))
+        return None
 
     def get_duplicates_df() -> pl.DataFrame:
         df_rows = []
-        id_regex = re.compile(r"\d{5}")
+        # Anchor on the SEED reaction id (``rxn`` + its full numeric block) rather
+        # than the first 5-digit run anywhere in the id: the latter mis-parses
+        # 6+ digit ids and can match a ``cpd`` number inside an exchange id.
+        id_regex = re.compile(r"rxn0*(\d+)")
         for rxn_pair, model_name in first_encounter_dupl.items():
             network = get_cached_model(model_name)
             if not network:
@@ -243,19 +281,20 @@ def extract_memote_problems(
                     for r in rxn_pair
                 ]
 
-                # Supervisor fix: No 99999 fallback. Warn if pattern doesn't match!
+                # No 99999 fallback: warn and sort unparseable ids to the back.
                 rxn_ids: list[float] = []
                 for r in rxn_pair_obj:
-                    match = id_regex.findall(r.id)
+                    match = id_regex.search(r.id)
                     if match:
-                        rxn_ids.append(float(match[0]))
+                        rxn_ids.append(float(match.group(1)))
                     else:
                         logger.warning(
-                            f"Reaction ID '{r.id}' does not contain a 5-digit number for duplicate sorting."
+                            f"Reaction ID '{r.id}' is not a SEED rxn id; "
+                            f"cannot order it for duplicate sorting."
                         )
                         rxn_ids.append(
                             float("inf")
-                        )  # Ensure it sorts to the back safely without faking an ID
+                        )  # Sort to the back safely without faking an ID
 
                 min_idx = rxn_ids.index(min(rxn_ids))
                 r1 = cast(Reaction, rxn_pair_obj.pop(min_idx))
@@ -346,8 +385,10 @@ def extract_memote_problems(
     from xlsxwriter import Workbook
 
     with Workbook(str(output_excel)) as wb:
-        df_dupl.write_excel(workbook=wb, worksheet="duplicate_reactions")
-        df_imb.write_excel(workbook=wb, worksheet="curated_imbalances")
+        _excel_safe_df(df_dupl).write_excel(
+            workbook=wb, worksheet="duplicate_reactions"
+        )
+        _excel_safe_df(df_imb).write_excel(workbook=wb, worksheet="curated_imbalances")
         df_ign.write_excel(workbook=wb, worksheet="ignored_imbalances")
 
 
@@ -360,7 +401,6 @@ def _apply_duplicate_decisions(
     model: "Model",
     df_dupl: "pl.DataFrame",
     stats: dict | None = None,
-    model_name: str | None = None,
 ) -> int:
     """Apply duplicate reaction removal decisions from the curation DB.
 
@@ -506,6 +546,11 @@ def apply_curations(
     signature is unchanged for callers that don't care about per-row stats;
     pass *stats* (a shared dict) to accumulate per-row hit counts across
     strains for downstream applicability reporting.
+
+    Skip-existing: if the output already exists it is returned untouched so a
+    resumed run does not re-curate. The output is written atomically, so an
+    existing file is always complete (never a truncated partial). To re-apply an
+    updated curation database, clear the output directory first.
     """
     out_file = output_dir / model_path.name
 
@@ -538,12 +583,14 @@ def apply_curations(
         return None
 
     changes_made = 0
-    changes_made += _apply_duplicate_decisions(
-        model, df_dupl, stats=stats, model_name=model_path.name
-    )
+    changes_made += _apply_duplicate_decisions(model, df_dupl, stats=stats)
     changes_made += _apply_formula_fixes(model, df_cur, model_path.name, stats=stats)
 
-    cb.io.write_sbml_model(model, str(out_file))
+    # Atomic write: a crash mid-write must not leave a truncated SBML that the
+    # skip-existing guard above would later mistake for a completed curation.
+    tmp_out = out_file.with_suffix(out_file.suffix + ".tmp")
+    cb.io.write_sbml_model(model, str(tmp_out))
+    os.replace(tmp_out, out_file)
     logger.debug(f"Applied {changes_made} curations to {model_path.name}")
 
     return out_file
@@ -624,10 +671,15 @@ def run_model_polisher(
     model_dir: str | Path,
     output_dir: str | Path,
     engine: str = "docker",
+    timeout: int = 1800,
 ) -> Path:
     """
     Executes the Palsson lab ModelPolisher via Docker Compose or alternative engines.
     Automatically provisions the local BiGG and Annotation databases.
+
+    *timeout* bounds each per-model polish (default 1800 s = 30 min) so a single
+    wedged container cannot stall the whole batch; a model that exceeds it is
+    logged, skipped, and counted as a failure.
     """
     model_dir = Path(model_dir).resolve()
     output_dir = Path(output_dir).resolve()
@@ -675,9 +727,49 @@ def run_model_polisher(
             stderr=subprocess.DEVNULL,
         )
 
-        # Wait for PostgreSQL to actually finish booting up, otherwise it will reject connections from ModelPolisher and cause failures. 15 seconds was enough for newer versions, but 4 minutes seems necessary for older version.
-        logger.info("Waiting 240 seconds for databases to initialize...")
-        time.sleep(240)
+        # Wait until the PostgreSQL backends actually accept connections —
+        # ModelPolisher fails if it connects too early. Poll pg_isready rather
+        # than sleeping a fixed 4 minutes: fast hosts proceed at once, slow ones
+        # still get a generous budget. If the probe can't run (engine lacks
+        # `exec`, or no pg_isready in the image) the loop simply runs to the
+        # deadline and then proceeds, matching the old fixed-wait behaviour.
+        logger.info("Waiting for ModelPolisher databases to accept connections...")
+        db_services = ("biggdb", "adb")
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            all_ready = True
+            for svc in db_services:
+                probe = base_cmd + [
+                    "-f",
+                    str(compose_file),
+                    "exec",
+                    "-T",
+                    svc,
+                    "pg_isready",
+                ]
+                try:
+                    rc = subprocess.run(
+                        probe,
+                        cwd=str(compose_dir),
+                        env=run_env,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=30,
+                    ).returncode
+                except (subprocess.SubprocessError, OSError):
+                    rc = 1
+                if rc != 0:
+                    all_ready = False
+                    break
+            if all_ready:
+                logger.info("ModelPolisher databases ready.")
+                break
+            time.sleep(5)
+        else:
+            logger.warning(
+                "Database readiness probe did not succeed within 300s; "
+                "proceeding anyway (ModelPolisher may fail if a DB is not up)."
+            )
 
         # Downgrades SBML headers from L3V2 to L3V1 for compatibility with the beta version of ModelPolisher. This is a temporary workaround until we can upgrade to the latest ModelPolisher release that supports L3V2.
         logger.info("Downgrading SBML headers to L3V1 for beta compatibility...")
@@ -718,30 +810,37 @@ def run_model_polisher(
                     "--annotate-with-bigg=true",
                 ]
 
+                # Stream child output straight to the per-model log file rather
+                # than buffering it in RAM — a verbose/looping polish across
+                # 1000 models would otherwise accumulate unbounded output.
+                log_file = logs_out / f"{strain_name}.log"
                 try:
-                    result = subprocess.run(
-                        cmd,
-                        cwd=str(compose_dir),
-                        env=run_env,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        check=True,
-                    )
-                    # Write per-model log even on success
-                    log_file = logs_out / f"{strain_name}.log"
-                    log_file.write_text(
-                        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
-                        encoding="utf-8",
-                    )
+                    with log_file.open("w", encoding="utf-8") as log_fh:
+                        subprocess.run(
+                            cmd,
+                            cwd=str(compose_dir),
+                            env=run_env,
+                            stdout=log_fh,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            check=True,
+                            timeout=timeout,
+                        )
                     success_count += 1
 
-                except subprocess.CalledProcessError as e:
-                    logger.error(f"ModelPolisher failed on {strain_name}.")
-                    if e.stdout.strip():
-                        logger.error(f"Docker STDOUT:\n{e.stdout.strip()}")
-                    if e.stderr.strip():
-                        logger.error(f"Docker STDERR:\n{e.stderr.strip()}")
+                except subprocess.TimeoutExpired:
+                    logger.error(
+                        f"ModelPolisher timed out after {timeout}s on "
+                        f"{strain_name}; skipping (see {log_file})."
+                    )
+                    fail_count += 1
+                    continue
+
+                except subprocess.CalledProcessError:
+                    logger.error(
+                        f"ModelPolisher failed on {strain_name} "
+                        f"(see {log_file} for details)."
+                    )
                     fail_count += 1
                     continue
 
@@ -796,8 +895,16 @@ def generate_curation_template(model_dir: Path, output_dir: Path) -> Path:
     return out_excel
 
 
-def evaluate_final_models(model_dir: Path, output_dir: Path) -> None:
-    """Hidden Evaluator: Runs memote on final models to prove FAIR compliance."""
+def evaluate_final_models(
+    model_dir: Path, output_dir: Path, skip_existing: bool = True
+) -> None:
+    """Hidden Evaluator: Runs memote on final models to prove FAIR compliance.
+
+    With *skip_existing* (default), a model whose memote JSON report already
+    exists and is non-empty is skipped, so a resumed run does not repeat the
+    slow per-model evaluation. A fresh run finds an empty reports dir and so
+    evaluates everything.
+    """
     reports_dir = output_dir / "07-memote_reports" / "final"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
@@ -810,13 +917,19 @@ def evaluate_final_models(model_dir: Path, output_dir: Path) -> None:
     logger.info(step_banner(7))
     logger.info(f"Running final memote evaluation on {n} polished models...")
     failed = []
+    skipped = 0
     for i, model in enumerate(models, 1):
-        logger.info(f"  [{i}/{n}] Evaluating {model.stem}...")
         out_json = reports_dir / f"{model.stem}.json"
         out_html = reports_dir / f"{model.stem}.html"
+        if skip_existing and out_json.exists() and out_json.stat().st_size > 0:
+            skipped += 1
+            continue
+        logger.info(f"  [{i}/{n}] Evaluating {model.stem}...")
         if not run_memote_snapshot(model, out_json, out_html):
             failed.append(model.stem)
 
+    if skipped:
+        logger.info(f"Skipped {skipped}/{n} model(s) with existing reports.")
     if failed:
         logger.warning(f"Memote failed for {len(failed)}/{n} models: {failed}")
     logger.info(f"Final FAIR-compliance reports saved to {reports_dir}")

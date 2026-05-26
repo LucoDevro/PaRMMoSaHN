@@ -92,12 +92,23 @@ def load_gene_mapping(tsv_path: Path) -> dict[str, str]:
 
 
 def _load_tsv_mapping(tsv_name: str) -> dict[str, str]:
-    """Load a two-column TSV from the bundled data directory into a dict."""
+    """Load a two-column TSV from the bundled data directory into a dict.
+
+    Returns an empty mapping (with a warning) if the bundled resource is missing
+    or empty, so a packaging gap degrades enrichment gracefully rather than
+    aborting the whole run with ``FileNotFoundError`` / ``StopIteration``.
+    """
     resource = files("parmmosahn.data").joinpath(tsv_name)
     mapping: dict[str, str] = {}
+    if not resource.is_file():
+        logger.warning(
+            f"Bundled mapping {tsv_name} not found — enrichment from this source "
+            f"will be skipped. Run `parmmosahn doctor` to verify the install."
+        )
+        return mapping
     with resource.open("r") as fh:
         reader = csv.reader(fh, delimiter="\t")
-        next(reader)  # skip header
+        next(reader, None)  # skip header, tolerate an empty file
         for row in reader:
             if len(row) >= 2:
                 mapping[row[0]] = row[1]
@@ -332,7 +343,7 @@ def annotate_sbo_terms(model: cobra.Model) -> dict[str, int]:
             sbo = _SBO["demand"]
         elif rxn.id in sink_ids:
             sbo = _SBO["sink"]
-        elif "biomass" in rxn.id.lower() or "biomass" in rxn.name.lower():
+        elif "biomass" in rxn.id.lower() or "biomass" in (rxn.name or "").lower():
             sbo = _SBO["biomass"]
         else:
             sbo = _SBO["biochemical"]
@@ -573,8 +584,12 @@ def enrich_models_directory(
     output_dir: Path,
     proteomes_dir: Path | None = None,
     rename: bool = False,
+    skip_existing: bool = True,
 ) -> Path:
     """Enrich all SBML models in a directory. Returns the output directory.
+
+    With *skip_existing* (default), a model whose enriched output already exists
+    and is non-empty is skipped, so a resumed run does not re-enrich it.
 
     Parameters
     ----------
@@ -619,35 +634,47 @@ def enrich_models_directory(
     }
 
     n = len(xml_files)
+    failed: list[str] = []
+    skipped = 0
     for i, xml in enumerate(xml_files, 1):
         out_file = output_dir / xml.name
-        model = cobra.io.read_sbml_model(str(xml))
+        if skip_existing and out_file.exists() and out_file.stat().st_size > 0:
+            skipped += 1
+            continue
+        try:
+            model = cobra.io.read_sbml_model(str(xml))
 
-        # Load per-strain gene mapping if available
-        gene_mapping: dict[str, str] | None = None
-        if proteomes_dir:
-            mapping_tsv = proteomes_dir / f"{xml.stem}.gene_mapping.tsv"
-            if mapping_tsv.exists():
-                gene_mapping = load_gene_mapping(mapping_tsv)
+            # Load per-strain gene mapping if available
+            gene_mapping: dict[str, str] | None = None
+            if proteomes_dir:
+                mapping_tsv = proteomes_dir / f"{xml.stem}.gene_mapping.tsv"
+                if mapping_tsv.exists():
+                    gene_mapping = load_gene_mapping(mapping_tsv)
 
-        gene_count = annotate_genes(model, gene_mapping=gene_mapping)
-        rxn_counts = annotate_reactions(model, seed_rhea=seed_rhea, mnxr_rhea=mnxr_rhea)
-        exch_count = annotate_exchanges(model, seed_bigg=seed_bigg)
-        met_count = annotate_metabolites(model, seed_bigg=seed_bigg)
-        sbo_counts = annotate_sbo_terms(model)
-        if rename:
-            rename_counts = rename_to_bigg(
-                model, seed_bigg=seed_bigg, seed_rxn_bigg=seed_rxn_bigg
+            gene_count = annotate_genes(model, gene_mapping=gene_mapping)
+            rxn_counts = annotate_reactions(
+                model, seed_rhea=seed_rhea, mnxr_rhea=mnxr_rhea
             )
-        else:
-            rename_counts = {
-                "metabolites": 0,
-                "reactions_internal": 0,
-                "reactions_exchange": 0,
-                "collisions_skipped": 0,
-            }
+            exch_count = annotate_exchanges(model, seed_bigg=seed_bigg)
+            met_count = annotate_metabolites(model, seed_bigg=seed_bigg)
+            sbo_counts = annotate_sbo_terms(model)
+            if rename:
+                rename_counts = rename_to_bigg(
+                    model, seed_bigg=seed_bigg, seed_rxn_bigg=seed_rxn_bigg
+                )
+            else:
+                rename_counts = {
+                    "metabolites": 0,
+                    "reactions_internal": 0,
+                    "reactions_exchange": 0,
+                    "collisions_skipped": 0,
+                }
 
-        cobra.io.write_sbml_model(model, str(out_file))
+            cobra.io.write_sbml_model(model, str(out_file))
+        except Exception as exc:  # one bad model must not abort the batch
+            failed.append(xml.name)
+            logger.error(f"Annotation enrichment failed for {xml.name}: {exc}")
+            continue
 
         totals["genes_ncbiprotein"] += gene_count
         totals["reactions_brenda"] += rxn_counts["brenda"]
@@ -666,6 +693,16 @@ def enrich_models_directory(
             f"+{rxn_counts['brenda']} brenda, +{rxn_counts['rhea']} rhea, "
             f"+{exch_count} bigg.reaction, +{met_count} bigg.metabolite, "
             f"+{sbo_counts['reactions']} sbo rxns, +{sbo_counts['metabolites']} sbo mets"
+        )
+
+    if skipped:
+        logger.info(
+            f"Annotation enrichment skipped {skipped}/{n} model(s) already enriched."
+        )
+    if failed:
+        logger.warning(
+            f"Annotation enrichment skipped {len(failed)}/{n} model(s) due to "
+            f"errors: {', '.join(failed)}"
         )
 
     logger.info(
