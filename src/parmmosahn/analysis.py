@@ -9,10 +9,10 @@ the optional ``viz`` dependency group (matplotlib + seaborn).
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, Optional
 
 import cobra as cb
-from cobra.core import Model
+from cobra.core import Model, Solution
 
 logger = logging.getLogger(__name__)
 
@@ -22,20 +22,43 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _load_models(models_dir: Path) -> list[tuple[str, Model]]:
-    """Load all SBML models from *models_dir*, searching subdirectories too."""
+def _load_models(models_dir: Path) -> Iterator[tuple[str, Model]]:
+    """Yield ``(name, model)`` for each SBML model in *models_dir*, one at a time.
+
+    Streaming (rather than returning a list) keeps memory flat: a 1000-model
+    cohort is never held in RAM all at once. Subdirectories are searched, and
+    models that fail to parse are logged and skipped. Raises ``FileNotFoundError``
+    if the directory contains no ``.xml`` files.
+
+    Because this is a generator, callers must iterate exactly once and keep only
+    the cheap per-model summary they need (reaction-ID sets, growth rates, ...)
+    rather than retaining the ``Model`` objects.
+    """
     xml_files = sorted(models_dir.rglob("*.xml"))
     if not xml_files:
         raise FileNotFoundError(f"No .xml models found in {models_dir}")
 
-    loaded: list[tuple[str, Model]] = []
     for xml in xml_files:
         try:
             model = cb.io.read_sbml_model(str(xml))
-            loaded.append((xml.stem, model))
         except Exception as e:
             logger.warning(f"Skipping {xml.name}: {e}")
-    return loaded
+            continue
+        yield xml.stem, model
+
+
+def _safe_optimize(model: Model, name: str) -> Optional[Solution]:
+    """Optimise *model*, returning the solution or ``None`` on failure.
+
+    A solver error on a single pathological model must not abort a whole-cohort
+    sweep, so the exception is caught, logged, and reported as ``None`` for the
+    caller to record as an error row.
+    """
+    try:
+        return model.optimize()
+    except Exception as exc:
+        logger.warning(f"  {name}: FBA failed ({exc}); recording as error")
+        return None
 
 
 def _apply_medium_csv(model: Model, medium_path: Path) -> None:
@@ -45,12 +68,26 @@ def _apply_medium_csv(model: Model, medium_path: Path) -> None:
     df = pl.read_csv(medium_path)
     cols = df.columns
     medium: dict[str, float] = {}
+    dropped = 0
     for row in df.iter_rows(named=True):
         rxn_id = str(row[cols[0]])
-        flux = float(row[cols[1]])
+        try:
+            flux = float(row[cols[1]])
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Medium CSV: skipping {rxn_id} — invalid flux {row[cols[1]]!r}"
+            )
+            continue
         # Ensure the exchange reaction exists in this model
         if rxn_id in model.reactions:
             medium[rxn_id] = flux
+        else:
+            dropped += 1
+    if dropped:
+        logger.debug(
+            f"Medium CSV: {dropped} component(s) absent from model "
+            f"{getattr(model, 'id', '?')} — skipped"
+        )
     model.medium = medium
 
 
@@ -104,18 +141,21 @@ def fba_summary(
     -------
     Path to the written TSV.
     """
-    models = _load_models(models_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows: list[str] = []
     header = "strain\tstatus\tgrowth_rate\tnum_active_exchanges\tactive_exchanges"
     rows.append(header)
 
-    for name, model in models:
+    for name, model in _load_models(models_dir):
         if medium_path:
             _apply_medium_csv(model, medium_path)
 
-        sol = model.optimize()
+        sol = _safe_optimize(model, name)
+        if sol is None:
+            rows.append(f"{name}\terror\tNA\t0\t")
+            continue
+
         status = sol.status
         growth = (
             f"{sol.objective_value:.6f}" if sol.objective_value is not None else "NA"
@@ -171,57 +211,58 @@ def auxotrophy_screen(
     -------
     Path to the written TSV.
     """
-    models = _load_models(models_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if medium_path:
-        for _, model in models:
-            _apply_medium_csv(model, medium_path)
-
-    # Collect the union of all medium components across models
+    # Stream models once. For each strain we record only floats (its baseline
+    # growth and per-component knockout growth), never the Model object, so the
+    # whole cohort is never held in memory.
+    strain_names: list[str] = []
+    baselines: dict[str, float] = {}
     all_components: set[str] = set()
-    for _, model in models:
-        all_components.update(model.medium.keys())
+    # knockout_growth[strain][component] = growth with that component removed.
+    knockout_growth: dict[str, dict[str, float]] = {}
+
+    for name, model in _load_models(models_dir):
+        if medium_path:
+            _apply_medium_csv(model, medium_path)
+        strain_names.append(name)
+
+        med = dict(model.medium)
+        all_components.update(med)
+
+        base_sol = _safe_optimize(model, name)
+        baselines[name] = (
+            base_sol.objective_value
+            if base_sol is not None and base_sol.objective_value is not None
+            else 0.0
+        )
+
+        ko: dict[str, float] = {}
+        for comp in sorted(med):
+            # Build a fresh medium each iteration (never mutate `med` in place):
+            # a failed optimisation then cannot leak a knocked-out component into
+            # the next test, and no explicit restore is needed.
+            knocked = dict(med)
+            knocked[comp] = 0.0
+            model.medium = knocked
+            sol = _safe_optimize(model, name)
+            ko[comp] = (
+                sol.objective_value
+                if sol is not None and sol.objective_value is not None
+                else 0.0
+            )
+        knockout_growth[name] = ko
+
     components = sorted(all_components)
 
-    strain_names = [name for name, _ in models]
-
-    # Baseline growth
-    baselines: dict[str, float] = {}
-    for name, model in models:
-        sol = model.optimize()
-        baselines[name] = sol.objective_value if sol.objective_value else 0.0
-
-    # Matrix: component -> {strain: growth_rate_without_component}
-    matrix: dict[str, dict[str, float]] = {}
-
-    for comp in components:
-        matrix[comp] = {}
-        for name, model in models:
-            medium = dict(model.medium)
-            if comp not in medium:
-                # Component not in this strain's medium — use baseline
-                matrix[comp][name] = baselines[name]
-                continue
-
-            # Knock out this component
-            original_flux = medium[comp]
-            medium[comp] = 0.0
-            model.medium = medium
-
-            sol = model.optimize()
-            growth = sol.objective_value if sol.objective_value is not None else 0.0
-            matrix[comp][name] = growth
-
-            # Restore
-            medium[comp] = original_flux
-            model.medium = medium
-
-    # Write TSV
+    # Write TSV. A component absent from a strain's medium reports that strain's
+    # baseline growth (knocking out something it never consumed changes nothing).
     rows: list[str] = []
     rows.append("component\t" + "\t".join(strain_names))
     for comp in components:
-        vals = [f"{matrix[comp].get(s, 0.0):.6f}" for s in strain_names]
+        vals = [
+            f"{knockout_growth[s].get(comp, baselines[s]):.6f}" for s in strain_names
+        ]
         rows.append(f"{comp}\t" + "\t".join(vals))
 
     # Summary row: baseline growth
@@ -233,7 +274,8 @@ def auxotrophy_screen(
     # Log predicted auxotrophies
     for comp in components:
         for name in strain_names:
-            if baselines[name] > threshold and matrix[comp][name] < threshold:
+            growth = knockout_growth[name].get(comp, baselines[name])
+            if baselines[name] > threshold and growth < threshold:
                 logger.info(f"  Predicted auxotrophy: {name} requires {comp}")
 
     return output_path
@@ -266,19 +308,18 @@ def reaction_heatmap(
     -------
     Path to the written TSV.
     """
-    models = _load_models(models_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    strain_names = [name for name, _ in models]
-
-    # Collect reaction sets
+    # Stream models once, keeping only each strain's reaction-ID set (cheap)
+    # instead of holding the whole cohort in memory.
     rxn_sets: dict[str, set[str]] = {}
     all_rxns: set[str] = set()
-    for name, model in models:
+    for name, model in _load_models(models_dir):
         rxns = {r.id for r in model.reactions}
         rxn_sets[name] = rxns
         all_rxns.update(rxns)
 
+    strain_names = list(rxn_sets.keys())
     rxn_list = sorted(all_rxns)
 
     # Build matrix
@@ -346,19 +387,21 @@ def panreactome(
     -------
     Path to the main reaction classification TSV.
     """
-    models = _load_models(models_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    n_strains = len(models)
 
-    strain_names = [name for name, _ in models]
-
-    # Build reaction presence sets
+    # Stream models once, keeping only each strain's reaction-ID set so the
+    # whole cohort is never resident in memory at 1000-model scale.
     rxn_sets: dict[str, set[str]] = {}
     all_rxns: set[str] = set()
-    for name, model in models:
+    for name, model in _load_models(models_dir):
         rxns = {r.id for r in model.reactions}
         rxn_sets[name] = rxns
         all_rxns.update(rxns)
+
+    strain_names = list(rxn_sets.keys())
+    n_strains = len(strain_names)
+    if n_strains == 0:
+        raise FileNotFoundError(f"No usable models found in {models_dir}")
 
     rxn_list = sorted(all_rxns)
 
@@ -471,7 +514,7 @@ def panreactome(
     )
 
     if plot:
-        _plot_dendrogram(jaccard_path, strain_names, rxn_sets)
+        _plot_dendrogram(jaccard_path, strain_names)
 
     return output_path
 
@@ -479,9 +522,12 @@ def panreactome(
 def _plot_dendrogram(
     jaccard_tsv: Path,
     strain_names: list[str],
-    rxn_sets: dict[str, set[str]],
 ) -> Path:
-    """Render a dendrogram from Jaccard distances between strain metabolic models."""
+    """Render a dendrogram from Jaccard distances between strain metabolic models.
+
+    Reads the pairwise Jaccard matrix already written to *jaccard_tsv* rather
+    than recomputing all O(N^2) set intersections a second time.
+    """
     try:
         import matplotlib
 
@@ -498,13 +544,14 @@ def _plot_dendrogram(
         return jaccard_tsv
 
     n = len(strain_names)
+    # Reuse the similarities on disk: row order matches strain_names (panreactome
+    # writes the matrix in the same order). distance = 1 - jaccard similarity.
     dist_matrix = np.zeros((n, n))
-    for i, s1 in enumerate(strain_names):
-        for j, s2 in enumerate(strain_names):
-            if i != j:
-                intersection = len(rxn_sets[s1] & rxn_sets[s2])
-                union = len(rxn_sets[s1] | rxn_sets[s2])
-                dist_matrix[i, j] = 1.0 - (intersection / union if union > 0 else 0.0)
+    data_lines = jaccard_tsv.read_text(encoding="utf-8").strip().splitlines()[1:]
+    for i, line in enumerate(data_lines):
+        sims = line.split("\t")[1:]  # column 0 is the strain name
+        for j, sim in enumerate(sims):
+            dist_matrix[i, j] = 1.0 - float(sim)
 
     condensed = squareform(dist_matrix)
     Z = linkage(condensed, method="ward")
@@ -566,11 +613,7 @@ def validate_phenotypes(
     """
     import polars as pl
 
-    models = _load_models(models_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    strain_names = [name for name, _ in models]
-    model_map = {name: model for name, model in models}
 
     # --- Parse phenotype data ---
     sep = "\t" if phenotype_path.suffix == ".tsv" else ","
@@ -599,77 +642,87 @@ def validate_phenotypes(
                 if val is not None:
                     phenotypes.append((col, cs, _coerce_growth(val)))
 
+    # Group tests by strain so we can stream models once (never holding the
+    # whole cohort in memory) and run all of a strain's tests while it is loaded.
+    tests_by_strain: dict[str, list[tuple[str, bool]]] = {}
+    for strain, carbon_source, observed_growth in phenotypes:
+        tests_by_strain.setdefault(strain, []).append((carbon_source, observed_growth))
+
     # --- Run FBA predictions ---
     results: list[dict[str, Any]] = []
     tp = fp = tn = fn = 0
+    seen: set[str] = set()
 
-    # Per-strain baseline medium, captured once before any mutation. Each
-    # phenotype test is run against a fresh copy of this baseline so carbon
-    # sources enabled for earlier tests never leak into later ones.
-    base_media: dict[str, dict[str, float]] = {}
-
-    for strain, carbon_source, observed_growth in phenotypes:
-        if strain not in model_map:
-            logger.debug(f"Skipping {strain}/{carbon_source}: strain not in models")
+    for name, model in _load_models(models_dir):
+        if name not in tests_by_strain:
             continue
+        seen.add(name)
 
-        model = model_map[strain]
+        # Capture the baseline medium once, before any per-test mutation, so a
+        # carbon source enabled for one test never leaks into the next.
+        if medium_path:
+            _apply_medium_csv(model, medium_path)
+        base_medium = dict(model.medium)
 
-        # Capture the baseline medium on first encounter of this strain.
-        if strain not in base_media:
-            if medium_path:
-                _apply_medium_csv(model, medium_path)
-            base_media[strain] = dict(model.medium)
+        for carbon_source, observed_growth in tests_by_strain[name]:
+            # Check if the exchange reaction exists
+            if carbon_source not in model.reactions:
+                results.append(
+                    {
+                        "strain": name,
+                        "carbon_source": carbon_source,
+                        "observed": observed_growth,
+                        "predicted": False,
+                        "growth_rate": 0.0,
+                        "match": not observed_growth,
+                        "note": "exchange_not_in_model",
+                    }
+                )
+                if observed_growth:
+                    fn += 1
+                else:
+                    tn += 1
+                continue
 
-        # Check if the exchange reaction exists
-        if carbon_source not in model.reactions:
+            # Reset to baseline, then enable just this carbon source for the test.
+            medium = dict(base_medium)
+            medium[carbon_source] = 1000.0
+            model.medium = medium
+
+            sol = _safe_optimize(model, name)
+            growth_rate = (
+                sol.objective_value
+                if sol is not None and sol.objective_value is not None
+                else 0.0
+            )
+            predicted_growth = growth_rate > threshold
+
+            match = predicted_growth == observed_growth
             results.append(
                 {
-                    "strain": strain,
+                    "strain": name,
                     "carbon_source": carbon_source,
                     "observed": observed_growth,
-                    "predicted": False,
-                    "growth_rate": 0.0,
-                    "match": not observed_growth,
-                    "note": "exchange_not_in_model",
+                    "predicted": predicted_growth,
+                    "growth_rate": growth_rate,
+                    "match": match,
+                    "note": "",
                 }
             )
-            if observed_growth:
-                fn += 1
-            else:
+
+            if predicted_growth and observed_growth:
+                tp += 1
+            elif predicted_growth and not observed_growth:
+                fp += 1
+            elif not predicted_growth and not observed_growth:
                 tn += 1
-            continue
+            else:
+                fn += 1
 
-        # Reset to baseline, then enable just this carbon source for the test.
-        medium = dict(base_media[strain])
-        medium[carbon_source] = 1000.0
-        model.medium = medium
-
-        sol = model.optimize()
-        growth_rate = sol.objective_value if sol.objective_value is not None else 0.0
-        predicted_growth = growth_rate > threshold
-
-        match = predicted_growth == observed_growth
-        results.append(
-            {
-                "strain": strain,
-                "carbon_source": carbon_source,
-                "observed": observed_growth,
-                "predicted": predicted_growth,
-                "growth_rate": growth_rate,
-                "match": match,
-                "note": "",
-            }
-        )
-
-        if predicted_growth and observed_growth:
-            tp += 1
-        elif predicted_growth and not observed_growth:
-            fp += 1
-        elif not predicted_growth and not observed_growth:
-            tn += 1
-        else:
-            fn += 1
+    # Strains present in the phenotype table but absent from the model directory.
+    for strain in tests_by_strain:
+        if strain not in seen:
+            logger.debug(f"Skipping {strain}: strain not in models")
 
     # --- Write results ---
     rows: list[str] = [
@@ -717,7 +770,8 @@ def gene_essentiality(
     models_dir: Path,
     output_path: Path,
     medium_path: Path | None = None,
-    threshold: float = 1e-3,
+    essential_fraction: float = 1e-2,
+    min_wt_growth: float = 1e-3,
 ) -> Path:
     """Predict essential genes via single-gene deletion FBA.
 
@@ -729,8 +783,15 @@ def gene_essentiality(
         Path for the output TSV file.
     medium_path:
         Optional CSV to override each model's medium.
-    threshold:
-        Growth rate below this fraction of wild-type marks a gene as essential.
+    essential_fraction:
+        Relative cutoff: a knockout whose growth falls below this fraction of
+        the wild-type optimum is called essential. Defaults to ``1e-2`` (1 %),
+        matching the auxotrophy cutoff and the Methods description.
+    min_wt_growth:
+        Absolute viability floor: strains whose wild-type optimum is below this
+        flux are skipped (the model cannot grow, so essentiality is undefined).
+        This is a separate concern from ``essential_fraction`` and is kept at
+        the conservative ``1e-3`` numerical-tolerance default.
 
     Returns
     -------
@@ -738,24 +799,25 @@ def gene_essentiality(
     """
     from cobra.flux_analysis import single_gene_deletion
 
-    models = _load_models(models_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows: list[str] = ["strain\tgene\twt_growth\tko_growth\tessential"]
 
-    for name, model in models:
+    for name, model in _load_models(models_dir):
         if medium_path:
             _apply_medium_csv(model, medium_path)
 
-        wt_sol = model.optimize()
+        wt_sol = _safe_optimize(model, name)
         wt_growth = (
-            wt_sol.objective_value if wt_sol.objective_value is not None else 0.0
+            wt_sol.objective_value
+            if wt_sol is not None and wt_sol.objective_value is not None
+            else 0.0
         )
 
-        if wt_growth < threshold:
+        if wt_growth < min_wt_growth:
             logger.warning(
-                f"{name}: wild-type growth is {wt_growth:.6f} (below threshold), "
-                f"skipping essentiality analysis"
+                f"{name}: wild-type growth is {wt_growth:.6f} (below the "
+                f"{min_wt_growth:g} viability floor), skipping essentiality analysis"
             )
             continue
 
@@ -763,13 +825,19 @@ def gene_essentiality(
             f"  {name}: testing {len(model.genes)} genes (WT growth={wt_growth:.4f})..."
         )
 
-        result = single_gene_deletion(model)
+        try:
+            result = single_gene_deletion(model)
+        except Exception as exc:
+            logger.warning(
+                f"  {name}: single-gene deletion failed ({exc}); skipping strain"
+            )
+            continue
 
         for _, row in result.iterrows():
             gene_ids = row["ids"]
             ko_growth = row["growth"] if row["growth"] is not None else 0.0
             gene_id = next(iter(gene_ids)) if gene_ids else "unknown"
-            essential = ko_growth < threshold * wt_growth
+            essential = ko_growth < essential_fraction * wt_growth
             rows.append(
                 f"{name}\t{gene_id}\t{wt_growth:.6f}\t{ko_growth:.6f}\t"
                 f"{'1' if essential else '0'}"
@@ -912,7 +980,7 @@ def prune_report(
         )
     ]
 
-    # Suppress cobra's per-load INFO chatter — same trick as _iter_models.
+    # Suppress cobra's per-load INFO chatter while streaming models one at a time.
     cobra_logger = logging.getLogger("cobra")
     prev_level = cobra_logger.level
     cobra_logger.setLevel(logging.WARNING)
