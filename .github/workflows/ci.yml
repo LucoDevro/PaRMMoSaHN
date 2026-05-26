@@ -131,9 +131,13 @@ jobs:
       id-token: write  # REQUIRED for PyPI Trusted Publishing (OIDC)
 
     steps:
-      # Third-party actions in this privileged (id-token: write) job are pinned
-      # to full commit SHAs so a compromised tag/branch can't reach the OIDC
-      # PyPI credential. Update the SHA + version comment together on bumps.
+      # actions/download-artifact is a JS action, so it is SHA-pinned for
+      # supply-chain hardening. pypa/gh-action-pypi-publish is a Docker-container
+      # action whose images are published per RELEASE TAG, not per commit SHA, so
+      # it CANNOT be SHA-pinned (a SHA ref resolves to ghcr.io/...:<sha>, which
+      # does not exist -> "manifest unknown"). Per PyPA guidance it is pinned to
+      # the maintained, protected `release/v1` ref; the `pypi` environment +
+      # Trusted Publishing scope the residual risk.
       - name: Download package artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
@@ -141,4 +145,4 @@ jobs:
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@106e0b0b7c337fa67ed433972f777c6357f78598  # v1.13.0
+        uses: pypa/gh-action-pypi-publish@release/v1
