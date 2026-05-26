@@ -60,8 +60,8 @@ output/
 ├── 03-strain_models/                   # Per-strain DIAMOND matches, proteomes, draft models
 ├── 04-curated_models/                  # Models after automated curation
 │   └── curation_application_report.tsv # Per-row hit counts across strains (v0.2.1)
-├── 05-polished_models/                 # ModelPolisher output (if enabled)
-├── 05b-annotated_models/               # SBML enriched with NCBI/BRENDA/RHEA annotations
+├── 05-annotated_models/                # SBML enriched with NCBI/BRENDA/RHEA annotations (Step 5)
+├── 05b-polished_models/                # ModelPolisher output (optional side-step, --polish)
 ├── 06-final_models/                    # Final models in XML, JSON, and MATLAB formats
 ├── 07-memote_reports/                  # draft/ and final/ memote HTML+JSON reports
 ├── curation_template.xlsx              # Memote-derived spreadsheet for manual curation

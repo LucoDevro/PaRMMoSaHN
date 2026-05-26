@@ -34,6 +34,32 @@ def _format_elapsed(seconds: float) -> str:
     return f"{h}h {m}m {s}s"
 
 
+def _downstream_step_entry(result: object, elapsed: float) -> dict:
+    """Build the ``04-07 downstream`` summary entry from run_downstream's result.
+
+    Records an honest status (``completed_with_failures`` when any strain failed
+    curation or fewer final models were produced than expected) plus the polish
+    outcome. Tolerant of a non-dict ``result`` (e.g. a mocked run_downstream),
+    in which case it degrades to the previous plain ``completed`` entry.
+    """
+    ds = result if isinstance(result, dict) else {}
+    has_failures = bool(ds.get("curation_failed")) or (
+        ds.get("n_final", 0) < ds.get("n_expected", 0)
+    )
+    entry: dict = {
+        "status": "completed_with_failures" if has_failures else "completed",
+        "elapsed": _format_elapsed(elapsed),
+    }
+    if ds.get("polish"):
+        entry["polish"] = ds["polish"]
+    if ds.get("curation_failed"):
+        entry["curation_failed_count"] = len(ds["curation_failed"])
+    if "n_final" in ds and "n_expected" in ds:
+        entry["models_final"] = ds["n_final"]
+        entry["models_expected"] = ds["n_expected"]
+    return entry
+
+
 def _stdin_is_tty() -> bool:
     """Indirection so tests can force-toggle the interactive-pause behaviour."""
     import sys
@@ -178,7 +204,12 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
 
         cfg = load_config(Path(config))
         genomes = genomes or cfg.get("genomes")
-        output = output or cfg.get("output", ".")
+        # --output defaults to ".", which is always truthy, so a plain `or`
+        # would always win and silently ignore a config-supplied output. Apply
+        # the config value only when --output was not given on the command line.
+        src = click.get_current_context().get_parameter_source("output")
+        if src is None or src.name == "DEFAULT":
+            output = cfg.get("output", output)
         label = label or cfg.get("label")
         threads = (
             threads
@@ -404,6 +435,17 @@ def run_pipeline(
     )
     logging.getLogger().addHandler(run_log_handler)
 
+    def _teardown_log_handlers() -> None:
+        """Detach and close the run/error log handlers (idempotent).
+
+        Must run on every exit path, including the pause/abort early returns,
+        or repeated in-process invocations (tests, embedding) leak open file
+        handles and accumulate duplicate handlers that multiply log lines.
+        """
+        for _h in (run_log_handler, error_handler):
+            logging.getLogger().removeHandler(_h)
+            _h.close()
+
     t_start = time.time()
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     command = " ".join(sys.argv)
@@ -524,6 +566,7 @@ def run_pipeline(
                     f"Aborted. Resume with: parmmosahn project --resume -o "
                     f"{out_path.resolve()}"
                 )
+                _teardown_log_handlers()
                 return
             logger.info("Continuing with downstream processing (Steps 4-7)...")
             effective_curation_db = template_path
@@ -531,6 +574,7 @@ def run_pipeline(
             logger.info(
                 f"Resume with: parmmosahn project --resume -o {out_path.resolve()}"
             )
+            _teardown_log_handlers()
             return
 
     # --- Steps 4-7: Downstream processing ---
@@ -538,17 +582,14 @@ def run_pipeline(
         "Steps 4-7: Curation, polishing, annotation, gather, final evaluation..."
     )
     t_step = time.time()
-    run_downstream(
+    ds_result = run_downstream(
         draft_models_dir=draft_models_dir,
         output_dir=out_path,
         curation_db=effective_curation_db,
         no_polish=not polish,
         engine=engine,
     )
-    steps["04-07 downstream"] = {
-        "status": "completed",
-        "elapsed": _format_elapsed(time.time() - t_step),
-    }
+    steps["04-07 downstream"] = _downstream_step_entry(ds_result, time.time() - t_step)
 
     total_elapsed = time.time() - t_start
 
@@ -563,10 +604,7 @@ def run_pipeline(
     )
 
     # Remove empty errors.log; always keep run.log
-    logging.getLogger().removeHandler(run_log_handler)
-    run_log_handler.close()
-    logging.getLogger().removeHandler(error_handler)
-    error_handler.close()
+    _teardown_log_handlers()
     if error_log.exists() and error_log.stat().st_size == 0:
         error_log.unlink()
 
@@ -688,11 +726,14 @@ def strains(
     help="Path to the input draft SBML model (.xml).",
 )
 @click.option(
-    "-c",
+    "-o",
+    "--output",
     "--curated-model",
+    "curated_model",
     required=True,
     type=click.Path(),
-    help="Output directory for the curated SBML model.",
+    help="Output directory for the curated model (the filename is derived from "
+    "the source model). '--curated-model' is a deprecated alias.",
 )
 @click.option(
     "-d",
@@ -706,7 +747,7 @@ def curate(source_model, curated_model, db):
     click.echo(f"Curating model {Path(source_model).name}...")
     out = Path(curated_model)
     # apply_curations expects an output *directory* and derives the filename
-    # from the source model. The CLI exposes -c as a directory path.
+    # from the source model. -o/--output is therefore a directory path.
     out.mkdir(parents=True, exist_ok=True)
     apply_curations(Path(source_model), Path(db), out)
 
@@ -722,7 +763,7 @@ def curate(source_model, curated_model, db):
 @click.option(
     "-o",
     "--output",
-    default="05-polished_models",
+    default="05b-polished_models",
     type=click.Path(),
     show_default=True,
     help="Target directory for the polished models.",
@@ -736,7 +777,7 @@ def curate(source_model, curated_model, db):
     help="Container engine to employ for running ModelPolisher.",
 )
 def polish(models, output, engine):
-    """Step 5: Polish models using Palsson lab ModelPolisher (requires a container engine)."""
+    """Step 5b: Polish models using Palsson lab ModelPolisher (requires a container engine)."""
     from parmmosahn.curation import run_model_polisher
 
     models_path = Path(models)
@@ -856,7 +897,9 @@ def gather(models, output):
     help="Container engine to use for running tools like ModelPolisher.",
 )
 @click.option(
+    "--pause-for-curation",
     "--pause_for_curation",
+    "pause_for_curation",
     is_flag=True,
     help="Pause the pipeline before automatic curation to allow manual evaluation/edits.",
 )
@@ -960,6 +1003,26 @@ def project(
 
     # Handle Resume mode
     if resume:
+        # --resume runs only Steps 4-7, so any Step-3 inputs the user passed are
+        # silently inert — warn rather than letting a mistaken invocation look
+        # like it took effect.
+        ignored = [
+            flag
+            for flag, val in (
+                ("--genomes", genomes),
+                ("--fasta", fasta),
+                ("--panmodel-rxns", panmodel_rxns),
+                ("--medium", medium),
+                ("--parallel-strains", parallel_strains),
+            )
+            if val is not None
+        ]
+        if ignored:
+            _echo_and_log(
+                "Warning: --resume runs only Steps 4-7; ignoring Step-3 "
+                f"option(s): {', '.join(ignored)}"
+            )
+
         if not drafts:
             drafts = out_path / "03-strain_models" / "models"
             if not drafts.exists():
@@ -983,7 +1046,7 @@ def project(
         )
 
         t_step = time.time()
-        run_downstream(
+        ds_result = run_downstream(
             draft_models_dir=drafts,
             output_dir=out_path,
             curation_db=curation_db,
@@ -993,10 +1056,9 @@ def project(
         write_pipeline_summary(
             out_path,
             steps={
-                "04-07 downstream (resumed)": {
-                    "status": "completed",
-                    "elapsed": _format_elapsed(time.time() - t_step),
-                }
+                "04-07 downstream (resumed)": _downstream_step_entry(
+                    ds_result, time.time() - t_step
+                )
             },
             parameters={
                 "output": str(out_path),
@@ -1071,6 +1133,8 @@ def project(
                     f"Aborted. Resume with: parmmosahn project --resume -o "
                     f"{out_path.resolve()}"
                 )
+                logging.getLogger().removeHandler(run_log_handler)
+                run_log_handler.close()
                 return
             logger.info("Continuing with downstream processing (Steps 4-7)...")
             effective_curation_db = template_path
@@ -1078,11 +1142,13 @@ def project(
             logger.info(
                 f"Resume with: parmmosahn project --resume -o {out_path.resolve()}"
             )
+            logging.getLogger().removeHandler(run_log_handler)
+            run_log_handler.close()
             return
 
     # 2. Pipe directly into downstream processing (Steps 4-7)
     t_downstream = time.time()
-    run_downstream(
+    ds_result = run_downstream(
         draft_models_dir=draft_models_dir,
         output_dir=out_path,
         curation_db=effective_curation_db,
@@ -1096,10 +1162,9 @@ def project(
                 "status": "completed",
                 "elapsed": _format_elapsed(t_downstream - t_start),
             },
-            "04-07 downstream": {
-                "status": "completed",
-                "elapsed": _format_elapsed(time.time() - t_downstream),
-            },
+            "04-07 downstream": _downstream_step_entry(
+                ds_result, time.time() - t_downstream
+            ),
         },
         parameters={
             "genomes": str(genomes),
@@ -1463,12 +1528,18 @@ def validate(models, phenotypes, output, medium, threshold):
     help="Optional medium CSV (cols: exchange_id, flux) to override model media.",
 )
 @click.option(
-    "--threshold",
+    "--essential-fraction",
+    default=1e-2,
+    show_default=True,
+    help="Knockout growth below this fraction of WT marks a gene as essential.",
+)
+@click.option(
+    "--min-wt-growth",
     default=1e-3,
     show_default=True,
-    help="Growth rate below this fraction of WT marks a gene as essential.",
+    help="Absolute wild-type growth floor below which a strain is skipped.",
 )
-def essentiality(models, output, medium, threshold):
+def essentiality(models, output, medium, essential_fraction, min_wt_growth):
     """Predict essential genes via single-gene deletion FBA."""
     from parmmosahn.analysis import gene_essentiality
 
@@ -1477,7 +1548,8 @@ def essentiality(models, output, medium, threshold):
         models_dir=Path(models),
         output_path=Path(output),
         medium_path=Path(medium) if medium else None,
-        threshold=threshold,
+        essential_fraction=essential_fraction,
+        min_wt_growth=min_wt_growth,
     )
     click.echo(f"Gene essentiality predictions saved to {output}")
 
@@ -1603,14 +1675,20 @@ def evaluate(models, output, curation_template, workers, skip_existing):
     click.echo(f"Evaluating {n} model(s) with memote (workers={workers})...")
     t_start = time.time()
 
+    failed = 0
     if workers <= 1:
         for i, xml in enumerate(todo, 1):
             t_model = time.time()
             click.echo(f"  [{i}/{n}] {xml.stem} ...", nl=False)
             out_json = output_path / f"{xml.stem}.json"
             out_html = output_path / f"{xml.stem}.html"
-            run_memote_snapshot(xml, out_json, out_html)
-            click.echo(f" done ({_format_elapsed(time.time() - t_model)})")
+            ok = run_memote_snapshot(xml, out_json, out_html)
+            if not ok:
+                failed += 1
+            click.echo(
+                f" {'done' if ok else 'FAIL'} "
+                f"({_format_elapsed(time.time() - t_model)})"
+            )
     else:
         # Threads orchestrate; each task delegates to run_memote_snapshot which
         # spawns its own subprocess (subprocess_mode=True by default), so memory
@@ -1631,7 +1709,10 @@ def evaluate(models, output, curation_template, workers, skip_existing):
                     ok = fut.result()
                     status = "ok" if ok else "FAIL"
                 except Exception as e:
+                    ok = False
                     status = f"ERROR: {e}"
+                if not ok:
+                    failed += 1
                 click.echo(
                     f"  [{done}/{n}] {xml.stem} {status} "
                     f"(elapsed {_format_elapsed(t_done)})"
@@ -1645,6 +1726,10 @@ def evaluate(models, output, curation_template, workers, skip_existing):
     click.echo(
         f"Memote reports saved to {output_path} ({_format_elapsed(time.time() - t_start)} total)"
     )
+    if failed:
+        # Signal failure so CI gates / `&&` chains can detect that strains failed.
+        click.echo(f"{failed}/{n} model(s) failed memote evaluation.")
+        raise SystemExit(1)
 
 
 @cli.command()
@@ -1732,7 +1817,7 @@ def _collect_doctor_report() -> dict:
         )
     if not any_engine_ok:
         warnings.append(
-            "No container engine found. ModelPolisher (Step 5) will be skipped."
+            "No container engine found. ModelPolisher (Step 5b) will be skipped."
         )
     if avail_gb is not None and avail_gb < 8:
         warnings.append(
@@ -1743,7 +1828,7 @@ def _collect_doctor_report() -> dict:
     if not all_data_ok:
         warnings.append(
             "One or more bundled TSV lookup tables are missing from the "
-            "installed package. Annotation enrichment (Step 5b) will fail. "
+            "installed package. Annotation enrichment (Step 5) will fail. "
             "Re-install with `pip install --force-reinstall -e .` "
             "or rebuild the wheel."
         )
@@ -1779,7 +1864,7 @@ def _render_doctor_text(report: dict) -> None:
         else:
             click.echo(f"  [MISSING] {name}: not found in PATH")
 
-    click.echo("\nContainer engines (at least one needed for ModelPolisher, Step 5):")
+    click.echo("\nContainer engines (at least one needed for ModelPolisher, Step 5b):")
     for name in sorted(report["container_engines"]):
         info = report["container_engines"][name]
         if info["found"]:

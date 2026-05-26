@@ -19,15 +19,15 @@ def test_step_banner_basic():
 
 def test_step_banner_with_detail():
     """step_banner with a detail arg should append it in parentheses."""
-    banner = step_banner(5, "docker")
-    assert banner == "=== STEP 5: ModelPolisher (docker) ==="
+    banner = step_banner("5b", "docker")
+    assert banner == "=== STEP 5b: ModelPolisher (docker) ==="
 
 
 def test_step_banner_skip_detail():
     """step_banner(N, 'SKIPPED by user') should include the skip notice."""
-    banner = step_banner(5, "SKIPPED by user")
+    banner = step_banner("5b", "SKIPPED by user")
     assert "SKIPPED by user" in banner
-    assert "STEP 5" in banner
+    assert "STEP 5b" in banner
 
 
 def test_step_banner_unknown_step():

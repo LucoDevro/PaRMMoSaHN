@@ -62,6 +62,7 @@ def _collect_model_statistics(output_dir: Path) -> dict:
     per_model: list[dict] = []
     all_rxns: set[str] = set()
     rxn_sets: list[set[str]] = []
+    n_failed = 0
 
     for xml in xml_files:
         try:
@@ -78,13 +79,25 @@ def _collect_model_statistics(output_dir: Path) -> dict:
                     "exchanges": len(model.exchanges),
                 }
             )
-        except Exception:
-            continue
+        except Exception as exc:
+            n_failed += 1
+            logger.warning(f"Statistics: failed to load {xml.name}: {exc}")
 
     cobra_logger.setLevel(prev_level)
 
+    if n_failed:
+        logger.warning(
+            f"Statistics computed over {len(per_model)}/{len(xml_files)} final "
+            f"models ({n_failed} failed to load)."
+        )
+
     if not per_model:
         return stats
+
+    # Record how many of the expected models actually contributed, so the
+    # summary's biological statistics are never silently computed on a subset.
+    stats["models_loaded"] = len(per_model)
+    stats["models_expected"] = len(xml_files)
 
     n = len(per_model)
     for key in ("reactions", "metabolites", "genes"):
@@ -222,8 +235,11 @@ def write_pipeline_summary(
     if model_stats:
         summary["model_statistics"] = model_stats
 
-    summary_path = output_dir / "pipeline_summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    # Atomic write: this file is read back on the next run to merge prior
+    # provenance/timings, so a truncated write would silently wipe run history.
+    from parmmosahn.utils import atomic_write_text
+
+    atomic_write_text(summary_path, json.dumps(summary, indent=2))
     logger.info(f"Pipeline summary written to {summary_path}")
     return summary_path
 
@@ -274,7 +290,7 @@ def run_downstream(
     if curation_db and Path(curation_db).exists():
         logger.info("Using provided curation database: %s", curation_db)
     else:
-        logger.info("=== STEP 4a: Generating curation template (memote on drafts) ===")
+        logger.info(step_banner("4a", "memote on drafts"))
         curation_db = generate_curation_template(draft_models_dir, output_dir)
         logger.info(f"Curation template generated: {curation_db}")
 
@@ -288,8 +304,20 @@ def run_downstream(
     # `corrected_balances` sheet silently fired on 0/216 strains.
     models = sorted(draft_models_dir.rglob("*.xml"))
     curation_stats: dict = {}
+    failed_curations: list[str] = []
     for draft_model in models:
-        apply_curations(draft_model, curation_db, curated_out, stats=curation_stats)
+        try:
+            apply_curations(draft_model, curation_db, curated_out, stats=curation_stats)
+        except Exception as exc:  # one bad model must not abort the batch
+            failed_curations.append(draft_model.stem)
+            logger.error("Curation failed for %s: %s", draft_model.stem, exc)
+    if failed_curations:
+        logger.warning(
+            "Curation skipped %d/%d strains due to errors: %s",
+            len(failed_curations),
+            len(models),
+            ", ".join(failed_curations),
+        )
     if curation_stats:
         report_path = curated_out / "curation_application_report.tsv"
         write_curation_application_report(
@@ -298,7 +326,7 @@ def run_downstream(
 
     current_models_dir = curated_out
 
-    # --- STEP 5: ModelPolisher via Docker (Optional) ---
+    # --- STEP 5b: ModelPolisher via Docker (optional side-step) ---
     # Map engine name to the actual binary used by run_model_polisher so the
     # availability check reflects the real command (e.g. podman -> podman-compose).
     engine_binary_map = {
@@ -308,25 +336,29 @@ def run_downstream(
     }
     engine_bin = engine_binary_map.get(engine, engine)
     if no_polish:
-        logger.info(step_banner(5, "SKIPPED by user"))
+        logger.info(step_banner("5b", "SKIPPED by user"))
+        polish_status = "skipped_user"
     elif not shutil.which(engine_bin):
-        logger.warning(step_banner(5, f"SKIPPED - {engine_bin} is not installed"))
+        logger.warning(step_banner("5b", f"SKIPPED - {engine_bin} is not installed"))
+        polish_status = "skipped_no_engine"
     else:
-        logger.info(step_banner(5, engine))
-        polished_out = output_dir / "05-polished_models"
+        logger.info(step_banner("5b", engine))
+        polished_out = output_dir / "05b-polished_models"
         polished_result = run_model_polisher(
             current_models_dir, polished_out, engine=engine
         )
         if _count_xml(polished_result) > 0:
             current_models_dir = polished_result
+            polish_status = "applied"
         else:
             logger.warning(
                 "ModelPolisher produced no output — continuing with pre-polish models."
             )
+            polish_status = "skipped_no_output"
 
-    # --- STEP 5b: Annotation Enrichment ---
-    logger.info("=== STEP 5b: Annotation Enrichment ===")
-    annotated_out = output_dir / "05b-annotated_models"
+    # --- STEP 5: Annotation Enrichment ---
+    logger.info(step_banner(5))
+    annotated_out = output_dir / "05-annotated_models"
     # Try to locate gene ID mapping files for Bakta→NCBI resolution
     proteomes_dir = draft_models_dir.parent / "proteomes"
     current_models_dir = enrich_models_directory(
@@ -344,3 +376,12 @@ def run_downstream(
     evaluate_final_models(current_models_dir, output_dir)
 
     logger.info(f"Pipeline complete! All results saved to {final_out}")
+
+    # Report what actually happened so the caller can record an honest summary
+    # status (e.g. completed_with_failures) and the polish outcome.
+    return {
+        "polish": polish_status,
+        "curation_failed": failed_curations,
+        "n_expected": len(models),
+        "n_final": _count_xml(final_out),
+    }
