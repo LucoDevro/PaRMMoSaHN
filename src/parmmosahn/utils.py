@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -36,6 +37,28 @@ def sha256_file(path: Path, chunk_size: int = 1 << 20) -> str | None:
         for chunk in iter(lambda: fh.read(chunk_size), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> Path:
+    """Write *text* to *path* atomically via a temp file in the same dir.
+
+    A crash or interrupt mid-write would otherwise leave a truncated file that
+    a resumed run could mistake for complete output. Writing to a sibling temp
+    file and ``os.replace``-ing it onto the target is atomic on POSIX, so the
+    final path is either the old content or the new content, never a partial.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
+    return path
 
 
 def get_system_resources() -> dict[str, Any]:
@@ -75,16 +98,28 @@ def get_system_resources() -> dict[str, Any]:
 
 
 def run_command(
-    cmd: list[str], stdout_file: Path | None = None, stderr_file: Path | None = None
+    cmd: list[str],
+    stdout_file: Path | None = None,
+    stderr_file: Path | None = None,
+    timeout: float | None = None,
 ) -> str | None:
     """
     Runs an external command robustly with REAL-TIME logging.
     Separates stdout and stderr completely to avoid stream pollution.
+
+    If *timeout* (seconds) is given and the process has not finished in time,
+    it is killed and a ``ToolExecutionError`` is raised. ``None`` (the default)
+    waits indefinitely. Pass a generous value for long external tools to guard
+    against a wedged subprocess hanging the whole pipeline.
     """
     logger.debug(f"Running command: {' '.join(cmd)}")
 
     captured_stdout: list[str] = []
-    captured_stderr: list[str] = []
+    # Bound stderr retention: it is only used to build an error message, so a
+    # tail is enough. Without this a chatty tool (× parallel strains) could
+    # accumulate unbounded output in RAM. stdout is left unbounded because
+    # callers consume the return value (e.g. parsing `ppanggolin info`).
+    captured_stderr: deque[str] = deque(maxlen=1000)
 
     def stream_reader(pipe, file_stream, log_func, capture_list):
         """Worker thread function to read streams without blocking."""
@@ -128,7 +163,17 @@ def run_command(
                 t_err.start()
 
                 # Wait for process first, THEN wait for threads to finish reading
-                process.wait()
+                try:
+                    process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                    t_out.join()
+                    t_err.join()
+                    raise ToolExecutionError(
+                        f"Tool timed out after {timeout}s and was killed: "
+                        f"{' '.join(cmd)}"
+                    )
                 t_out.join()
                 t_err.join()
 
@@ -157,6 +202,16 @@ def run_command(
                 error_details.append(f"see stderr log at {stderr_file}")
 
             raise ToolExecutionError("; ".join(error_details)) from e
+
+        except FileNotFoundError as e:
+            # Executable not on PATH — surface as the contract error every
+            # caller already expects, not a raw FileNotFoundError traceback.
+            raise ToolExecutionError(
+                f"Tool not found: {cmd[0]!r} — is it installed and on PATH?"
+            ) from e
+
+        except OSError as e:
+            raise ToolExecutionError(f"Failed to launch {cmd[0]!r}: {e}") from e
 
 
 def validate_input_genomes(genomes_dir: Path) -> None:
@@ -293,10 +348,9 @@ def extract_gene_id_mapping(gbff_path: Path, output_tsv: Path) -> Path:
                         mapping[protein_id] = xref.split(":", 1)[1]
                         break
 
-    output_tsv.parent.mkdir(parents=True, exist_ok=True)
-    output_tsv.write_text(
+    atomic_write_text(
+        output_tsv,
         "\n".join(f"{k}\t{v}" for k, v in mapping.items()) + "\n",
-        encoding="utf-8",
     )
     logger.debug(
         f"Gene ID mapping: {len(mapping)} RefSeq accessions from {gbff_path.name}"
