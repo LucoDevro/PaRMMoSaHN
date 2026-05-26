@@ -54,8 +54,9 @@ def test_build_pangenome_success(mock_move, mock_run_command, tmp_path: Path):
     mock_run_command.side_effect = mock_run_side_effect
 
     # Simulate PPanGGOLiN creating the expected soft-core fasta file
+    # (non-empty: build_pangenome rejects a zero-family FASTA).
     expected_extracted_fasta = output_dir / "softcore_protein_families.faa"
-    expected_extracted_fasta.touch()
+    expected_extracted_fasta.write_text(">fam1\nMAAA\n", encoding="utf-8")
 
     # Run the function
     result_fasta = build_pangenome(
@@ -94,7 +95,7 @@ def test_build_pangenome_soft_core_override(
     mock_run_command.side_effect = mock_run_side_effect
 
     expected_fasta = output_dir / "softcore_protein_families.faa"
-    expected_fasta.touch()
+    expected_fasta.write_text(">fam1\nMAAA\n", encoding="utf-8")
 
     # Override with a specific threshold
     result_fasta = build_pangenome(

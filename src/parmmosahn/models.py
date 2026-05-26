@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 import shutil
@@ -10,6 +11,7 @@ import polars as pl
 
 from parmmosahn.utils import (
     ToolExecutionError,
+    atomic_write_text,
     extract_gene_id_mapping,
     extract_proteome_from_gbff,
     run_command,
@@ -18,40 +20,46 @@ from parmmosahn.utils import (
 logger = logging.getLogger(__name__)
 
 
-def clean_fasta_file(fasta_path: Path) -> None:
+def clean_fasta_file(fasta_path: Path, output_path: Path | None = None) -> Path:
     """
-    Cleans FASTA files by:
-    1. Removing problematic characters (like ‘’’ and trailing * stop codons)
-    2. Truncating headers at the first space to remove descriptions that break gapseq regex.
+    Clean a FASTA file by:
+    1. Truncating headers at the first space (descriptions break gapseq's regex).
+    2. Stripping trailing ``*`` stop codons that PPanGGOLiN adds to representative
+       sequences (these make R/Biostrings report thousands of "invalid one-letter
+       sequence codes" during gapseq BLAST).
+    3. Removing the U+2019 right single quote left by some upstream tools.
+
+    If *output_path* is given the cleaned FASTA is written there and *fasta_path*
+    is left untouched; otherwise the file is cleaned in place. The write is atomic,
+    so an interrupted run never leaves a half-cleaned file. Returns the path that
+    now holds the cleaned FASTA.
     """
+    dest = Path(output_path) if output_path is not None else fasta_path
     logger.debug(f"Cleaning formatting for {fasta_path.name}...")
     try:
         lines = fasta_path.read_text(encoding="utf-8").splitlines()
-        cleaned_lines = []
-        for line in lines:
-            if line.startswith(">"):
-                # Truncate at the first space to keep only the pure ID (e.g. >AEP89073.1)
-                line = line.split()[0]
-            else:
-                # Remove trailing stop codons (*) that PPanGGOLiN includes in
-                # representative protein sequences.  These cause R/Biostrings
-                # to report thousands of "invalid one-letter sequence codes"
-                # during gapseq BLAST.
-                line = line.rstrip("*")
-
-            # Remove problematic characters from previous tools
-            if "’" in line:
-                line = line.replace("’", "")
-
-            cleaned_lines.append(line)
-
-        fasta_path.write_text("\n".join(cleaned_lines) + "\n", encoding="utf-8")
-        logger.debug(f"Cleaned {fasta_path.name}.")
     except UnicodeDecodeError:
         logger.error(
             f"Encoding error reading {fasta_path}. Ensure it is a valid text file."
         )
         raise
+
+    cleaned_lines = []
+    for line in lines:
+        if line.startswith(">"):
+            # Keep only the pure ID (e.g. >AEP89073.1)
+            line = line.split()[0]
+        else:
+            line = line.rstrip("*")
+
+        if "’" in line:
+            line = line.replace("’", "")
+
+        cleaned_lines.append(line)
+
+    atomic_write_text(dest, "\n".join(cleaned_lines) + "\n")
+    logger.debug(f"Cleaned {fasta_path.name}.")
+    return dest
 
 
 def build_pan_model(
@@ -80,8 +88,12 @@ def build_pan_model(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Prepare input
-    clean_fasta_file(fasta_path)
+    # 1. Prepare input: clean into a derived copy so the source soft-core FASTA
+    #    is never mutated in place — a re-run or any external consumer must still
+    #    see the original headers.
+    cleaned_fasta = clean_fasta_file(
+        fasta_path, output_path=out_dir / f"{fasta_path.stem}.cleaned.faa"
+    )
 
     # 2. Setup log files
     log_out = out_dir / "log.log"
@@ -104,7 +116,7 @@ def build_pan_model(
         str(out_dir),  # Gapseq output directory
         "-K",
         str(threads),
-        str(fasta_path),
+        str(cleaned_fasta),
     ]
 
     logger.info(
@@ -200,6 +212,7 @@ def _process_single_strain(
     threads_per_strain: int,
     counter: "list[int]",
     counter_lock: threading.Lock,
+    model_id_map: dict[str, str],
 ) -> tuple[str, bool]:
     """Process a single strain end-to-end. Returns (strain_name, skipped)."""
     strain_name = genome.stem
@@ -319,9 +332,8 @@ def _process_single_strain(
     if xml_file.exists():
         xml_content = xml_file.read_text(encoding="utf-8")
         xml_content = xml_content.replace("R_EX_", "EX_")
-        safe_model_id = re.sub(r"[^a-zA-Z0-9_]", "_", strain_name)
-        if safe_model_id and safe_model_id[0].isdigit():
-            safe_model_id = f"M_{safe_model_id}"
+        # Collision-free id assigned up front in derive_strain_models.
+        safe_model_id = model_id_map[strain_name]
         xml_content = re.sub(
             r'((?:id|metaid)=")filtered[-_]Reactions[._]?tbl"',
             r"\g<1>" + safe_model_id + '"',
@@ -342,6 +354,16 @@ def _process_single_strain(
     if draft_xml.exists():
         draft_xml.unlink()
         logger.debug(f"Removed intermediate draft model {draft_xml.name}")
+
+    # Only checkpoint once a real model is on disk. gapseq `fill` can exit 0
+    # without producing an XML on degenerate input; a premature .done would make
+    # a resumed run skip the strain forever with no model and silently shrink
+    # the cohort. Raising here lets the strain be reported as failed and retried.
+    if not final_xml.exists():
+        raise ToolExecutionError(
+            f"gapseq produced no model for {strain_name} "
+            f"(expected {final_xml.name}); strain not checkpointed."
+        )
 
     done_marker.write_text(
         datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -392,35 +414,73 @@ def derive_strain_models(
     if not faa_files and not gbff_files:
         raise FileNotFoundError(f"No .faa or .gbff files found in {genomes_dir}")
 
-    processed_genomes = []
-
     # 1. Prepare Genomes (Extract GBFFs and isolate FAAs)
     logger.info("Preparing input genomes for DIAMOND mapping...")
 
-    processed_genomes_map = {}
+    processed_genomes_map: dict[str, Path] = {}
+    prep_failures: list[str] = []
     for gbff in gbff_files:
-        out_faa = proteomes_dir / f"{gbff.stem}.faa"
-        extract_proteome_from_gbff(gbff, out_faa)
-        clean_fasta_file(out_faa)
-        # Build Bakta protein_id → NCBI RefSeq mapping for annotation enrichment
-        mapping_tsv = proteomes_dir / f"{gbff.stem}.gene_mapping.tsv"
-        if not mapping_tsv.exists():
-            extract_gene_id_mapping(gbff, mapping_tsv)
-        processed_genomes_map[gbff.stem] = out_faa
+        try:
+            out_faa = proteomes_dir / f"{gbff.stem}.faa"
+            extract_proteome_from_gbff(gbff, out_faa)
+            clean_fasta_file(out_faa)
+            # Build Bakta protein_id → NCBI RefSeq mapping for annotation enrichment
+            mapping_tsv = proteomes_dir / f"{gbff.stem}.gene_mapping.tsv"
+            if not mapping_tsv.exists():
+                extract_gene_id_mapping(gbff, mapping_tsv)
+            processed_genomes_map[gbff.stem] = out_faa
+        except Exception as exc:  # a single bad genome must not abort prep
+            prep_failures.append(gbff.name)
+            logger.error(f"Skipping {gbff.name}: genome preparation failed: {exc}")
 
     for faa in faa_files:
-        if faa.stem not in processed_genomes_map:
+        if faa.stem in processed_genomes_map:
+            logger.warning(
+                f"Ignoring {faa.name} as {faa.stem}.gbff was already processed."
+            )
+            continue
+        try:
             out_faa = proteomes_dir / faa.name
             if not out_faa.exists():
                 shutil.copy(faa, out_faa)
             clean_fasta_file(out_faa)
             processed_genomes_map[faa.stem] = out_faa
-        else:
-            logger.warning(
-                f"Ignoring {faa.name} as {faa.stem}.gbff was already processed."
-            )
+        except Exception as exc:  # a single bad genome must not abort prep
+            prep_failures.append(faa.name)
+            logger.error(f"Skipping {faa.name}: genome preparation failed: {exc}")
+
+    if prep_failures:
+        logger.warning(
+            f"Genome preparation failed for {len(prep_failures)} input(s): "
+            f"{', '.join(prep_failures)}"
+        )
 
     processed_genomes = list(processed_genomes_map.values())
+    if not processed_genomes:
+        raise RuntimeError(
+            "No genomes could be prepared for strain projection "
+            f"({len(gbff_files) + len(faa_files)} input(s), all failed)."
+        )
+
+    # Pre-assign collision-free SBML model ids. Sanitising non-alphanumerics to
+    # "_" could map two distinct strain names to the same id; resolve any clash
+    # deterministically with a short hash suffix (no change for the common case).
+    model_id_map: dict[str, str] = {}
+    used_ids: set[str] = set()
+    for genome in processed_genomes:
+        strain_name = genome.stem
+        safe = re.sub(r"[^a-zA-Z0-9_]", "_", strain_name)
+        if safe and safe[0].isdigit():
+            safe = f"M_{safe}"
+        if safe in used_ids:
+            suffix = hashlib.sha1(strain_name.encode()).hexdigest()[:6]
+            logger.warning(
+                f"Model-id collision for {strain_name!r} (sanitised to {safe!r}); "
+                f"disambiguating with suffix _{suffix}."
+            )
+            safe = f"{safe}_{suffix}"
+        used_ids.add(safe)
+        model_id_map[strain_name] = safe
 
     # Step 2: Build Diamond DB
     logger.info("Building Diamond database from pangenome...")
@@ -430,6 +490,11 @@ def derive_strain_models(
 
     # Step 3: Process strains (parallel or sequential)
     total_strains = len(processed_genomes)
+    # Thread budget: `parallel_strains` workers each run gapseq/DIAMOND with
+    # `threads // parallel_strains` threads, so total CPU use stays ~`threads`.
+    # When unspecified, default to threads//4 workers (~4 threads each) — a
+    # balance that keeps each worker usefully parallel while bounding peak RAM
+    # (each strain peaks at ~1.5 GB).
     if parallel_strains is None:
         parallel_strains = max(1, threads // 4)
     threads_per_strain = max(1, threads // parallel_strains)
@@ -447,6 +512,7 @@ def derive_strain_models(
     counter: list[int] = [0]
     counter_lock = threading.Lock()
     skipped = 0
+    failed = 0
 
     with ThreadPoolExecutor(max_workers=parallel_strains) as pool:
         futures = {
@@ -465,6 +531,7 @@ def derive_strain_models(
                 threads_per_strain,
                 counter,
                 counter_lock,
+                model_id_map,
             ): genome
             for genome in processed_genomes
         }
@@ -476,11 +543,13 @@ def derive_strain_models(
                         skipped += 1
                 except Exception as exc:
                     genome = futures[future]
+                    failed += 1
                     logger.error(f"Strain {genome.stem} failed: {exc}")
         except KeyboardInterrupt:
-            # On Ctrl-C, cancel any queued strain jobs so the user gets a
-            # prompt back quickly instead of waiting for the rest of the
-            # ThreadPoolExecutor to drain (multi-hour pipeline matter).
+            # On Ctrl-C, cancel queued (not-yet-started) strain jobs. Strains
+            # already running cannot be interrupted here — their gapseq/DIAMOND
+            # subprocesses must finish before the ThreadPoolExecutor drains — so
+            # the prompt returns once the in-flight workers complete.
             logger.warning("Interrupted — cancelling queued strain jobs.")
             for f in futures:
                 f.cancel()
@@ -490,5 +559,14 @@ def derive_strain_models(
         logger.info(
             f"Resumed: skipped {skipped}/{total_strains} previously completed strains."
         )
-    logger.info(f"All strain models successfully generated in {models_dir}")
+    generated = total_strains - failed
+    if failed:
+        logger.warning(
+            f"Strain projection finished with {failed}/{total_strains} failure(s); "
+            f"{generated} model(s) available in {models_dir}"
+        )
+    else:
+        logger.info(
+            f"All {generated} strain models successfully generated in {models_dir}"
+        )
     return models_dir
