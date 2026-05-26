@@ -39,9 +39,9 @@ Existing tools either reconstruct each strain independently (gapseq, CarveMe) or
   [Step 4] Automated curation (memote evaluation + duplicate/imbalance fixes)
         |   Optional: pause for manual curation via Excel spreadsheet
         v
-  [Step 5] ModelPolisher (optional, requires Docker/Podman/Apptainer)
+  [Step 5b] ModelPolisher (optional side-step, --polish; Docker/Podman/Apptainer)
         |
-  [Step 5b] Annotation enrichment (NCBI protein, BRENDA, RHEA)
+  [Step 5] Annotation enrichment (NCBI protein, BRENDA, RHEA)
         |
         v
   [Step 6] Gather & convert (SBML, JSON, MATLAB)
@@ -339,7 +339,7 @@ parmmosahn run ... --polish -e podman
 parmmosahn run ... --polish -e apptainer
 ```
 
-If no container engine is detected at runtime, Step 5 is silently skipped and
+If no container engine is detected at runtime, Step 5b is silently skipped and
 the pipeline continues with the pre-polish models.
 
 > **Note:** ModelPolisher v2.1 (stable release) has a known bug with a broken
