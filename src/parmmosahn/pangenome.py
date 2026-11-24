@@ -127,11 +127,11 @@ def build_pangenome(
     cluster_cov: float = 0.60,
     threads: int = 1,
     tmp_dir: str | Path | None = None,
-    add_unique: bool = False,
-    soft_core_override: float | None = None,
+    add_small: bool = False,
+    occurrence_override: float | None = None,
 ) -> Path:
     """
-    Executes the PPanGGOLiN pipeline to build a pangenome and extract the soft-core.
+    Executes the PPanGGOLiN pipeline to build a pangenome and extract the included gene families.
 
     Args:
         genomes_dir: Directory containing input .gbff files.
@@ -141,16 +141,13 @@ def build_pangenome(
         cluster_cov: Coverage threshold for clustering.
         threads: Number of CPU threads to use.
         tmp_dir: Optional temporary directory for heavy clustering operations.
-        add_unique: If True, export *all* partitions (persistent + shell + cloud)
-            rather than only the soft-core. NOTE: with this flag the returned
-            FASTA is the full pangenome proteome, not the soft-core — there is no
-            single PPanGGOLiN value for "soft-core + cloud only".
-        soft_core_override: Optional soft-core fraction in (0, 1]; overrides the
-            default 2/n_genomes threshold.
+        add_small: If True, export *all* gene families
+        occurrence_override: Value in (0, 1] to override the default 2/n_genomes
+             gene family occurrence threshold.
 
     Returns:
-        Path to the exported protein-family FASTA: the soft-core families by
-        default, or the full pangenome proteome when ``add_unique`` is True.
+        Path to the exported protein-family FASTA: only included families by
+        default, or the full pangenome proteome when ``add_small`` is set.
     """
     genomes_dir = Path(genomes_dir)
     output_dir = Path(output_dir)
@@ -200,7 +197,7 @@ def build_pangenome(
         cluster_cmd.extend(["--tmpdir", str(tmp_dir)])
     run_command(cluster_cmd, stdout_file=ppanggolin_log)
 
-    # Step 4: Extract total genome count to calculate soft-core threshold
+    # Step 4: Extract total genome count to calculate occurrence threshold
     logger.info("Extracting pangenome statistics...")
     info_out = run_command(["ppanggolin", "info", "-p", str(h5_db), "--content"])
 
@@ -211,33 +208,28 @@ def build_pangenome(
             f"--content`. Parsed {no_genomes}. Raw output:\n{info_out}"
         )
 
-    # Calculate soft core threshold exactly as bash `echo "scale=5; 2/$no_genomes" | bc`
-    # Users can override this via soft_core_override if they want a different fraction.
-    if soft_core_override is not None:
-        if not 0.0 < soft_core_override <= 1.0:
+    # Calculate occurrence threshold exactly as bash `echo "scale=5; 2/$no_genomes" | bc`
+    # Users can override this via occurrence_override if they want a different fraction.
+    if occurrence_override is not None:
+        if not 0.0 < occurrence_override <= 1.0:
             raise ValueError(
-                f"soft_core_override must be a fraction in (0, 1], "
-                f"got {soft_core_override}."
+                f"occurrence_override must be a fraction in (0, 1], "
+                f"got {occurrence_override}."
             )
-        soft_core_threshold = round(soft_core_override, 5)
+        occurrence_threshold = round(occurrence_override, 5)
         logger.info(
-            f"Using user-provided soft_core threshold: {soft_core_threshold} (override)."
+            f"Using user-provided occurrence threshold: {occurrence_threshold} (override)."
         )
     else:
-        soft_core_threshold = round(2 / no_genomes, 5)
+        occurrence_threshold = round(2 / no_genomes, 5)
         logger.info(
-            f"Calculated soft_core threshold: {soft_core_threshold} for {no_genomes} genomes."
+            f"Calculated occurrence threshold: {occurrence_threshold} for {no_genomes} genomes."
         )
 
-    # Option to include unique/cloud genes.
-    # ppanggolin --prot_families accepts: all, persistent, shell, cloud, softcore, core.
-    # "all" = persistent + shell + cloud (superset of softcore + cloud).
-    # There is no single ppanggolin value for "softcore + cloud only", so "all" is
-    # the pragmatic choice when the user wants to include unique/cloud genes.
-    partitions = "all" if add_unique else "softcore"
+    partitions = "all" if add_small else "softcore"
 
-    # Step 5: Export Soft-core FASTA
-    logger.info("Extracting soft-core protein families...")
+    # Step 5: Export representatives FASTA
+    logger.info("Extracting representative protein families...")
     fasta_cmd = [
         "ppanggolin",
         "fasta",
@@ -249,7 +241,7 @@ def build_pangenome(
         "--prot_families",
         partitions,
         "--soft_core",
-        str(soft_core_threshold),
+        str(occurrence_threshold),
     ]
     run_command(fasta_cmd, stdout_file=ppanggolin_log)
 
@@ -265,7 +257,7 @@ def build_pangenome(
             f"Expected output file {extracted_fasta} was not generated."
         )
 
-    # Guard against a degenerate soft-core (e.g. a threshold that admits no
+    # Guard against a degenerate representatives set (e.g. a threshold that admits no
     # family): an empty FASTA would otherwise flow silently into build_pan_model
     # and fail much later with a confusing error. Counted by streaming so a large
     # "all" proteome is not read into memory.
@@ -277,8 +269,8 @@ def build_pangenome(
     if n_families == 0:
         raise ToolExecutionError(
             f"PPanGGOLiN produced an empty protein-family FASTA "
-            f"({extracted_fasta.name}) at soft_core threshold {soft_core_threshold}: "
-            f"no families met the threshold. Try a smaller --soft-core value."
+            f"({extracted_fasta.name}) at occurrence threshold {occurrence_threshold}: "
+            f"no families met the threshold. Try a smaller --occurrence value."
         )
 
     shutil.move(extracted_fasta, final_fasta)
@@ -294,12 +286,12 @@ def build_pangenome(
         json.dumps(
             {
                 "n_genomes": no_genomes,
-                "soft_core_threshold": soft_core_threshold,
-                "soft_core_override_used": soft_core_override is not None,
+                "occurrence_threshold": occurrence_threshold,
+                "occurrence_override_used": occurrence_override is not None,
                 "partitions": partitions,
                 "cluster_identity": cluster_id,
                 "cluster_coverage": cluster_cov,
-                "add_unique": add_unique,
+                "add_small": add_small,
             },
             indent=2,
         ),

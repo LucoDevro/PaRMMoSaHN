@@ -131,7 +131,7 @@ def _collect_provenance(output_dir: Path, parameters: dict) -> dict:
     Captures:
       * SHA-256 of the medium CSV and curation database (so re-runs can be
         verified bit-for-bit against the original inputs).
-      * The soft-core threshold actually used by PPanGGOLiN, recovered from
+      * The occurrence threshold actually used by PPanGGOLiN, recovered from
         the ``01-pangenome/pangenome_meta.json`` sidecar that
         :func:`build_pangenome` writes.
 
@@ -249,8 +249,8 @@ def run_pan(
     output_dir: Path,
     label: str,
     threads: int = 14,
-    add_unique: bool = False,
-    soft_core_override: float | None = None,
+    add_small: bool = False,
+    occurrence_override: float | None = None,
 ):
     """Executes Step 1 & 2: Pangenome and Pan-model."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -258,19 +258,19 @@ def run_pan(
     # --- STEP 1: Pangenome ---
     logger.info(step_banner(1))
     pangenome_out = output_dir / "01-pangenome"
-    softcore_fasta = build_pangenome(
+    included_fasta = build_pangenome(
         genomes_dir,
         pangenome_out,
         label,
         threads=threads,
-        add_unique=add_unique,
-        soft_core_override=soft_core_override,
+        add_small=add_small,
+        occurrence_override=occurrence_override,
     )
 
     # --- STEP 2: Pan-model ---
     logger.info(step_banner(2))
     panmodel_out = output_dir / "02-panmodel"
-    build_pan_model(softcore_fasta, panmodel_out, threads=threads)
+    build_pan_model(included_fasta, panmodel_out, threads=threads)
 
     logger.info(f"Pan-tasks complete! Pan-model saved to {panmodel_out}")
     return panmodel_out / f"{label}-all-Reactions.tbl", softcore_fasta

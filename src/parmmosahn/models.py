@@ -72,7 +72,7 @@ def build_pan_model(
     Executes 'gapseq find' on the pangenome FASTA to construct a pan-metabolic model.
 
     Args:
-        pangenome_fasta: Path to the soft-core FASTA from PPanGGOLiN.
+        pangenome_fasta: Path to the representatives FASTA from PPanGGOLiN.
         output_dir: Directory to save the gapseq output and logs.
         blast_sens: Blast sensitivity parameter for gapseq (default: 150).
         threads: Number of CPU cores to use.
@@ -88,7 +88,7 @@ def build_pan_model(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Prepare input: clean into a derived copy so the source soft-core FASTA
+    # 1. Prepare input: clean into a derived copy so the source representatives FASTA
     #    is never mutated in place — a re-run or any external consumer must still
     #    see the original headers.
     cleaned_fasta = clean_fasta_file(

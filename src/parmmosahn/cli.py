@@ -196,19 +196,18 @@ def cli(ctx, verbose, quiet):
     help="Number of CPU threads to allocate.",
 )
 @click.option(
-    "--add-unique",
+    "--add-small",
     is_flag=True,
-    help="Whether to add unique genes (those not in soft-core) to the pan-model. This can increase coverage but may add noise.",
+    help="Whether to add genes of small gene families (occurrence below threshold) to the pan-model. This can increase coverage but may add noise.",
 )
 @click.option(
-    "--soft-core",
+    "--occurrence",
     default=None,
     type=float,
     show_default=True,
     help=(
-        "Override the soft-core frequency threshold (fraction 0–1). "
-        "Defaults to 2/n_genomes, the biologically motivated formula. "
-        "Only change this if you have a specific reason."
+        "Override the default gene family occurrence threshold (fraction 0–1). "
+        "Default is 2/n_genomes."
     ),
 )
 @click.option(
@@ -217,7 +216,7 @@ def cli(ctx, verbose, quiet):
     type=click.Path(exists=True),
     help="Path to a YAML config file. CLI arguments override config values. Requires pyyaml (pip install 'parmmosahn[config]').",
 )
-def pan(genomes, output, label, threads, add_unique, soft_core, config):
+def pan(genomes, output, label, threads, add_small, occurrence, config):
     """Step 1 & 2: Construct the partitioned pangenome and build the pan-model."""
     from parmmosahn.pipeline import run_pan
 
@@ -231,8 +230,8 @@ def pan(genomes, output, label, threads, add_unique, soft_core, config):
         output = _cfg(ctx, cfg, "output", output)
         label = _cfg(ctx, cfg, "label", label)
         threads = _cfg(ctx, cfg, "threads", threads)
-        add_unique = _cfg(ctx, cfg, "add_unique", add_unique)
-        soft_core = _cfg(ctx, cfg, "soft_core", soft_core)
+        add_small = _cfg(ctx, cfg, "add_small", add_small)
+        occurrence = _cfg(ctx, cfg, "occurrence", occurrence)
     # Ensure the required values are available (may be provided via config)
     if genomes is None or label is None:
         raise click.UsageError(
@@ -629,7 +628,7 @@ def run_pipeline(
     "-f",
     "--fasta",
     type=click.Path(exists=True),
-    help="Path to the PPanGGOLiN soft-core FASTA file.",
+    help="Path to the PPanGGOLiN representatives FASTA file.",
 )
 @click.option(
     "-r",
@@ -1195,7 +1194,7 @@ _INIT_CONFIG_TEMPLATE = """\
 
 # --- Input paths (pan / run / project) ---
 # genomes: /path/to/genomes          # Directory of genome files (.gbff or .faa)
-# fasta: /path/to/softcore.faa       # Existing soft-core FASTA (project command)
+# fasta: /path/to/gene_fams.faa      # Existing FASTA with representative seqs of the included gene families (project command)
 # panmodel_rxns: /path/to/rxns.tbl   # Existing pan-model reaction table (project command)
 # medium: /path/to/medium.csv        # Media CSV file for gapfilling
 
@@ -1204,9 +1203,9 @@ _INIT_CONFIG_TEMPLATE = """\
 
 # --- Pangenome (pan / run commands) ---
 # label: myproject                   # Label for the pangenome
-# add_unique: false                  # Include unique/cloud genes in the pan-model
-# soft_core: null                    # Override soft-core threshold (fraction 0-1).
-#                                    # Default: 2/n_genomes (biologically motivated).
+# add_small: false                   # Include below-threshold gene families in the pan-model
+# occurrence: null                   # Manual override of the minimum gene family occurrence threshold
+#                                    # Default value: 2/n_genomes
 
 # --- Performance (run / project / strains) ---
 threads: 14

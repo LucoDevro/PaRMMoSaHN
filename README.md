@@ -27,7 +27,7 @@ Existing tools either reconstruct each strain independently (gapseq, CarveMe) or
         |
         v
   [Step 1] PPanGGOLiN pangenome construction
-        |   -> soft-core protein families FASTA
+        |   -> representative protein families FASTA
         v
   [Step 2] gapseq metabolic pathway prediction on pangenome
         |   -> pan-model reaction table
@@ -54,8 +54,8 @@ Existing tools either reconstruct each strain independently (gapseq, CarveMe) or
 
 ```
 output/
-├── 01-pangenome/                       # PPanGGOLiN pangenome + soft-core FASTA
-│   └── pangenome_meta.json             # n_genomes, soft-core threshold, cluster params
+├── 01-pangenome/                       # PPanGGOLiN pangenome + representatives FASTA
+│   └── pangenome_meta.json             # n_genomes, occurrence threshold, cluster params
 ├── 02-panmodel/                        # gapseq reaction/pathway tables
 ├── 03-strain_models/                   # Per-strain DIAMOND matches, proteomes, draft models
 ├── 04-curated_models/                  # Models after automated curation
@@ -71,7 +71,7 @@ output/
 ```
 
 The `pipeline_summary.json` file includes a `provenance` block (SHA-256 of
-the medium CSV and curation database, soft-core threshold actually used,
+the medium CSV and curation database, occurrence threshold actually used,
 external tool versions) and a `run_environment` block (host CPU/RAM/OS), so
 a reviewer can verify a run is reproducible without re-running anything.
 
@@ -153,8 +153,8 @@ parmmosahn run \
 | `--diamond-bits` | 150 | DIAMOND blastp bitscore threshold |
 | `--gapseq-bits` | 150 | gapseq pathway search bitscore threshold |
 | `--biomass` | `pos` | Biomass reaction type (`pos` or `neg`, matches gapseq's gram-stain templates) |
-| `--add-unique` | off | Include unique/cloud genes (singletons) in the pan-model |
-| `--soft-core` | 2/N | Override the soft-core frequency threshold (fraction in 0–1) |
+| `--occurrence` | 2/N | Override the occurrence frequency threshold (fraction in 0–1) |
+| `--add-small` | off | Include all gene families (also ones below occurrence threshold) in the pan-model |
 | `--polish` | off | Enable ModelPolisher (requires Docker/Podman/Apptainer; see [ModelPolisher](#modelpolisher) below) |
 | `-e, --engine` | `docker` | Container engine when `--polish` is enabled |
 | `-c, --curation-db` | none | Path to an existing curation spreadsheet (skips auto-template generation) |
@@ -299,7 +299,7 @@ Each pipeline step can be run independently:
 
 ```bash
 parmmosahn pan -g ./genomes/ -l my_label -t 8     # Steps 1-2 only
-parmmosahn strains -g ./genomes/ -f soft.faa \
+parmmosahn strains -g ./genomes/ -f representatives.faa \
   -r rxns.tbl -m medium.csv                        # Step 3 only
 parmmosahn evaluate -M ./models/ -o ./reports/     # Memote evaluation
 parmmosahn annotate -M ./models/ -o ./annotated/   # FAIR annotation
@@ -368,7 +368,7 @@ the pipeline continues with the pre-polish models.
 - **Reaction pre-filtering does not evaluate GPR rules.** If a reaction requires multiple gene subunits (AND rule), it may be included even if only one subunit has a homolog. The downstream `gapseq draft` step partially mitigates this.
 - **Single medium for all strains.** Gap-filling uses one medium specification. Strains from different niches may need different media. Use `parmmosahn project` to re-derive models with alternative media.
 - **Generic biomass composition.** Biomass reactions use gapseq's default gram-positive or gram-negative templates rather than species-specific composition. This is consistent with other automated tools (CarveMe, Bactabolize).
-- **Soft-core threshold (2/N).** The default threshold excludes genes present in only one genome. For very small collections (N < 5), consider using `--add-unique` or adjusting `--soft-core`.
+- **Occurrence threshold (2/N).** The default threshold excludes genes present in only one genome. For very small collections (N < 5), consider using `--add-small` or adjusting `--occurrence`.
 
 ## Citation
 
