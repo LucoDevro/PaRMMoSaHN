@@ -688,12 +688,12 @@ def strains(
     output,
     medium,
     threads,
-    diamond_bits,
-    gapseq_bits,
+    strain_bits,
+    pan_bits,
     biomass,
     parallel_strains,
 ):
-    """Step 3: Derive strain-specific models using diamond and gapseq."""
+    """Step 3: Derive strain-specific models by homology matches."""
     click.echo("Deriving strain models...")
 
     missing_args = []
@@ -715,8 +715,8 @@ def strains(
         output_dir=Path(output),
         medium_file=Path(medium),
         threads=threads,
-        diamond_bits=diamond_bits,
-        gapseq_bits=gapseq_bits,
+        strain_bits=strain_bits,
+        pan_bits=pan_bits,
         biomass=biomass,
         parallel_strains=parallel_strains,
     )
@@ -1209,8 +1209,8 @@ _INIT_CONFIG_TEMPLATE = """\
 
 # --- Performance (run / project / strains) ---
 threads: 14
-diamond_bits: 150
-gapseq_bits: 150
+strain_bits: 150                     # DIAMOND min bitscore for strain homology matches
+pan_bits: 150                        # gapseq min bitscore for panmodel construction
 biomass: pos                         # Biomass reaction type: 'pos' or 'neg'
 # parallel_strains: null             # Strains processed in parallel in Step 3.
 #                                    # null = auto (threads // 4); each worker
