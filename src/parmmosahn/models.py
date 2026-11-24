@@ -92,7 +92,7 @@ def build_pan_model(
     #    is never mutated in place — a re-run or any external consumer must still
     #    see the original headers.
     cleaned_fasta = clean_fasta_file(
-        fasta_path, output_path=out_dir / f"{fasta_path.stem}.cleaned.faa"
+        fasta_path, output_path=out_dir / f"{fasta_path.stem}.faa"
     )
 
     # 2. Setup log files

@@ -1,7 +1,6 @@
 import json
 import logging
 import shutil
-import time
 from datetime import datetime, timezone
 from importlib.metadata import version as pkg_version
 from pathlib import Path
@@ -15,7 +14,7 @@ from parmmosahn.curation import (
     run_model_polisher,
     write_curation_application_report,
 )
-from parmmosahn.models import build_pan_model, derive_strain_models
+from parmmosahn.models import build_pan_model
 from parmmosahn.pangenome import build_pangenome
 from parmmosahn.results import gather_and_convert_models
 
@@ -273,115 +272,4 @@ def run_pan(
     build_pan_model(included_fasta, panmodel_out, threads=threads)
 
     logger.info(f"Pan-tasks complete! Pan-model saved to {panmodel_out}")
-    return panmodel_out / f"{label}-all-Reactions.tbl", softcore_fasta
-
-
-def run_downstream(
-    draft_models_dir: Path,
-    output_dir: Path,
-    curation_db: Path | None = None,
-    no_polish: bool = False,
-    engine: str = "docker",
-):
-    """Executes Steps 4-7: Curation, Polishing, and Export."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # --- STEP 4a: Generate curation template if none provided ---
-    if curation_db and Path(curation_db).exists():
-        logger.info("Using provided curation database: %s", curation_db)
-    else:
-        logger.info(step_banner("4a", "memote on drafts"))
-        curation_db = generate_curation_template(draft_models_dir, output_dir)
-        logger.info(f"Curation template generated: {curation_db}")
-
-    # --- STEP 4b: Automatic Curation ---
-    curated_out = output_dir / "04-curated_models"
-    curated_out.mkdir(exist_ok=True)
-
-    logger.info(step_banner(4))
-    # Per-row hit counts accumulate across strains so we can emit an
-    # applicability report — addresses the A9 §F finding that the DB's
-    # `corrected_balances` sheet silently fired on 0/216 strains.
-    models = sorted(draft_models_dir.rglob("*.xml"))
-    curation_stats: dict = {}
-    failed_curations: list[str] = []
-    for draft_model in models:
-        try:
-            apply_curations(draft_model, curation_db, curated_out, stats=curation_stats)
-        except Exception as exc:  # one bad model must not abort the batch
-            failed_curations.append(draft_model.stem)
-            logger.error("Curation failed for %s: %s", draft_model.stem, exc)
-    if failed_curations:
-        logger.warning(
-            "Curation skipped %d/%d strains due to errors: %s",
-            len(failed_curations),
-            len(models),
-            ", ".join(failed_curations),
-        )
-    if curation_stats:
-        report_path = curated_out / "curation_application_report.tsv"
-        write_curation_application_report(
-            curation_stats, n_strains=len(models), output_path=report_path
-        )
-
-    current_models_dir = curated_out
-
-    # --- STEP 5b: ModelPolisher via Docker (optional side-step) ---
-    # Map engine name to the actual binary used by run_model_polisher so the
-    # availability check reflects the real command (e.g. podman -> podman-compose).
-    engine_binary_map = {
-        "docker": "docker",
-        "podman": "podman-compose",
-        "apptainer": "apptainer",
-    }
-    engine_bin = engine_binary_map.get(engine, engine)
-    if no_polish:
-        logger.info(step_banner("5b", "SKIPPED by user"))
-        polish_status = "skipped_user"
-    elif not shutil.which(engine_bin):
-        logger.warning(step_banner("5b", f"SKIPPED - {engine_bin} is not installed"))
-        polish_status = "skipped_no_engine"
-    else:
-        logger.info(step_banner("5b", engine))
-        polished_out = output_dir / "05b-polished_models"
-        polished_result = run_model_polisher(
-            current_models_dir, polished_out, engine=engine
-        )
-        if _count_xml(polished_result) > 0:
-            current_models_dir = polished_result
-            polish_status = "applied"
-        else:
-            logger.warning(
-                "ModelPolisher produced no output — continuing with pre-polish models."
-            )
-            polish_status = "skipped_no_output"
-
-    # --- STEP 5: Annotation Enrichment ---
-    logger.info(step_banner(5))
-    annotated_out = output_dir / "05-annotated_models"
-    # Try to locate gene ID mapping files for Bakta→NCBI resolution
-    proteomes_dir = draft_models_dir.parent / "proteomes"
-    current_models_dir = enrich_models_directory(
-        current_models_dir,
-        annotated_out,
-        proteomes_dir=proteomes_dir if proteomes_dir.is_dir() else None,
-    )
-
-    # --- STEP 6: Gather & Convert ---
-    logger.info(step_banner(6))
-    final_out = output_dir / "06-final_models"
-    gather_and_convert_models(current_models_dir, final_out)
-
-    # --- STEP 7: Final Evaluation ---
-    evaluate_final_models(current_models_dir, output_dir)
-
-    logger.info(f"Pipeline complete! All results saved to {final_out}")
-
-    # Report what actually happened so the caller can record an honest summary
-    # status (e.g. completed_with_failures) and the polish outcome.
-    return {
-        "polish": polish_status,
-        "curation_failed": failed_curations,
-        "n_expected": len(models),
-        "n_final": _count_xml(final_out),
-    }
+    return panmodel_out / f"{label}-all-Reactions.tbl", included_fasta
