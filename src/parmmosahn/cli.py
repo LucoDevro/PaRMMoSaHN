@@ -230,6 +230,11 @@ def pan(genomes, output, label, threads, add_small, occurrence, config):
     help="Number of CPU threads to allocate.",
 )
 @click.option(
+    "--no-gapfill",
+    is_flag = True,
+    help = "Do not gapfill the projected models",
+)
+@click.option(
     "--strain-bits",
     default=150,
     show_default=True,
@@ -260,6 +265,7 @@ def project(
     output,
     medium,
     threads,
+    no_gapfill,
     strain_bits,
     pan_bits,
     biomass,
@@ -287,6 +293,7 @@ def project(
         output_dir=Path(output),
         medium_file=Path(medium),
         threads=threads,
+        gapfill = not no_gapfill,
         strain_bits=strain_bits,
         pan_bits=pan_bits,
         biomass=biomass,

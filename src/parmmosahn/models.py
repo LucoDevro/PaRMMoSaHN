@@ -210,6 +210,7 @@ def _process_single_strain(
     pan_bits: int,
     biomass: str,
     threads_per_strain: int,
+    gapfill: bool,
     counter: "list[int]",
     counter_lock: threading.Lock,
     model_id_map: dict[str, str],
@@ -300,33 +301,43 @@ def _process_single_strain(
         stderr_file=log_err,
     )
 
-    # 3e. Gapfill Model
+    # 3e. Gapfill Model (or pass through the draft model)
+    draft_xml = strain_dir / "filtered-Reactions.tbl-draft.xml"
     draft_rds = strain_dir / "filtered-Reactions.tbl-draft.RDS"
     weights_rds = strain_dir / "filtered-Reactions.tbl-rxnWeights.RDS"
     genes_rds = strain_dir / "filtered-Reactions.tbl-rxnXgenes.RDS"
-
-    run_command(
-        [
-            "gapseq",
-            "fill",
-            "-q",
-            "-m",
-            str(draft_rds),
-            "-n",
-            str(medium_file),
-            "-c",
-            str(weights_rds),
-            "-g",
-            str(genes_rds),
-            "-f",
-            str(strain_dir),
-        ],
-        stdout_file=log_out,
-        stderr_file=log_err,
-    )
+    
+    xml_file = strain_dir / "filtered-Reactions.tbl.xml"
+    if gapfill:
+        run_command(
+            [
+                "gapseq",
+                "fill",
+                "-q",
+                "-m",
+                str(draft_rds),
+                "-n",
+                str(medium_file),
+                "-c",
+                str(weights_rds),
+                "-g",
+                str(genes_rds),
+                "-f",
+                str(strain_dir),
+            ],
+            stdout_file=log_out,
+            stderr_file=log_err,
+        )
+    
+    else:
+        shutil.copy(draft_xml, xml_file)
+        
+    # Remove intermediate model
+    if draft_xml.exists():
+        draft_xml.unlink()
+        logger.debug(f"Removed intermediate draft model {draft_xml.name}")
 
     # 3f. Clean XML
-    xml_file = strain_dir / "filtered-Reactions.tbl.xml"
     final_xml = strain_dir / f"{strain_name}.xml"
 
     if xml_file.exists():
@@ -349,11 +360,6 @@ def _process_single_strain(
         logger.debug(
             f"Saved cleaned XML as {final_xml.name} with internal ID {safe_model_id}"
         )
-
-    draft_xml = strain_dir / "filtered-Reactions.tbl-draft.xml"
-    if draft_xml.exists():
-        draft_xml.unlink()
-        logger.debug(f"Removed intermediate draft model {draft_xml.name}")
 
     # Only checkpoint once a real model is on disk. gapseq `fill` can exit 0
     # without producing an XML on degenerate input; a premature .done would make
@@ -378,6 +384,7 @@ def derive_strain_models(
     panmodel_rxn_table: str | Path,
     output_dir: str | Path,
     medium_file: str | Path,
+    gapfill: bool,
     strain_bits: int = 150,
     pan_bits: int = 150,
     biomass: str = "pos",
@@ -529,6 +536,7 @@ def derive_strain_models(
                 pan_bits,
                 biomass,
                 threads_per_strain,
+                gapfill,
                 counter,
                 counter_lock,
                 model_id_map,
