@@ -11,6 +11,3 @@ include src/parmmosahn/data/mnxr_to_rhea.tsv
 include src/parmmosahn/data/seed_to_rhea.tsv
 include src/parmmosahn/data/seed_to_bigg.tsv
 include src/parmmosahn/data/seed_rxn_to_bigg.tsv
-
-# (Optional) Include test data if you want users to be able to run tests locally
-recursive-include tests/data *

@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parmmosahn"
-version = "0.3.0"
+version = "1.0.0"
 description = "PaRMMoSaHN - Pangenome Reference-based Metabolic Modelling by Saving Homolog Networks"
 authors = [{name = "Robbe De Win", email = "robbedewin@hotmail.com"}, {name = "Lucas De Vrieze", email = "lucas.devrieze@kuleuven.be"}]
+maintainers = [{name = "Lucas De Vrieze", email = "lucas.devrieze@kuleuven.be"}]
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -39,6 +40,9 @@ dependencies = [
     "biopython>=1.79",   # For parsing GenBank files
     "polars>=1.0.0",      # For efficient data manipulation in curation
     "xlsxwriter>=3.0.0",  # Required by polars write_excel (curation template generation)
+    "pyyaml>=6.0",   # Required for YAML config file support (--config / init-config)
+    "matplotlib>=3.5.0",  # Clustered heatmap plotting (analyze heatmap --plot)
+    "seaborn>=0.12.0",    # Statistical data visualization
 ]
 
 [project.optional-dependencies]
@@ -50,19 +54,11 @@ dev = [
     "isort>=5.10.0",
     "pre-commit>=3.0.0",
 ]
-config = [
-    "pyyaml>=6.0",   # Required for YAML config file support (--config / init-config)
-]
-viz = [
-    "matplotlib>=3.5.0",  # Clustered heatmap plotting (analyze heatmap --plot)
-    "seaborn>=0.12.0",    # Statistical data visualization
-]
 
 [project.urls]
-Homepage = "https://github.com/robbedewin/PaRMMoSaHN"
-Repository = "https://github.com/robbedewin/PaRMMoSaHN"
-Issues = "https://github.com/robbedewin/PaRMMoSaHN/issues"
-Changelog = "https://github.com/robbedewin/PaRMMoSaHN/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/LucoDevro/PaRMMoSaHN"
+Repository = "https://github.com/LucoDevro/PaRMMoSaHN"
+Issues = "https://github.com/LucoDevro/PaRMMoSaHN/issues"
 
 [project.scripts]
 # This exposes the command 'parmmosahn' to the terminal
@@ -86,19 +82,6 @@ module = [
     "click.*"
 ]
 ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-pythonpath = [
-  "src"
-]
-testpaths = [
-  "tests"
-]
-markers = [
-  "biological: tests against real pipeline data (require test_run/ artifacts)",
-  "slow: tests that execute actual pipeline steps (require external tools)",
-]
-addopts = "-m 'not biological'"
 
 [tool.setuptools.package-data]
 # Explicit list — do NOT use globs like "data/*.tsv" because chem_xref.tsv
