@@ -9,7 +9,7 @@ import subprocess
 import time
 from importlib.resources import as_file, files
 from pathlib import Path
-from typing import Any, Dict, Tuple, cast
+from typing import Any, Tuple, cast
 
 import cobra as cb
 import polars as pl
@@ -19,10 +19,50 @@ from cobra.core import Model, Reaction
 from memote.suite import api as memote_api
 from memote.suite.reporting import ReportConfiguration
 
-from parmmosahn.constants import step_banner
 from parmmosahn.utils import ToolExecutionError
 
 logger = logging.getLogger(__name__)
+
+
+# ==========================================
+# Phase 0: create an empty curation DB
+# ==========================================
+
+
+def init_curation_table(output_excel: Path) -> None:
+    """
+    Write an empty PaRMMoSaHN curation DB.
+    """
+    output_excel.parent.mkdir(parents=True, exist_ok=True)
+    
+    df_dupl = pl.DataFrame(
+        schema=["Pair", "Decision",
+                "ID 1", "Name 1", "Equation 1", "Lower bound 1", "Upper bound 1",
+                "ID 2", "Name 2", "Equation 2", "Lower bound 2", "Upper bound 2"]
+        )
+    df_imb = pl.DataFrame(
+        schema=[
+            "reaction_id",
+            "name",
+            "new_formula",
+            "balance_type",
+            "modification",
+            "Comment",
+        ]
+    )
+    df_ign = pl.DataFrame(
+        schema=["reaction_id", "name", "Imbalance", "Reason to leave intact", "Comment"]
+    )
+    
+    from xlsxwriter import Workbook
+
+    with Workbook(str(output_excel)) as wb:
+        _excel_safe_df(df_dupl).write_excel(
+            workbook=wb, worksheet="duplicate_reactions"
+        )
+        _excel_safe_df(df_imb).write_excel(workbook=wb, worksheet="curated_imbalances")
+        df_ign.write_excel(workbook=wb, worksheet="ignored_imbalances")
+
 
 # ==========================================
 # Phase 1: memote evaluation & DB Generation
@@ -136,7 +176,7 @@ def run_memote_snapshot(
     # ``spawn`` gives the child a fresh interpreter with no inherited locks
     # (kills cause 1). join(timeout) + terminate() + kill() guarantees the
     # child is reaped within ``timeout`` no matter how memote hangs (kills
-    # cause 2): a pathological model can never freeze the run.
+    # cause 2): a faulty model can never freeze the run.
     ctx = multiprocessing.get_context("spawn")
     proc = ctx.Process(
         target=_run_memote_snapshot_inprocess,
@@ -212,7 +252,7 @@ def extract_memote_problems(
 ) -> None:
     """
     Parses memote JSON reports to find imbalances and duplicates.
-    Writes a 3-sheet Excel template matching the PaRMMoSaHN curation DB format.
+    Writes a PaRMMoSaHN curation DB format with the identified problems.
     """
     logger.info("Extracting problem balances and duplicates from memote reports...")
     output_excel.parent.mkdir(parents=True, exist_ok=True)
@@ -319,13 +359,7 @@ def extract_memote_problems(
             except Exception as e:
                 logger.debug(f"Skipping duplicate pair {rxn_pair}: {e}")
 
-        return (
-            pl.DataFrame(df_rows)
-            if df_rows
-            else pl.DataFrame(
-                schema=["Pair", "Decision", "ID 1", "Name 1", "Equation 1"]
-            )
-        )
+        return pl.DataFrame(df_rows)
 
     def get_imbalance_df() -> pl.DataFrame:
         df_rows = []
@@ -359,7 +393,9 @@ def extract_memote_problems(
     df_dupl = get_duplicates_df()
     if df_dupl.is_empty():
         df_dupl = pl.DataFrame(
-            schema=["Pair", "Decision", "ID 1", "Name 1", "Equation 1"]
+            schema=["Pair", "Decision",
+                    "ID 1", "Name 1", "Equation 1", "Lower bound 1", "Upper bound 1",
+                    "ID 2", "Name 2", "Equation 2", "Lower bound 2", "Upper bound 2"]
         )
 
     df_imb = get_imbalance_df()
@@ -876,73 +912,3 @@ def run_model_polisher(
         logger.info(f"Successfully polished all {success_count} models.")
 
     return models_out
-
-
-# ==========================================
-# Phase 3: Hidden Evaluators (Pipeline Auto-Triggers)
-# ==========================================
-
-
-def generate_curation_template(model_dir: Path, output_dir: Path) -> Path:
-    """Hidden Evaluator: Runs memote on drafts and generates the Excel template."""
-    reports_dir = output_dir / "07-memote_reports" / "draft"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-
-    models = sorted(model_dir.rglob("*.xml"))
-    n = len(models)
-    logger.info(f"Running automated memote evaluation on {n} draft models...")
-
-    failed = []
-    for i, model in enumerate(models, 1):
-        logger.info(f"  [{i}/{n}] Evaluating {model.stem}...")
-        out_json = reports_dir / f"{model.stem}.json"
-        out_html = reports_dir / f"{model.stem}.html"
-        if not run_memote_snapshot(model, out_json, out_html):
-            failed.append(model.stem)
-
-    if failed:
-        logger.warning(f"Memote failed for {len(failed)}/{n} models: {failed}")
-
-    out_excel = output_dir / "curation_template.xlsx"
-    extract_memote_problems(reports_dir, model_dir, out_excel)
-    return out_excel
-
-
-def evaluate_final_models(
-    model_dir: Path, output_dir: Path, skip_existing: bool = True
-) -> None:
-    """Hidden Evaluator: Runs memote on final models to prove FAIR compliance.
-
-    With *skip_existing* (default), a model whose memote JSON report already
-    exists and is non-empty is skipped, so a resumed run does not repeat the
-    slow per-model evaluation. A fresh run finds an empty reports dir and so
-    evaluates everything.
-    """
-    reports_dir = output_dir / "07-memote_reports" / "final"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-
-    models = sorted(model_dir.rglob("*.xml"))
-    if not models:
-        logger.warning("No final XML models found to evaluate.")
-        return
-
-    n = len(models)
-    logger.info(step_banner(7))
-    logger.info(f"Running final memote evaluation on {n} polished models...")
-    failed = []
-    skipped = 0
-    for i, model in enumerate(models, 1):
-        out_json = reports_dir / f"{model.stem}.json"
-        out_html = reports_dir / f"{model.stem}.html"
-        if skip_existing and out_json.exists() and out_json.stat().st_size > 0:
-            skipped += 1
-            continue
-        logger.info(f"  [{i}/{n}] Evaluating {model.stem}...")
-        if not run_memote_snapshot(model, out_json, out_html):
-            failed.append(model.stem)
-
-    if skipped:
-        logger.info(f"Skipped {skipped}/{n} model(s) with existing reports.")
-    if failed:
-        logger.warning(f"Memote failed for {len(failed)}/{n} models: {failed}")
-    logger.info(f"Final FAIR-compliance reports saved to {reports_dir}")

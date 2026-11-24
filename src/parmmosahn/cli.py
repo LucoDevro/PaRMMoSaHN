@@ -5,9 +5,10 @@ from pathlib import Path
 
 import click
 
-from parmmosahn.curation import apply_curations
-from parmmosahn.models import derive_strain_models
+from parmmosahn.curation import apply_curations, init_curation_table
+from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.results import gather_and_convert_models
+from parmmosahn.pangenome import build_pangenome
 
 logger = logging.getLogger(__name__)
 
@@ -52,43 +53,6 @@ def _format_elapsed(seconds: float) -> str:
         return f"{m}m {s}s"
     h, m = divmod(m, 60)
     return f"{h}h {m}m {s}s"
-
-
-def _stdin_is_tty() -> bool:
-    """Indirection so tests can force-toggle the interactive-pause behaviour."""
-    import sys
-
-    return sys.stdin.isatty()
-
-
-def _echo_and_log(message: str) -> None:
-    """Echo a message to stdout AND tee it into any active run.log file.
-
-    Plain ``click.echo`` writes only to stdout, which means user-facing
-    progress lines emitted from ``run`` / ``project`` were missing from
-    ``run.log`` even though logger.info() messages from pipeline modules
-    were captured. This helper keeps the click.echo terminal output and
-    additionally emits the same message via every FileHandler attached
-    to the root logger — but NOT via the basicConfig StreamHandler, so
-    nothing double-prints on the terminal.
-
-    Used for status lines emitted from inside ``run`` / ``project``.
-    Other commands have no run.log, so the FileHandler loop is a no-op
-    and behaviour matches plain ``click.echo``.
-    """
-    click.echo(message)
-    record = logging.LogRecord(
-        name="parmmosahn.cli",
-        level=logging.INFO,
-        pathname="",
-        lineno=0,
-        msg=message,
-        args=None,
-        exc_info=None,
-    )
-    for handler in logging.getLogger().handlers:
-        if isinstance(handler, logging.FileHandler):
-            handler.handle(record)
 
 
 def _setup_logging(verbose: bool, quiet: bool) -> None:
@@ -186,8 +150,6 @@ def cli(ctx, verbose, quiet):
 )
 def pan(genomes, output, label, threads, add_small, occurrence, config):
     """Step 1 & 2: Construct the partitioned pangenome and build the pan-model."""
-    from parmmosahn.pipeline import run_pan
-
     if config:
         from parmmosahn.utils import load_config
 
@@ -205,16 +167,26 @@ def pan(genomes, output, label, threads, add_small, occurrence, config):
         raise click.UsageError(
             "Missing required arguments: genomes and label must be provided either via CLI or config"
         )
-
+        
+    output.mkdir(parents=True, exist_ok=True)
     click.echo(f"Building pangenome and pan-model '{label}'...")
-    run_pan(
-        Path(genomes),
-        Path(output),
+    
+    # --- STEP 1: Pangenome ---
+    pangenome_out = output / "01-pangenome"
+    included_fasta = build_pangenome(
+        genomes,
+        pangenome_out,
         label,
         threads=threads,
         add_small=add_small,
-        occurrence_override=occurrence,
+        occurrence=occurrence,
     )
+    
+    # --- STEP 2: Pan-model ---
+    panmodel_out = output / "02-panmodel"
+    build_pan_model(included_fasta, panmodel_out, threads=threads)
+    
+    logger.info(f"Pan-tasks complete! Pan-model saved to {panmodel_out}")
 
 
 @cli.command()
@@ -258,13 +230,13 @@ def pan(genomes, output, label, threads, add_small, occurrence, config):
     help="Number of CPU threads to allocate.",
 )
 @click.option(
-    "--diamond-bits",
+    "--strain-bits",
     default=150,
     show_default=True,
     help="Minimum bitscore threshold for DIAMOND blastp alignment.",
 )
 @click.option(
-    "--gapseq-bits",
+    "--pan-bits",
     default=150,
     show_default=True,
     help="Minimum bitscore threshold for gapseq pathway/transport searches.",
@@ -320,6 +292,24 @@ def project(
         biomass=biomass,
         parallel_strains=parallel_strains,
     )
+    
+    
+@cli.command()
+@click.option(
+    "-o",
+    "--output",
+    required = True,
+    type = click.Path(),
+    help = "Path to write the empty curation DB to."
+)
+def init_curation(output: Path) -> None:
+    """
+    Write an empty PaRMMoSaHN curation DB.
+    """
+    output_excel = Path(output)
+    logger.info(f"Writing curation template to {output_excel.name}...")
+    
+    init_curation_table(output_excel)
 
 
 @cli.command()

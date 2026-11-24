@@ -1,5 +1,4 @@
 import contextlib
-import hashlib
 import logging
 import os
 import platform
@@ -9,7 +8,7 @@ import tempfile
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Any, Generator, Optional
+from typing import Any, Generator
 
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -20,23 +19,6 @@ logger = logging.getLogger(__name__)
 
 class ToolExecutionError(Exception):
     pass
-
-
-def sha256_file(path: Path, chunk_size: int = 1 << 20) -> str | None:
-    """Return the hex SHA-256 of *path*, or ``None`` if the file is missing.
-
-    Used by ``pipeline_summary.json`` to pin the medium and curation-DB
-    versions used for a run so downstream re-analysis is reproducible
-    even if the source files are later replaced or moved.
-    """
-    p = Path(path)
-    if not p.exists() or not p.is_file():
-        return None
-    h = hashlib.sha256()
-    with p.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(chunk_size), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> Path:
@@ -212,62 +194,6 @@ def run_command(
 
         except OSError as e:
             raise ToolExecutionError(f"Failed to launch {cmd[0]!r}: {e}") from e
-
-
-def validate_input_genomes(genomes_dir: Path) -> None:
-    """Pre-flight validation of input genome files.
-
-    Warns about potential issues that would cause pipeline failures later.
-    Raises FileNotFoundError if no genome files found.
-    """
-    gbff_files = list(genomes_dir.glob("*.gbff")) + list(genomes_dir.glob("*.gbk"))
-    faa_files = list(genomes_dir.glob("*.faa"))
-
-    all_files = gbff_files + faa_files
-    if not all_files:
-        raise FileNotFoundError(
-            f"No genome files (.gbff, .gbk, .faa) found in {genomes_dir}"
-        )
-
-    n_genomes = len(set(f.stem for f in all_files))
-    if n_genomes < 3:
-        logger.warning(
-            f"Only {n_genomes} genome(s) found. Pangenome analysis typically "
-            f"requires at least 3 genomes to produce meaningful results."
-        )
-
-    # Spot-check GenBank files for CDS features with translations
-    for gbff in gbff_files[:3]:  # check up to 3 files
-        cds_count = 0
-        translated_count = 0
-        try:
-            for record in SeqIO.parse(str(gbff), "genbank"):
-                for feature in record.features:
-                    if feature.type == "CDS":
-                        cds_count += 1
-                        if feature.qualifiers.get("translation"):
-                            translated_count += 1
-                # Only scan first record per file for speed
-                break
-        except Exception as e:
-            logger.warning(f"Could not parse {gbff.name}: {e}")
-            continue
-
-        if cds_count == 0:
-            logger.warning(
-                f"{gbff.name}: no CDS features found. This file may not be a "
-                f"valid annotated genome (GenBank flat file format expected)."
-            )
-        elif translated_count == 0:
-            logger.warning(
-                f"{gbff.name}: CDS features found but none have translations. "
-                f"Proteome extraction will produce empty output."
-            )
-        elif translated_count < 100:
-            logger.warning(
-                f"{gbff.name}: only {translated_count} translated CDS features "
-                f"in first record. This may indicate a partial or low-quality genome."
-            )
 
 
 def extract_proteome_from_gbff(gbff_path: Path, output_faa_path: Path) -> Path:
