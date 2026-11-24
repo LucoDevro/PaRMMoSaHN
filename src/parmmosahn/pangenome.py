@@ -128,7 +128,7 @@ def build_pangenome(
     threads: int = 1,
     tmp_dir: str | Path | None = None,
     add_small: bool = False,
-    occurrence_override: float | None = None,
+    occurrence: float | None = None,
 ) -> Path:
     """
     Executes the PPanGGOLiN pipeline to build a pangenome and extract the included gene families.
@@ -210,13 +210,13 @@ def build_pangenome(
 
     # Calculate occurrence threshold exactly as bash `echo "scale=5; 2/$no_genomes" | bc`
     # Users can override this via occurrence_override if they want a different fraction.
-    if occurrence_override is not None:
-        if not 0.0 < occurrence_override <= 1.0:
+    if occurrence is not None:
+        if not 0.0 < occurrence <= 1.0:
             raise ValueError(
                 f"occurrence_override must be a fraction in (0, 1], "
-                f"got {occurrence_override}."
+                f"got {occurrence}."
             )
-        occurrence_threshold = round(occurrence_override, 5)
+        occurrence_threshold = round(occurrence, 5)
         logger.info(
             f"Using user-provided occurrence threshold: {occurrence_threshold} (override)."
         )
