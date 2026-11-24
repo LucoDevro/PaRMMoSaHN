@@ -121,6 +121,20 @@ def cli(ctx, verbose, quiet):
     help="A descriptive label for the pangenome (e.g., 'clostridiales').",
 )
 @click.option(
+    '-i',
+    '--identity',
+    default = 0.8,
+    help = "Identity threshold for the gene family clustering by PPanGGOLiN",
+    show_default = True,
+)
+@click.option(
+    '-c',
+    '--coverage',
+    default = 0.6,
+    help = "Coverage threshold for the gene family clustering by PPanGGOLiN",
+    show_default = True,
+)
+@click.option(
     "-t",
     "--threads",
     default=_DEFAULT_THREADS,
@@ -148,7 +162,16 @@ def cli(ctx, verbose, quiet):
     type=click.Path(exists=True),
     help="Path to a YAML config file. CLI arguments override config values. Requires pyyaml (pip install 'parmmosahn[config]').",
 )
-def pan(genomes, output, label, threads, add_small, occurrence, config):
+def pan(genomes: Path | None,
+        output: Path | None,
+        label: str,
+        cluster_id: float = 0.80,
+        cluster_cov: float = 0.60,
+        threads: int = 1,
+        add_small: bool = False,
+        occurrence: float | None = None,
+        config: Path | str | None = None,
+        ):
     """Step 1 & 2: Construct the partitioned pangenome and build the pan-model."""
     if config:
         from parmmosahn.utils import load_config
@@ -177,6 +200,8 @@ def pan(genomes, output, label, threads, add_small, occurrence, config):
         genomes,
         pangenome_out,
         label,
+        cluster_id = cluster_id,
+        cluster_cov = cluster_cov,
         threads=threads,
         add_small=add_small,
         occurrence=occurrence,
