@@ -284,34 +284,6 @@ def extract_gene_id_mapping(gbff_path: Path, output_tsv: Path) -> Path:
     return output_tsv
 
 
-def load_config(config_path: Path) -> dict:
-    """Load a YAML configuration file.
-
-    Requires PyYAML (install with ``pip install 'parmmosahn[config]'``).
-
-    Args:
-        config_path: Path to the YAML config file.
-
-    Returns:
-        Dictionary of configuration values. Empty dict if the file is empty.
-
-    Raises:
-        ImportError: If PyYAML is not installed.
-    """
-    try:
-        import yaml  # type: ignore[import]
-    except ImportError as exc:
-        raise ImportError(
-            "PyYAML is required for config file support. "
-            "Install it with: pip install 'parmmosahn[config]'  or  pip install pyyaml"
-        ) from exc
-
-    with config_path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    return data if isinstance(data, dict) else {}
-
-
 def _extract_version(output: str) -> str:
     """Return the first line that looks like a version string, else the first non-empty line."""
     import re
