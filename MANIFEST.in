@@ -6,7 +6,6 @@ include environment.yml
 
 # Include only the specific runtime data files shipped with the package.
 # Do NOT use a wildcard here — chem_xref.tsv (648 MB) must never ship.
-include src/parmmosahn/data/docker-compose.yml
 include src/parmmosahn/data/mnxr_to_rhea.tsv
 include src/parmmosahn/data/seed_to_rhea.tsv
 include src/parmmosahn/data/seed_to_bigg.tsv

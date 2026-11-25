@@ -343,45 +343,6 @@ def curate(source_model, curated_model, db):
     "--models",
     required=True,
     type=click.Path(exists=True),
-    help="Directory containing the curated SBML models.",
-)
-@click.option(
-    "-o",
-    "--output",
-    default="05b-polished_models",
-    type=click.Path(),
-    show_default=True,
-    help="Target directory for the polished models.",
-)
-@click.option(
-    "-e",
-    "--engine",
-    type=click.Choice(["docker", "podman", "apptainer"]),
-    default="docker",
-    show_default=True,
-    help="Container engine to employ for running ModelPolisher.",
-)
-def polish(models, output, engine):
-    """Step 5b: Polish models using Palsson lab ModelPolisher (requires a container engine)."""
-    from parmmosahn.curation import run_model_polisher
-
-    models_path = Path(models)
-    xml_count = len(list(models_path.rglob("*.xml")))
-    click.echo(f"Input:  {models_path} ({xml_count} models)")
-    click.echo(f"Output: {output}")
-    click.echo(f"Engine: {engine}")
-
-    t_start = time.time()
-    run_model_polisher(models, output, engine=engine)
-    click.echo(f"Done ({_format_elapsed(time.time() - t_start)} total)")
-
-
-@cli.command()
-@click.option(
-    "-M",
-    "--models",
-    required=True,
-    type=click.Path(exists=True),
     help="Directory containing the final SBML models.",
 )
 @click.option(
