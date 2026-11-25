@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 import shutil
@@ -129,6 +128,7 @@ def build_pangenome(
     tmp_dir: str | Path | None = None,
     add_small: bool = False,
     occurrence: float | None = None,
+    force: bool = False,
 ) -> Path:
     """
     Executes the PPanGGOLiN pipeline to build a pangenome and extract the included gene families.
@@ -142,8 +142,9 @@ def build_pangenome(
         threads: Number of CPU threads to use.
         tmp_dir: Optional temporary directory for heavy clustering operations.
         add_small: If True, export *all* gene families
-        occurrence_override: Value in (0, 1] to override the default 2/n_genomes
+        occurrence: Value in (0, 1] to override the default 2/n_genomes
              gene family occurrence threshold.
+        force: If True, force overwriting any existing output
 
     Returns:
         Path to the exported protein-family FASTA: only included families by
@@ -151,7 +152,12 @@ def build_pangenome(
     """
     genomes_dir = Path(genomes_dir)
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok = force)
+    except FileExistsError:
+        raise ToolExecutionError(
+            "Pangenome results folder already exists. Use --force to overwrite it."
+            )
 
     annotations_list = output_dir / "annotations.list"
     h5_db = output_dir / "pangenome.h5"
@@ -277,25 +283,6 @@ def build_pangenome(
     logger.info(
         f"Pangenome construction complete ({n_families} families)! "
         f"File saved to: {final_fasta}"
-    )
-
-    # Record the parameters actually used so write_pipeline_summary() can
-    # capture them as provenance without re-deriving them from the log.
-    meta_path = output_dir / "pangenome_meta.json"
-    meta_path.write_text(
-        json.dumps(
-            {
-                "n_genomes": no_genomes,
-                "occurrence_threshold": occurrence_threshold,
-                "occurrence_override_used": occurrence is not None,
-                "partitions": partitions,
-                "cluster_identity": cluster_id,
-                "cluster_coverage": cluster_cov,
-                "add_small": add_small,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
     )
 
     return final_fasta

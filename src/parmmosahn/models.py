@@ -67,6 +67,7 @@ def build_pan_model(
     output_dir: str | Path,
     blast_sens: int = 150,
     threads: int = 14,
+    force: bool = False,
 ) -> Path:
     """
     Executes 'gapseq find' on the pangenome FASTA to construct a pan-metabolic model.
@@ -85,8 +86,13 @@ def build_pan_model(
 
     if not fasta_path.exists():
         raise FileNotFoundError(f"Pangenome FASTA not found at: {fasta_path}")
-
-    out_dir.mkdir(parents=True, exist_ok=True)
+        
+    try:
+        out_dir.mkdir(parents=True, exist_ok=force)
+    except FileExistsError:
+        raise ToolExecutionError(
+            "Panmodel results folder already exists. Use --force to overwrite it."
+            )
 
     # 1. Prepare input: clean into a derived copy so the source representatives FASTA
     #    is never mutated in place — a re-run or any external consumer must still
@@ -390,6 +396,7 @@ def derive_strain_models(
     biomass: str = "pos",
     threads: int = 14,
     parallel_strains: int | None = None,
+    force: bool = False,
 ) -> Path:
     """
     Uses diamond and gapseq to project the pan-model onto individual strains.
@@ -411,9 +418,14 @@ def derive_strain_models(
     models_dir = output_dir / "models"
     models_workdir = output_dir / "models_workdir"
     proteomes_dir = output_dir / "proteomes"
-
-    for d in [matches_dir, models_workdir, proteomes_dir, models_dir]:
-        d.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        for d in [matches_dir, models_workdir, proteomes_dir, models_dir]:
+            d.mkdir(parents=True, exist_ok=force)
+    except FileExistsError:
+        raise ToolExecutionError(
+            "Projection results folder already exists. Use --force to overwrite it."
+            )
 
     # Collect both file types
     faa_files = list(genomes_dir.glob("*.faa"))

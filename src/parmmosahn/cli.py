@@ -9,6 +9,7 @@ from parmmosahn.curation import apply_curations, init_curation_table
 from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.results import gather_and_convert_models
 from parmmosahn.pangenome import build_pangenome
+from parmmosahn.utils import ToolExecutionError
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,12 @@ def cli(ctx, verbose, quiet):
         "Default is 2/n_genomes."
     ),
 )
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
 def pan(genomes: Path | None,
         output: Path | None,
         label: str,
@@ -142,6 +149,7 @@ def pan(genomes: Path | None,
         threads: int = 1,
         add_small: bool = False,
         occurrence: float | None = None,
+        force: bool = False,
         ):
     """Step 1 & 2: Construct the partitioned pangenome and build the pan-model."""
     if genomes is None or label is None:
@@ -163,6 +171,7 @@ def pan(genomes: Path | None,
         threads=threads,
         add_small=add_small,
         occurrence=occurrence,
+        force = force,
     )
     
     # --- STEP 2: Pan-model ---
@@ -180,13 +189,13 @@ def pan(genomes: Path | None,
     help="Directory of strain genome files (.gbff or .faa format).",
 )
 @click.option(
-    "-f",
-    "--fasta",
+    "-r",
+    "--reference",
     type=click.Path(exists=True),
     help="Path to the PPanGGOLiN representatives FASTA file.",
 )
 @click.option(
-    "-r",
+    "-p",
     "--panmodel-rxns",
     type=click.Path(exists=True),
     help="Path to the pan-model reaction table file.",
@@ -241,9 +250,15 @@ def pan(genomes: Path | None,
     type=int,
     help="Number of strains to process concurrently. Default: threads//4 (auto). Each worker peaks at ~1.5 GB RAM.",
 )
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
 def project(
     genomes,
-    fasta,
+    reference,
     panmodel_rxns,
     output,
     medium,
@@ -253,6 +268,7 @@ def project(
     pan_bits,
     biomass,
     parallel_strains,
+    force
 ):
     """Step 3: Derive strain-specific models by homology matches."""
     click.echo("Deriving strain models...")
@@ -260,7 +276,7 @@ def project(
     missing_args = []
     if genomes is None:
         missing_args.append("genomes")
-    if fasta is None:
+    if reference is None:
         missing_args.append("fasta")
     if panmodel_rxns is None:
         missing_args.append("panmodel_rxns")
@@ -271,7 +287,7 @@ def project(
 
     derive_strain_models(
         genomes_dir=Path(genomes),
-        pangenome_fasta=Path(fasta),
+        pangenome_fasta=Path(reference),
         panmodel_rxn_table=Path(panmodel_rxns),
         output_dir=Path(output),
         medium_file=Path(medium),
@@ -281,6 +297,7 @@ def project(
         pan_bits=pan_bits,
         biomass=biomass,
         parallel_strains=parallel_strains,
+        force = force,
     )
     
     
@@ -292,14 +309,20 @@ def project(
     type = click.Path(),
     help = "Path to write the empty curation DB to."
 )
-def init_curation(output: Path) -> None:
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def init_curation(output: Path, force: bool) -> None:
     """
     Write an empty PaRMMoSaHN curation DB.
     """
     output_excel = Path(output)
     logger.info(f"Writing curation template to {output_excel.name}...")
     
-    init_curation_table(output_excel)
+    init_curation_table(output_excel, force = force)
 
 
 @cli.command()
@@ -691,13 +714,12 @@ def essentiality(models, output, medium, essential_fraction, min_wt_growth):
     "threads per model, so 2-3 outer workers typically saturate a 12-16 core host.",
 )
 @click.option(
-    "--skip-existing/--no-skip-existing",
-    default=True,
-    show_default=True,
-    help="Skip strains whose output JSON already exists and is non-empty. "
-    "Allows safe restart after a crash without redoing completed work.",
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
 )
-def evaluate(models, output, curation_template, workers, skip_existing):
+def evaluate(models, output, curation_template, workers, force):
     """Run memote evaluation on a directory of SBML models."""
     from parmmosahn.curation import (
         extract_memote_problems,
@@ -706,59 +728,24 @@ def evaluate(models, output, curation_template, workers, skip_existing):
 
     models_path = Path(models)
     output_path = Path(output)
-    output_path.mkdir(parents=True, exist_ok=True)
+    try:
+        output_path.mkdir(parents=True, exist_ok=force)
+    except FileExistsError:
+        raise ToolExecutionError(
+            'Evaluation results folder already exists! Use --force to overwrite it.'
+            )
 
     all_xml = sorted(models_path.rglob("*.xml"))
     if not all_xml:
         click.echo(f"No XML models found in {models_path}")
         return
 
-    # Outputs are keyed by stem ({stem}.json/.html), so two .xml files sharing
-    # a stem would both target the same report and be evaluated as separate
-    # tasks. This happens with gapseq trees, which keep a flat
-    # {strain}.xml *and* a per-strain working subdir containing more SBML:
-    # rglob then returns the stem 2-3x. --skip-existing cannot dedupe these
-    # (neither output exists yet when both are queued), so with --workers>1
-    # the same strain runs concurrently, twice. Collapse by stem here, first
-    # path wins, so each strain is evaluated exactly once.
-    xml_files = []
-    seen_stems: set[str] = set()
-    dupe_stems: set[str] = set()
-    for xml in all_xml:
-        if xml.stem in seen_stems:
-            dupe_stems.add(xml.stem)
-            continue
-        seen_stems.add(xml.stem)
-        xml_files.append(xml)
-
-    n_total = len(xml_files)
-    if dupe_stems:
-        click.echo(
-            f"Note: {len(all_xml)} .xml files collapse to {n_total} unique "
-            f"strains ({len(dupe_stems)} stem(s) had extra copies in "
-            f"sub-directories; first path used)."
-        )
-
-    todo = []
-    for xml in xml_files:
-        out_json = output_path / f"{xml.stem}.json"
-        if skip_existing and out_json.exists() and out_json.stat().st_size > 0:
-            continue
-        todo.append(xml)
-
+    todo = [output_path / f"{xml.stem}.json" for xml in all_xml]
     n = len(todo)
-    skipped = n_total - n
-    click.echo(f"Input:  {models_path} ({n_total} models)")
+    click.echo(f"Input:  {models_path} ({n} models)")
     click.echo(f"Output: {output_path}")
-    if skipped:
-        click.echo(f"Skipping {skipped} strain(s) with existing JSON output.")
-
     if n == 0:
         click.echo("Nothing to do.")
-        if curation_template:
-            out_excel = output_path / "curation_template.xlsx"
-            extract_memote_problems(output_path, models_path, out_excel)
-            click.echo(f"Curation template saved to {out_excel}")
         return
 
     # Sanity-check RAM before launching parallel memote workers. memote peaks

@@ -27,11 +27,15 @@ logger = logging.getLogger(__name__)
 # ==========================================
 
 
-def init_curation_table(output_excel: Path) -> None:
+def init_curation_table(output_excel: Path, force: bool = False) -> None:
     """
     Write an empty PaRMMoSaHN curation DB.
     """
     output_excel.parent.mkdir(parents=True, exist_ok=True)
+    if output_excel.is_file() and not force:
+        raise ToolExecutionError(
+            'Output file already exists! Use --force to overwrite it.'
+            )
     
     df_dupl = pl.DataFrame(
         schema=["Pair", "Decision",
