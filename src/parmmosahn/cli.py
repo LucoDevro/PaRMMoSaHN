@@ -305,7 +305,7 @@ def init_curation(output: Path) -> None:
 @cli.command()
 @click.option(
     "-s",
-    "--source-model",
+    "--source-models",
     required=True,
     type=click.Path(exists=True),
     help="Path to the input draft SBML model (.xml).",
@@ -313,12 +313,11 @@ def init_curation(output: Path) -> None:
 @click.option(
     "-o",
     "--output",
-    "--curated-model",
-    "curated_model",
+    "curated_models",
     required=True,
     type=click.Path(),
     help="Output directory for the curated model (the filename is derived from "
-    "the source model). '--curated-model' is a deprecated alias.",
+    "the source model).",
 )
 @click.option(
     "-d",
@@ -327,14 +326,13 @@ def init_curation(output: Path) -> None:
     type=click.Path(exists=True),
     help="Path to the Excel Curation Database containing curated reactions.",
 )
-def curate(source_model, curated_model, db):
+def curate(source_models, curated_models, db):
     """Step 4: Apply curation database rules to a specific model."""
-    click.echo(f"Curating model {Path(source_model).name}...")
-    out = Path(curated_model)
+    out = Path(curated_models)
     # apply_curations expects an output *directory* and derives the filename
     # from the source model. -o/--output is therefore a directory path.
     out.mkdir(parents=True, exist_ok=True)
-    apply_curations(Path(source_model), Path(db), out)
+    apply_curations(Path(source_models), Path(db), out)
 
 
 @cli.command()

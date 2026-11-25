@@ -526,7 +526,7 @@ def _apply_formula_fixes(
 
 
 def apply_curations(
-    model_path: Path,
+    models_dir: Path,
     curation_db_path: Path,
     output_dir: Path,
 ) -> Path | None:
@@ -539,46 +539,40 @@ def apply_curations(
     existing file is always complete (never a truncated partial). To re-apply an
     updated curation database, clear the output directory first.
     """
-    out_file = output_dir / model_path.name
-
-    if out_file.exists():
-        return out_file
-
-    try:
-        model = cast(Model, cb.io.read_sbml_model(str(model_path)))
-    except Exception as e:
-        logger.error(f"Failed to load {model_path.name} for curation: {e}")
-        return None
-
-    try:
-        df_dupl = pl.read_excel(
-            curation_db_path, sheet_name="duplicate_reactions", engine="openpyxl"
-        )
-        # Accept both the canonical sheet name and the legacy name for balance
-        # corrections. "curated_imbalances" is preferred; "corrected_balances"
-        # is the fallback for older curation databases.
+    models = list(models_dir.rglob('*.xml'))
+    for model_path in models:
+        out_file = output_dir / model_path.name
+        
+        logger.debug(f"Curating model {out_file.stem}")
+        
         try:
+            model = cast(Model, cb.io.read_sbml_model(str(model_path)))
+        except Exception as e:
+            logger.error(f"Failed to load {model_path.name} for curation: {e}")
+            return None
+    
+        try:
+            df_dupl = pl.read_excel(
+                curation_db_path, sheet_name="duplicate_reactions", engine="openpyxl"
+            )
             df_cur = pl.read_excel(
                 curation_db_path, sheet_name="curated_imbalances", engine="openpyxl"
             )
-        except Exception:
-            df_cur = pl.read_excel(
-                curation_db_path, sheet_name="corrected_balances", engine="openpyxl"
-            )
-    except Exception as e:
-        logger.error(f"Could not read curation database {curation_db_path}: {e}")
-        return None
-
-    changes_made = 0
-    changes_made += _apply_duplicate_decisions(model, df_dupl, stats=stats)
-    changes_made += _apply_formula_fixes(model, df_cur, model_path.name, stats=stats)
-
-    # Atomic write: a crash mid-write must not leave a truncated SBML that the
-    # skip-existing guard above would later mistake for a completed curation.
-    tmp_out = out_file.with_suffix(out_file.suffix + ".tmp")
-    cb.io.write_sbml_model(model, str(tmp_out))
-    os.replace(tmp_out, out_file)
-    logger.debug(f"Applied {changes_made} curations to {model_path.name}")
-
-    return out_file
-
+        except Exception as e:
+            logger.error(f"Could not read curation database {curation_db_path}: {e}")
+            return None
+    
+        changes_made = 0
+        changes_made += _apply_duplicate_decisions(model, df_dupl)
+        changes_made += _apply_formula_fixes(model, df_cur, model_path.name)
+    
+        # Atomic write: a crash mid-write must not leave a truncated SBML that the
+        # skip-existing guard above would later mistake for a completed curation.
+        tmp_out = out_file.with_suffix(out_file.suffix + ".tmp")
+        cb.io.write_sbml_model(model, str(tmp_out))
+        os.replace(tmp_out, out_file)
+        logger.debug(f"Applied {changes_made} curations to {model_path.name}")
+        
+    logger.info(f"Curated {len(models)} models.")
+    
+    return output_dir
