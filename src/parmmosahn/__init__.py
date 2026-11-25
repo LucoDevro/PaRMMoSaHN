@@ -6,7 +6,7 @@ __all__ = [
     "pangenome",
     "models",
     "curation",
-    "annotation",
+    "polish",
     "analysis",
     "results",
 ]

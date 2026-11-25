@@ -44,7 +44,7 @@ def _setup_logging(verbose: bool, quiet: bool) -> None:
 
     logging.basicConfig(
         level=level,
-        format="[%(asctime)s] %(levelname)s [%(filename)s: %(funcName)s] - %(message)s",
+        format="[%(asctime)s] %(levelname)s [%(name)s] %(message)s",
         datefmt = "%H:%M:%S",
         force=True,
     )
@@ -867,9 +867,9 @@ def evaluate(models, output, curation_template, workers, skip_existing):
         "reactions). Opt-in; default off. Unmapped IDs keep their SEED form."
     ),
 )
-def annotate(models, output, rename_to_bigg):
-    """Enrich model annotations for FAIR compliance (genes, reactions)."""
-    from parmmosahn.annotation import enrich_models_directory
+def polish(models, output, rename_to_bigg):
+    """Enrich model cross-ref annotations."""
+    from parmmosahn.polish import enrich_models_directory
 
     models_path = Path(models)
     output_path = Path(output)

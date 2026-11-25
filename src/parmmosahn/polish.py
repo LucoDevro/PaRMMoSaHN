@@ -14,6 +14,7 @@ from pathlib import Path
 import cobra
 
 logger = logging.getLogger(__name__)
+logging.getLogger("cobra.medium.boundary_types").setLevel(logging.WARNING)
 
 # Note: bare IDs in cobra's `annotation` dict (e.g. "glc__D") are wrapped into
 # MIRIAM identifiers.org URIs (e.g. https://identifiers.org/bigg.metabolite/glc__D)
@@ -494,89 +495,6 @@ def rename_to_bigg(
         counts["reactions_internal"] += 1
 
     return counts
-
-
-def enrich_model_annotations(
-    model_path: Path,
-    output_path: Path,
-    rename: bool = False,
-) -> dict[str, int]:
-    """Load an SBML model, enrich annotations, and write back.
-
-    Parameters
-    ----------
-    model_path : Path
-        Input SBML model file.
-    output_path : Path
-        Output SBML model file (can be same as input for in-place).
-
-    Returns
-    -------
-    dict summarizing counts: 'genes_ncbiprotein', 'reactions_brenda', 'reactions_rhea'.
-    """
-    model = cobra.io.read_sbml_model(str(model_path))
-
-    # Load bundled mappings once
-    seed_rhea = _load_tsv_mapping("seed_to_rhea.tsv")
-    mnxr_rhea = _load_tsv_mapping("mnxr_to_rhea.tsv")
-    seed_bigg = _load_tsv_mapping("seed_to_bigg.tsv")
-    seed_rxn_bigg = _load_tsv_mapping("seed_rxn_to_bigg.tsv") if rename else {}
-
-    gene_count = annotate_genes(model)
-    rxn_counts = annotate_reactions(model, seed_rhea=seed_rhea, mnxr_rhea=mnxr_rhea)
-    exch_count = annotate_exchanges(model, seed_bigg=seed_bigg)
-    met_count = annotate_metabolites(model, seed_bigg=seed_bigg)
-    sbo_counts = annotate_sbo_terms(model)
-    rename_counts = (
-        rename_to_bigg(model, seed_bigg=seed_bigg, seed_rxn_bigg=seed_rxn_bigg)
-        if rename
-        else {
-            "metabolites": 0,
-            "reactions_internal": 0,
-            "reactions_exchange": 0,
-            "collisions_skipped": 0,
-        }
-    )
-
-    summary = {
-        "genes_ncbiprotein": gene_count,
-        "reactions_brenda": rxn_counts["brenda"],
-        "reactions_rhea": rxn_counts["rhea"],
-        "exchanges_bigg": exch_count,
-        "metabolites_bigg": met_count,
-        "sbo_reactions": sbo_counts["reactions"],
-        "sbo_metabolites": sbo_counts["metabolites"],
-        "renamed_metabolites": rename_counts["metabolites"],
-        "renamed_reactions_internal": rename_counts["reactions_internal"],
-        "renamed_reactions_exchange": rename_counts["reactions_exchange"],
-        "rename_collisions_skipped": rename_counts["collisions_skipped"],
-    }
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    cobra.io.write_sbml_model(model, str(output_path))
-
-    log_parts = [
-        f"+{gene_count} ncbiprotein genes",
-        f"+{rxn_counts['brenda']} brenda",
-        f"+{rxn_counts['rhea']} rhea",
-        f"+{exch_count} bigg.reaction",
-        f"+{met_count} bigg.metabolite",
-        f"+{sbo_counts['reactions']} sbo reactions",
-        f"+{sbo_counts['metabolites']} sbo metabolites",
-    ]
-    if rename:
-        log_parts.append(
-            f"renamed {rename_counts['metabolites']} mets, "
-            f"{rename_counts['reactions_internal']} internal rxns, "
-            f"{rename_counts['reactions_exchange']} exchanges"
-            + (
-                f" ({rename_counts['collisions_skipped']} collisions skipped)"
-                if rename_counts["collisions_skipped"]
-                else ""
-            )
-        )
-    logger.info(f"{model_path.name}: " + ", ".join(log_parts))
-    return summary
 
 
 def enrich_models_directory(
