@@ -434,7 +434,6 @@ def extract_memote_problems(
 def _apply_duplicate_decisions(
     model: "Model",
     df_dupl: "pl.DataFrame",
-    stats: dict | None = None,
 ) -> int:
     """Apply duplicate reaction removal decisions from the curation DB.
 
@@ -444,10 +443,6 @@ def _apply_duplicate_decisions(
       2: Keep ID 2, drop ID 1
       3: Keep both (do nothing)
       blank: Skip and continue
-
-    When *stats* is given, each row's hit count is accumulated under the key
-    ``duplicate_reactions`` keyed by ``"<ID 1>|<ID 2>"`` so the orchestrator
-    can emit a per-row applicability report across strains.
 
     Returns:
         Number of reactions removed.
@@ -497,7 +492,6 @@ def _apply_formula_fixes(
     model: "Model",
     df_cur: "pl.DataFrame",
     model_name: str,
-    stats: dict | None = None,
 ) -> int:
     """Apply stoichiometric formula corrections from the curated_imbalances sheet.
 
@@ -535,14 +529,10 @@ def apply_curations(
     model_path: Path,
     curation_db_path: Path,
     output_dir: Path,
-    stats: dict | None = None,
 ) -> Path | None:
     """Read the curation database and apply all fixes to a specific strain model.
 
-    Orchestrates duplicate-reaction decisions and formula corrections. The public
-    signature is unchanged for callers that don't care about per-row stats;
-    pass *stats* (a shared dict) to accumulate per-row hit counts across
-    strains for downstream applicability reporting.
+    Orchestrates duplicate-reaction decisions and formula corrections.
 
     Skip-existing: if the output already exists it is returned untouched so a
     resumed run does not re-curate. The output is written atomically, so an
