@@ -869,7 +869,7 @@ def evaluate(models, output, curation_template, workers, skip_existing):
 )
 def polish(models, output, rename_to_bigg):
     """Enrich model cross-ref annotations."""
-    from parmmosahn.polish import enrich_models_directory
+    from parmmosahn.polish import polish_models
 
     models_path = Path(models)
     output_path = Path(output)
@@ -881,7 +881,7 @@ def polish(models, output, rename_to_bigg):
         click.echo("Rename: SEED -> BiGG primary IDs (--rename-to-bigg)")
 
     t_start = time.time()
-    enrich_models_directory(models_path, output_path, rename=rename_to_bigg)
+    polish_models(models_path, output_path, rename=rename_to_bigg)
     click.echo(
         f"Enriched models saved to {output_path} ({_format_elapsed(time.time() - t_start)} total)"
     )

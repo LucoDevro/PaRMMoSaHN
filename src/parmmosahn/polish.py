@@ -497,7 +497,7 @@ def rename_to_bigg(
     return counts
 
 
-def enrich_models_directory(
+def polish_models(
     models_dir: Path,
     output_dir: Path,
     proteomes_dir: Path | None = None,
