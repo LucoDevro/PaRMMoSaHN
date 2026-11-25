@@ -5,9 +5,7 @@ import logging
 import multiprocessing
 import os
 import re
-import subprocess
-import time
-from importlib.resources import as_file, files
+import warnings
 from pathlib import Path
 from typing import Any, Tuple, cast
 
@@ -454,30 +452,11 @@ def _apply_duplicate_decisions(
     Returns:
         Number of reactions removed.
     """
-    sheet_stats = None
-    if stats is not None:
-        sheet_stats = stats.setdefault("duplicate_reactions", {})
-
     changes_made = 0
     for row in df_dupl.iter_rows(named=True):
         decision = row.get("Decision")
         id1 = row.get("ID 1")
         id2 = row.get("ID 2")
-        row_key = f"{id1}|{id2}"
-        row_entry = (
-            sheet_stats.setdefault(
-                row_key,
-                {
-                    "id1": id1,
-                    "id2": id2,
-                    "decision": str(decision).strip() if decision is not None else "",
-                    "strains_hit": 0,
-                    "reactions_removed": 0,
-                },
-            )
-            if sheet_stats is not None
-            else None
-        )
 
         if decision is None or str(decision).strip() == "":
             continue
@@ -499,17 +478,17 @@ def _apply_duplicate_decisions(
             )
             continue
 
-        hit_this_strain = False
-        for rxn_id in to_drop:
-            if rxn_id and rxn_id in model.reactions:
-                rxn_to_drop = cast(Reaction, model.reactions.get_by_id(rxn_id))
-                rxn_to_drop.remove_from_model(remove_orphans=True)
-                changes_made += 1
-                if row_entry is not None:
-                    row_entry["reactions_removed"] += 1
-                hit_this_strain = True
-        if row_entry is not None and hit_this_strain:
-            row_entry["strains_hit"] += 1
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message = "need to pass in a list",
+                category = UserWarning,
+                )
+            for rxn_id in to_drop:
+                if rxn_id and rxn_id in model.reactions:
+                    rxn_to_drop = cast(Reaction, model.reactions.get_by_id(rxn_id))
+                    rxn_to_drop.remove_from_model(remove_orphans=True)
+                    changes_made += 1
 
     return changes_made
 
@@ -529,26 +508,10 @@ def _apply_formula_fixes(
     Returns:
         Number of reactions updated.
     """
-    sheet_stats = None
-    if stats is not None:
-        sheet_stats = stats.setdefault("curated_imbalances", {})
-
     changes_made = 0
     for row in df_cur.iter_rows(named=True):
         rxn_id = row.get("reaction_id")
         new_formula = row.get("new_formula")
-        row_entry = (
-            sheet_stats.setdefault(
-                str(rxn_id) if rxn_id is not None else "",
-                {
-                    "reaction_id": rxn_id,
-                    "new_formula": new_formula,
-                    "strains_hit": 0,
-                },
-            )
-            if sheet_stats is not None and rxn_id is not None
-            else None
-        )
 
         if rxn_id is None or new_formula is None or str(rxn_id) not in model.reactions:
             continue
@@ -560,8 +523,6 @@ def _apply_formula_fixes(
             try:
                 rxn.build_reaction_from_string(str(new_formula).strip())
                 changes_made += 1
-                if row_entry is not None:
-                    row_entry["strains_hit"] += 1
             except Exception as e:
                 logger.warning(
                     f"Could not apply new formula for {rxn_id} in {model_name}: {e}"
