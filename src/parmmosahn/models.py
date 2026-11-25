@@ -201,7 +201,7 @@ def filter_blast_table(
 def _process_single_strain(
     genome: Path,
     total_strains: int,
-    models_dir: Path,
+    models_workdir: Path,
     matches_dir: Path,
     db_file: Path,
     panmodel_rxn_table: Path,
@@ -217,7 +217,7 @@ def _process_single_strain(
 ) -> tuple[str, bool]:
     """Process a single strain end-to-end. Returns (strain_name, skipped)."""
     strain_name = genome.stem
-    strain_dir = models_dir / strain_name
+    strain_dir = models_workdir / strain_name
     strain_dir.mkdir(exist_ok=True)
     done_marker = strain_dir / ".done"
 
@@ -409,9 +409,10 @@ def derive_strain_models(
     # Create an isolated directory for processed proteomes
     matches_dir = output_dir / "matches"
     models_dir = output_dir / "models"
+    models_workdir = output_dir / "models_workdir"
     proteomes_dir = output_dir / "proteomes"
 
-    for d in [matches_dir, models_dir, proteomes_dir]:
+    for d in [matches_dir, models_workdir, proteomes_dir, models_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     # Collect both file types
@@ -527,7 +528,7 @@ def derive_strain_models(
                 _process_single_strain,
                 genome,
                 total_strains,
-                models_dir,
+                models_workdir,
                 matches_dir,
                 db_file,
                 panmodel_rxn_table,
@@ -562,6 +563,14 @@ def derive_strain_models(
             for f in futures:
                 f.cancel()
             raise
+            
+    # Step 4: Gather all generated models into one output folder
+    for strain_dir in models_workdir.iterdir():
+        strain = strain_dir.name
+        shutil.copy(
+            str(models_workdir / strain / strain) + '.xml',
+            str(models_dir / strain) + '.xml'
+            )
 
     if skipped:
         logger.info(
