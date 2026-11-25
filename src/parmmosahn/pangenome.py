@@ -287,7 +287,7 @@ def build_pangenome(
             {
                 "n_genomes": no_genomes,
                 "occurrence_threshold": occurrence_threshold,
-                "occurrence_override_used": occurrence_override is not None,
+                "occurrence_override_used": occurrence is not None,
                 "partitions": partitions,
                 "cluster_identity": cluster_id,
                 "cluster_coverage": cluster_cov,
