@@ -3,7 +3,12 @@ import re
 import shutil
 from pathlib import Path
 
-from parmmosahn.utils import ToolExecutionError, atomic_write_text, run_command
+from parmmosahn.utils import (
+    ToolExecutionError,
+    atomic_write_text,
+    run_command,
+    safe_init_output_dir,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -152,12 +157,8 @@ def build_pangenome(
     """
     genomes_dir = Path(genomes_dir)
     output_dir = Path(output_dir)
-    try:
-        output_dir.mkdir(parents=True, exist_ok = force)
-    except FileExistsError:
-        raise ToolExecutionError(
-            "Pangenome results folder already exists. Use --force to overwrite it."
-            )
+    
+    safe_init_output_dir(output_dir, force = force)
 
     annotations_list = output_dir / "annotations.list"
     h5_db = output_dir / "pangenome.h5"

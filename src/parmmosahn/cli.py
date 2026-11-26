@@ -878,7 +878,6 @@ def polish(models, output, rename_to_bigg, force):
 
 
 _DOCTOR_REQUIRED_TOOLS = ("ppanggolin", "gapseq", "diamond")
-_DOCTOR_ENGINES = ("docker", "podman", "apptainer")
 
 
 def _collect_doctor_report() -> dict:
@@ -899,7 +898,6 @@ def _collect_doctor_report() -> dict:
     resources = get_system_resources()
 
     required = {name: env[name] for name in _DOCTOR_REQUIRED_TOOLS}
-    engines = {name: env[name] for name in _DOCTOR_ENGINES}
 
     avail_gb = resources.get("available_ram_gb")
     memote_workers_recommended = (
@@ -907,17 +905,12 @@ def _collect_doctor_report() -> dict:
     )
 
     all_required_ok = all(info["found"] for info in required.values())
-    any_engine_ok = any(info["found"] for info in engines.values())
     all_data_ok = all(info["found"] for info in bundled.values())
 
     warnings: list[str] = []
     if not all_required_ok:
         warnings.append(
             "Some required external tools are missing. The pipeline will fail."
-        )
-    if not any_engine_ok:
-        warnings.append(
-            "No container engine found. ModelPolisher (Step 5b) will be skipped."
         )
     if avail_gb is not None and avail_gb < 8:
         warnings.append(
@@ -938,13 +931,11 @@ def _collect_doctor_report() -> dict:
     return {
         "parmmosahn_version": _pkg_version("parmmosahn"),
         "required_tools": required,
-        "container_engines": engines,
         "bundled_data": bundled,
         "host_resources": resources,
         "memote_workers_recommended": memote_workers_recommended,
         "checks": {
             "all_required_tools_ok": all_required_ok,
-            "any_container_engine_ok": any_engine_ok,
             "all_bundled_data_ok": all_data_ok,
         },
         "warnings": warnings,
@@ -963,14 +954,6 @@ def _render_doctor_text(report: dict) -> None:
             click.echo(f"  [OK]      {name}: {info['version']}  ({info['path']})")
         else:
             click.echo(f"  [MISSING] {name}: not found in PATH")
-
-    click.echo("\nContainer engines (at least one needed for ModelPolisher, Step 5b):")
-    for name in sorted(report["container_engines"]):
-        info = report["container_engines"][name]
-        if info["found"]:
-            click.echo(f"  [OK]  {name}: {info['version']}  ({info['path']})")
-        else:
-            click.echo(f"  [--]  {name}: not found")
 
     click.echo("\nBundled data files (annotation enrichment):")
     for name in sorted(report["bundled_data"]):

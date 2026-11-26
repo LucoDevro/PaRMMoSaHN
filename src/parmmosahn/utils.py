@@ -372,7 +372,7 @@ def check_bundled_data() -> dict[str, dict[str, Any]]:
 
 
 def check_environment() -> dict[str, dict[str, str | bool | None]]:
-    """Check for required external tools and container engines.
+    """Check for required external tools.
 
     Probes each tool with its ``--version`` flag (30 s timeout to accommodate
     Python-based tools like PPanGGOLiN that have slow startup import times).
@@ -384,9 +384,6 @@ def check_environment() -> dict[str, dict[str, str | bool | None]]:
         "ppanggolin": ["ppanggolin", "--version"],
         "gapseq": ["gapseq", "-v"],
         "diamond": ["diamond", "--version"],
-        "docker": ["docker", "--version"],
-        "podman": ["podman", "--version"],
-        "apptainer": ["apptainer", "--version"],
     }
 
     results: dict[str, dict[str, str | bool | None]] = {}
