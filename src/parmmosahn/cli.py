@@ -10,7 +10,7 @@ from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.results import gather_and_convert_models
 from parmmosahn.pangenome import build_pangenome
 from parmmosahn.curation import evaluate_models, extract_memote_problems
-from parmmosahn.utils import ToolExecutionError, format_elapsed
+from parmmosahn.utils import format_elapsed, safe_init_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +146,8 @@ def pan(genomes: Path | None,
         raise click.UsageError(
             "Missing required arguments: genomes and label must be provided"
         )
-        
-    output.mkdir(parents=True, exist_ok=True)
+    
+    safe_init_output_dir(output, force = force)
     click.echo(f"Building pangenome and pan-model '{label}'...")
     
     # --- STEP 1: Pangenome ---
@@ -166,7 +166,7 @@ def pan(genomes: Path | None,
     
     # --- STEP 2: Pan-model ---
     panmodel_out = output / "02-panmodel"
-    build_pan_model(included_fasta, panmodel_out, threads=threads)
+    build_pan_model(included_fasta, panmodel_out, threads=threads, force = force)
     
     logger.info(f"Pan-tasks complete! Pan-model saved to {panmodel_out}")
 
