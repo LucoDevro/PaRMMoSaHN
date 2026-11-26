@@ -1,16 +1,40 @@
 import logging
 import time
+import json
 import shutil
 from pathlib import Path
+from importlib.metadata import version as pkg_version
 
 import click
 
 from parmmosahn.pangenome import build_pangenome
 from parmmosahn.models import build_pan_model, derive_strain_models
-from parmmosahn.curation import evaluate_models, extract_memote_problems, apply_curations, init_curation_table
+from parmmosahn.curation import (
+    evaluate_models, 
+    extract_memote_problems, 
+    apply_curations, 
+    init_curation_table,
+    )
 from parmmosahn.polish import polish_models
 from parmmosahn.convert import convert_models
-from parmmosahn.utils import format_elapsed, safe_init_output_dir, get_default_threads, SpecialHelpOrder
+from parmmosahn.analysis import (
+    fba_summary, 
+    auxotrophy_screen, 
+    reaction_heatmap, 
+    validate_phenotypes, 
+    gene_essentiality, 
+    analyse_panreactome, 
+    find_dead_ends,
+    )
+from parmmosahn.utils import (
+    format_elapsed, 
+    safe_init_output_dir, 
+    get_default_threads, 
+    SpecialHelpOrder,
+    check_bundled_data,
+    check_environment,
+    get_system_resources,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +57,8 @@ def _setup_logging(verbose: bool, quiet: bool) -> None:
 
     # Suppress noisy cobra solver warnings that clutter output
     logging.getLogger("cobra.core.model").setLevel(logging.WARNING)
+    
+    return None
 
 
 @click.group(
@@ -67,7 +93,7 @@ def cli(ctx, verbose, quiet):
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
     _setup_logging(verbose, quiet)
-
+    
 
 @cli.command(help_priority = 1)
 @click.option(
@@ -174,6 +200,8 @@ def pan(genomes: Path | None,
     build_pan_model(included_fasta, panmodel_out, threads=threads, force = force)
     
     logger.info(f"Pan-tasks complete! Pan-model saved to {panmodel_out}")
+    
+    return None
 
 
 @cli.command(help_priority = 2)
@@ -299,6 +327,8 @@ def project(
         force = force,
     )
     
+    return None
+    
     
 @cli.command(help_priority = 3)
 @click.option(
@@ -353,6 +383,8 @@ def evaluate(models, output, excel, workers, force):
     if excel:
         extract_memote_problems(output_path, models_path, excel)
         click.echo(f"Curation template saved to {excel}")
+        
+    return None
     
 
 @cli.command(help_priority = 4)
@@ -377,6 +409,8 @@ def init_curation(output: Path, force: bool) -> None:
     logger.info(f"Writing curation template to {output_excel.name}...")
     
     init_curation_table(output_excel, force = force)
+    
+    return None
 
 
 @cli.command(help_priority = 5)
@@ -415,6 +449,8 @@ def curate(source_models, curated_models, db, force):
     """Curate a directory of models using an existing curation spreadsheet."""
     out = Path(curated_models)
     apply_curations(Path(source_models), Path(db), out, force = force)
+    
+    return None
 
 
 @cli.command(help_priority = 6)
@@ -464,6 +500,8 @@ def polish(models, output, rename_to_bigg, force):
     click.echo(
         f"Enriched models saved to {output_path} ({format_elapsed(time.time() - t_start)} total)"
     )
+    
+    return None
 
 
 @cli.command(help_priority = 7)
@@ -498,6 +536,8 @@ def convert(models, output, force):
     t_start = time.time()
     convert_models(models, output, force)
     click.echo(f"Done ({format_elapsed(time.time() - t_start)} total)")
+    
+    return None
 
 
 @cli.group(help_priority = 8)
@@ -536,7 +576,6 @@ def analyze():
 )
 def fba(models, output, medium, force):
     """Run FBA on each model and produce a comparative growth summary."""
-    from parmmosahn.analysis import fba_summary
 
     click.echo(f"Running FBA summary on models in {models}...")
     fba_summary(
@@ -545,6 +584,8 @@ def fba(models, output, medium, force):
         medium_path=Path(medium) if medium else None,
     )
     click.echo(f"FBA summary saved to {output}")
+    
+    return None
 
 
 @analyze.command()
@@ -584,8 +625,6 @@ def fba(models, output, medium, force):
 )
 def auxotrophy(models, output, medium, threshold, force):
     """Screen for auxotrophies by single-component medium knockouts."""
-    from parmmosahn.analysis import auxotrophy_screen
-
     click.echo(f"Running auxotrophy screen on models in {models}...")
     auxotrophy_screen(
         models_dir=Path(models),
@@ -594,6 +633,8 @@ def auxotrophy(models, output, medium, threshold, force):
         threshold=threshold,
     )
     click.echo(f"Auxotrophy screen saved to {output}")
+    
+    return None
 
 
 @analyze.command()
@@ -625,8 +666,6 @@ def auxotrophy(models, output, medium, threshold, force):
 )
 def heatmap(models, output, plot, force):
     """Build a reaction presence/absence matrix across strains."""
-    from parmmosahn.analysis import reaction_heatmap
-
     click.echo(f"Building reaction heatmap from models in {models}...")
     reaction_heatmap(
         models_dir=Path(models),
@@ -634,6 +673,8 @@ def heatmap(models, output, plot, force):
         plot=plot,
     )
     click.echo(f"Reaction matrix saved to {output}")
+    
+    return None
 
 
 #TODO: to be revisited
@@ -682,10 +723,8 @@ def heatmap(models, output, plot, force):
 )
 def panreactome(models, output, plot, core_threshold, cloud_threshold, force):
     """Characterize the pan-reactome: core/accessory/unique reactions, Jaccard similarity, accumulation curve."""
-    from parmmosahn.analysis import panreactome as panreactome_fn
-
     click.echo(f"Analyzing pan-reactome from models in {models}...")
-    panreactome_fn(
+    analyse_panreactome(
         models_dir=Path(models),
         output_path=Path(output),
         plot=plot,
@@ -693,6 +732,8 @@ def panreactome(models, output, plot, core_threshold, cloud_threshold, force):
         cloud_threshold=cloud_threshold,
     )
     click.echo(f"Pan-reactome analysis saved alongside {output}")
+    
+    return None
 
 
 @analyze.command(name="dead-ends")
@@ -718,11 +759,11 @@ def panreactome(models, output, plot, core_threshold, cloud_threshold, force):
 )
 def dead_ends(models, output, force):
     """Report dead-end metabolites and fully-blocked reactions in each model."""
-    from parmmosahn.analysis import prune_report as prune_report_fn
-
     click.echo(f"Building dead-ends report from models in {models}...")
-    prune_report_fn(models_dir=Path(models), output_path=Path(output))
+    find_dead_ends(models_dir=Path(models), output_path=Path(output))
     click.echo(f"Dead-ends report saved to {output}")
+    
+    return None
 
 
 @analyze.command()
@@ -770,8 +811,6 @@ def dead_ends(models, output, force):
 )
 def validate(models, phenotypes, output, medium, threshold, force):
     """Validate model predictions against experimental growth phenotypes."""
-    from parmmosahn.analysis import validate_phenotypes
-
     click.echo(f"Validating models in {models} against {phenotypes}...")
     validate_phenotypes(
         models_dir=Path(models),
@@ -781,6 +820,8 @@ def validate(models, phenotypes, output, medium, threshold, force):
         threshold=threshold,
     )
     click.echo(f"Validation results saved to {output}")
+    
+    return None
 
 
 @analyze.command()
@@ -829,8 +870,6 @@ def validate(models, phenotypes, output, medium, threshold, force):
 )
 def essentiality(models, output, medium, essential_fraction, min_wt_growth, force):
     """Predict essential genes via single knockout FBA."""
-    from parmmosahn.analysis import gene_essentiality
-
     click.echo(f"Running gene essentiality analysis on models in {models}...")
     gene_essentiality(
         models_dir=Path(models),
@@ -840,6 +879,8 @@ def essentiality(models, output, medium, essential_fraction, min_wt_growth, forc
         min_wt_growth=min_wt_growth,
     )
     click.echo(f"Gene essentiality predictions saved to {output}")
+    
+    return None
 
 
 _DOCTOR_REQUIRED_TOOLS = ("ppanggolin", "gapseq", "diamond")
@@ -852,12 +893,6 @@ def _collect_doctor_report() -> dict:
     modes from drifting and makes the JSON shape testable independently of
     the human-readable layout.
     """
-    from parmmosahn.utils import (
-        check_bundled_data,
-        check_environment,
-        get_system_resources,
-    )
-
     env = check_environment()
     bundled = check_bundled_data()
     resources = get_system_resources()
@@ -891,10 +926,8 @@ def _collect_doctor_report() -> dict:
             "or rebuild the wheel."
         )
 
-    from importlib.metadata import version as _pkg_version
-
     return {
-        "parmmosahn_version": _pkg_version("parmmosahn"),
+        "parmmosahn_version": pkg_version("parmmosahn"),
         "required_tools": required,
         "bundled_data": bundled,
         "host_resources": resources,
@@ -951,6 +984,8 @@ def _render_doctor_text(report: dict) -> None:
         click.echo("All required tools are available.")
     for w in report["warnings"]:
         click.echo(f"WARNING: {w}")
+        
+    return None
 
 
 @cli.command(help_priority = 9)
@@ -966,13 +1001,13 @@ def _render_doctor_text(report: dict) -> None:
 )
 def doctor(json_out: bool):
     """Check for required external tools and report their versions."""
-    import json as _json
-
     report = _collect_doctor_report()
     if json_out:
-        click.echo(_json.dumps(report, indent=2, sort_keys=True, default=str))
+        click.echo(json.dumps(report, indent=2, sort_keys=True, default=str))
     else:
         _render_doctor_text(report)
+        
+    return None
 
 
 def main():

@@ -9,6 +9,8 @@ import time
 import warnings
 from pathlib import Path
 from typing import Any, Tuple, cast
+from xlsxwriter import Workbook
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cobra as cb
 import polars as pl
@@ -23,7 +25,9 @@ from parmmosahn.utils import (
     format_elapsed,
     safe_init_output_dir,
     safe_init_output_file,
+    get_system_resources,
     )
+
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +62,14 @@ def init_curation_table(output_excel: Path, force: bool = False) -> None:
         schema=["reaction_id", "name", "Imbalance", "Reason to leave intact", "Comment"]
     )
     
-    from xlsxwriter import Workbook
-
     with Workbook(str(output_excel)) as wb:
         _excel_safe_df(df_dupl).write_excel(
             workbook=wb, worksheet="duplicate_reactions"
         )
         _excel_safe_df(df_imb).write_excel(workbook=wb, worksheet="curated_imbalances")
         df_ign.write_excel(workbook=wb, worksheet="ignored_imbalances")
+        
+    return None
 
 
 # ==========================================
@@ -128,6 +132,8 @@ def _run_memote_snapshot_inprocess(
         with tmp_json.open("w", encoding="utf-8") as f:
             f.write(cast(str, json_report))
         tmp_json.replace(output_json)
+        
+    return None
 
 
 def run_memote_snapshot(
@@ -227,6 +233,8 @@ def _cleanup_partial_outputs(output_json: Path, output_html: Path) -> None:
         tmp = path.with_suffix(path.suffix + ".tmp")
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
+            
+    return None
 
 
 def _excel_safe_df(df: "pl.DataFrame") -> "pl.DataFrame":
@@ -422,14 +430,14 @@ def extract_memote_problems(
     # Using xlsxwriter engine in Polars to write multiple sheets efficiently.
     # The Workbook must be created explicitly; passing a path to write_excel
     # can auto-close the workbook after the first sheet.
-    from xlsxwriter import Workbook
-
     with Workbook(str(output_excel)) as wb:
         _excel_safe_df(df_dupl).write_excel(
             workbook=wb, worksheet="duplicate_reactions"
         )
         _excel_safe_df(df_imb).write_excel(workbook=wb, worksheet="curated_imbalances")
         df_ign.write_excel(workbook=wb, worksheet="ignored_imbalances")
+        
+    return None
         
         
 def evaluate_models(models, output, workers, force) -> int:
@@ -457,8 +465,6 @@ def evaluate_models(models, output, workers, force) -> int:
     # hosts (e.g. default WSL2 caps) requesting too many workers triggers
     # BrokenProcessPool errors. Suggest a safer count instead of letting the
     # pool fail mid-run. See suggestions_code.md §5.
-    from parmmosahn.utils import get_system_resources
-
     resources = get_system_resources()
     avail_gb = resources.get("available_ram_gb")
     if avail_gb is not None and workers > 1:
@@ -478,8 +484,6 @@ def evaluate_models(models, output, workers, force) -> int:
     # Threads orchestrate; each task delegates to run_memote_snapshot which
     # spawns its own subprocess (subprocess_mode=True by default), so memory
     # is reclaimed per strain even though the outer pool is thread-based.
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     futures = {}
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for xml in todo:

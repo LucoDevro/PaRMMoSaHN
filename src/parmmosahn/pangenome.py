@@ -25,6 +25,8 @@ def _summarize_ppanggolin_log(log_path: Path) -> None:
             f"(see {log_path})"
         )
     logger.info(f"Full PPanGGOLiN output saved to {log_path}")
+    
+    return None
 
 
 def _parse_genome_count(info_output: str | None) -> int:
@@ -48,6 +50,7 @@ def _parse_genome_count(info_output: str | None) -> int:
             digits = re.search(r"(\d[\d,]*)", line)
             if digits:
                 return int(digits.group(1).replace(",", ""))
+            
     return 0
 
 
@@ -56,6 +59,7 @@ def get_genbank_files(genomes_dir: Path) -> list[Path]:
     files: list[Path] = []
     for ext in ["*.gbff", "*.gbk", "*.gb"]:
         files.extend(genomes_dir.glob(ext))
+        
     return files
 
 
@@ -103,6 +107,7 @@ def clean_genbank_files(genomes_dir: Path, work_dir: Path | None = None) -> list
             f"Cleaned {n_cleaned} GenBank file(s) into {work_dir} "
             f"(originals left untouched)."
         )
+        
     return result
 
 
@@ -121,6 +126,8 @@ def create_annotations_list(
     with output_list.open("w", encoding="utf-8") as f:
         for gb in gb_files:
             f.write(f"{gb.name}\t{gb.resolve()}\n")
+            
+    return None
 
 
 def build_pangenome(

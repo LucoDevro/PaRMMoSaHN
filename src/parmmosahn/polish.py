@@ -79,6 +79,7 @@ def _core_to_bakta_protein_id(core: str) -> str:
         accession = f"{parts[0]}_{parts[1]}.{parts[2]}"
         locus = "_".join(parts[3:])
         return f"gnl|Bakta|{accession}_{locus}"
+    
     return f"gnl|Bakta|{core}"
 
 
@@ -91,6 +92,7 @@ def load_gene_mapping(tsv_path: Path) -> dict[str, str]:
         parts = line.split("\t", 1)
         if len(parts) == 2:
             mapping[parts[0]] = parts[1]
+            
     return mapping
 
 
@@ -115,6 +117,7 @@ def _load_tsv_mapping(tsv_name: str) -> dict[str, str]:
         for row in reader:
             if len(row) >= 2:
                 mapping[row[0]] = row[1]
+                
     return mapping
 
 
@@ -195,6 +198,7 @@ def annotate_genes(
             "Bakta-style. Ensure .gene_mapping.tsv files exist in the "
             "proteomes/ directory (generated from GenBank db_xref fields)."
         )
+        
     return count
 
 
@@ -381,6 +385,7 @@ def _pick_bigg_reaction_id(
     m = _SEED_RXN_RE.match(rxn.id)
     if not m:
         return None
+    
     return seed_rxn_bigg.get(m.group(1))
 
 

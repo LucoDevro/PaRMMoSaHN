@@ -3,16 +3,26 @@ Optional analysis extensions for PaRMMoSaHN models.
 
 Provides comparative FBA summaries, auxotrophy screening, and reaction
 presence/absence heatmaps.  All functions work on directories of SBML models
-produced by the main pipeline and write plain TSV files.  Plotting requires
-the optional ``viz`` dependency group (matplotlib + seaborn).
+produced by the main pipeline and write plain TSV files.
 """
 
 import logging
+import random
+import polars as pl
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from scipy.cluster.hierarchy import dendrogram, linkage
+from scipy.spatial.distance import squareform
+
 import cobra as cb
 from cobra.core import Model, Solution
+from cobra.flux_analysis import single_gene_deletion
 
 from parmmosahn.utils import safe_init_output_file
 
@@ -65,8 +75,6 @@ def _safe_optimize(model: Model, name: str) -> Optional[Solution]:
 
 def _apply_medium_csv(model: Model, medium_path: Path) -> None:
     """Override a model's medium from a two-column CSV (exchange_id, flux)."""
-    import polars as pl
-
     df = pl.read_csv(medium_path)
     cols = df.columns
     medium: dict[str, float] = {}
@@ -91,6 +99,8 @@ def _apply_medium_csv(model: Model, medium_path: Path) -> None:
             f"{getattr(model, 'id', '?')} — skipped"
         )
     model.medium = medium
+    
+    return None
 
 
 _TRUTHY = {"1", "true", "t", "yes", "y", "+"}
@@ -180,6 +190,7 @@ def fba_summary(
 
     output_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     logger.info(f"FBA summary written to {output_path}")
+    
     return output_path
 
 
@@ -355,8 +366,8 @@ def reaction_heatmap(
 # 4. Pan-reactome Characterization
 # ---------------------------------------------------------------------------
 
-
-def panreactome(
+# TODO: to revisit
+def analyse_panreactome(
     models_dir: Path,
     output_path: Path,
     plot: bool = False,
@@ -504,8 +515,6 @@ def panreactome(
     jaccard_path.write_text("\n".join(jac_rows) + "\n", encoding="utf-8")
 
     # --- Accumulation curve ---
-    import random
-
     # Average over multiple random orderings for a smoother curve
     n_permutations = min(100, max(10, n_strains * 5))
     accum_sums = [0.0] * n_strains
@@ -544,21 +553,6 @@ def _plot_dendrogram(
     Reads the pairwise Jaccard matrix already written to *jaccard_tsv* rather
     than recomputing all O(N^2) set intersections a second time.
     """
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import numpy as np
-        from scipy.cluster.hierarchy import dendrogram, linkage
-        from scipy.spatial.distance import squareform
-    except ImportError:
-        logger.warning(
-            "matplotlib/scipy not installed — skipping dendrogram. "
-            "Install with: pip install 'parmmosahn[viz]' scipy"
-        )
-        return jaccard_tsv
-
     n = len(strain_names)
     # Reuse the similarities on disk: row order matches strain_names (panreactome
     # writes the matrix in the same order). distance = 1 - jaccard similarity.
@@ -584,6 +578,7 @@ def _plot_dendrogram(
     plt.close(fig)
 
     logger.info(f"Dendrogram saved to {png_path}")
+    
     return png_path
 
 
@@ -630,8 +625,6 @@ def validate_phenotypes(
     -------
     Path to the results TSV.
     """
-    import polars as pl
-
     safe_init_output_file(output_path, force = force)
 
     # --- Parse phenotype data ---
@@ -819,8 +812,6 @@ def gene_essentiality(
     -------
     Path to the written TSV.
     """
-    from cobra.flux_analysis import single_gene_deletion
-
     safe_init_output_file(output_path, force = force)
 
     rows: list[str] = ["strain\tgene\twt_growth\tko_growth\tessential"]
@@ -867,6 +858,7 @@ def gene_essentiality(
 
     output_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     logger.info(f"Gene essentiality predictions written to {output_path}")
+    
     return output_path
 
 
@@ -878,13 +870,6 @@ def _plot_heatmap(
     force: bool = False,
 ) -> Path:
     """Render a clustered heatmap PNG from the reaction matrix."""
-    import matplotlib
-
-    matplotlib.use("Agg")  # Non-interactive backend
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import seaborn as sns
-    
     safe_init_output_file(plot_path)
 
     # Build numpy array
@@ -915,6 +900,7 @@ def _plot_heatmap(
     plt.close(g.figure)
 
     logger.info(f"Heatmap saved to {plot_path}")
+    
     return plot_path
 
 
@@ -947,27 +933,16 @@ def _classify_dead_end(metabolite) -> tuple[int, int]:
                 consumers += 1
             elif coef < 0:
                 producers += 1
+                
     return producers, consumers
 
 
-def prune_report(
+def find_dead_ends(
     models_dir: Path,
     output_path: Path,
     force: bool = False
 ) -> Path:
     """Report dead-end metabolites + unambiguously-blocked reactions per model.
-
-    Dry-run analogue of the future ``parmmosahn prune`` command: walks
-    each strain SBML and identifies the metabolites that have either
-    zero producers or zero consumers under their reactions' reversibility
-    bounds (the structural source of the ~42 % blocked-fraction baseline
-    documented in A9 Phase A). Also flags reactions whose participants are
-    all dead-end metabolites — those are guaranteed-prunable without
-    affecting any connected pathway.
-
-    **Writes no SBML files**; produces a TSV report only. The actual
-    pruning step is B2 in the v0.3 roadmap and requires per-reaction FBA
-    rollback logic that is out of scope for the thesis-safe v0.3-prep work.
 
     Output columns:
 
@@ -1057,5 +1032,6 @@ def prune_report(
         cobra_logger.setLevel(prev_level)
 
     output_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    logger.info(f"Prune dry-run report written to {output_path}")
+    logger.info(f"Dead-ends report written to {output_path}")
+    
     return output_path

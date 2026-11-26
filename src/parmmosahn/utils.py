@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import os
+import re
 import platform
 import shutil
 import subprocess
@@ -10,6 +11,7 @@ import click
 from collections import deque
 from pathlib import Path
 from typing import Any, Generator
+from importlib.resources import as_file, files
 
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -29,6 +31,7 @@ class SpecialHelpOrder(click.Group):
     def __init__(self, *args, **kwargs):
         self.help_priorities = {}
         super().__init__(*args, **kwargs)
+        
 
     def list_commands(self, ctx):
         """reorder the list of commands when listing the help"""
@@ -50,6 +53,7 @@ class SpecialHelpOrder(click.Group):
             return cmd
 
         return decorator
+    
     
     def group(self, *args, **kwargs):
         """Like click.Group.group(), but also accepts help_priority."""
@@ -84,6 +88,7 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> Path:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp)
         raise
+        
     return path
 
 
@@ -96,6 +101,8 @@ def safe_init_output_dir(output: Path | str, force: bool = False) -> None:
             f'Output folder {output_path} already exists! Use --force to overwrite it.'
             )
         
+    return None
+        
         
 def safe_init_output_file(output_file: Path | str, force: bool = False) -> None:
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -103,6 +110,8 @@ def safe_init_output_file(output_file: Path | str, force: bool = False) -> None:
         raise FileExistsError(
             f'Output file {output_file} already exists! Use --force to overwrite it.'
             )
+        
+    return None
         
         
 def get_default_threads() -> int:
@@ -365,8 +374,6 @@ def extract_gene_id_mapping(gbff_path: Path, output_tsv: Path) -> Path:
 
 def _extract_version(output: str) -> str:
     """Return the first line that looks like a version string, else the first non-empty line."""
-    import re
-
     lines = [l.strip() for l in output.splitlines() if l.strip()]
     # Prefer a line that contains a semver-like pattern (e.g. '2.2.6', 'v1.4.2')
     version_pattern = re.compile(r"\bv?\d+\.\d+")
@@ -387,8 +394,6 @@ def check_bundled_data() -> dict[str, dict[str, Any]]:
     ``parmmosahn doctor`` after install surfaces this before any
     pipeline work is done.
     """
-    from importlib.resources import as_file, files
-
     required = (
         "mnxr_to_rhea.tsv",
         "seed_to_rhea.tsv",
@@ -416,6 +421,7 @@ def check_bundled_data() -> dict[str, dict[str, Any]]:
         except (FileNotFoundError, ModuleNotFoundError):
             pass
         results[name] = info
+        
     return results
 
 

@@ -198,6 +198,8 @@ def filter_blast_table(
     lf_filtered.collect().write_csv(
         output_file, separator="\t", null_value="NA", quote_style="never"
     )
+    
+    return None
 
 
 def _process_single_strain(
