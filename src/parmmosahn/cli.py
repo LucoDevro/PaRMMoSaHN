@@ -1,27 +1,18 @@
 import logging
-import os
 import time
+import shutil
 from pathlib import Path
 
 import click
 
-from parmmosahn.curation import apply_curations, init_curation_table
-from parmmosahn.models import build_pan_model, derive_strain_models
-from parmmosahn.results import gather_and_convert_models
 from parmmosahn.pangenome import build_pangenome
-from parmmosahn.curation import evaluate_models, extract_memote_problems
-from parmmosahn.utils import format_elapsed, safe_init_output_dir
+from parmmosahn.models import build_pan_model, derive_strain_models
+from parmmosahn.curation import evaluate_models, extract_memote_problems, apply_curations, init_curation_table
+from parmmosahn.polish import polish_models
+from parmmosahn.convert import convert_models
+from parmmosahn.utils import format_elapsed, safe_init_output_dir, get_default_threads, SpecialHelpOrder
 
 logger = logging.getLogger(__name__)
-
-
-def get_default_threads() -> int:
-    """Default to 75 % of available CPU cores (minimum 1)."""
-    cpus = os.cpu_count()
-    return max(1, int(cpus * 0.75)) if cpus else 1
-
-
-_DEFAULT_THREADS = get_default_threads()
 
 
 def _setup_logging(verbose: bool, quiet: bool) -> None:
@@ -46,13 +37,24 @@ def _setup_logging(verbose: bool, quiet: bool) -> None:
 
 @click.group(
     context_settings=dict(
+        max_content_width = shutil.get_terminal_size().columns - 10,
         help_option_names=["-h", "--help"],
         auto_envvar_prefix="PARMMOSAHN",
-    )
+    ),
+    cls = SpecialHelpOrder,
+)
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    help="Only show warnings and errors."
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Show debug-level output."
 )
 @click.version_option(None, "-v", "--version")
-@click.option("--verbose", is_flag=True, help="Show debug-level output.")
-@click.option("-q", "--quiet", is_flag=True, help="Only show warnings and errors.")
 @click.pass_context
 def cli(ctx, verbose, quiet):
     """
@@ -67,7 +69,7 @@ def cli(ctx, verbose, quiet):
     _setup_logging(verbose, quiet)
 
 
-@cli.command()
+@cli.command(help_priority = 1)
 @click.option(
     "-g",
     "--genomes",
@@ -78,7 +80,7 @@ def cli(ctx, verbose, quiet):
 @click.option(
     "-o",
     "--output",
-    default=".",
+    default="output",
     type=click.Path(),
     show_default=True,
     help="Target base directory for pan-related output (creates 01-pangenome/ and 02-panmodel/ inside).",
@@ -86,12 +88,14 @@ def cli(ctx, verbose, quiet):
 @click.option(
     "-l",
     "--label",
-    required=True,
-    help="A descriptive label for the pangenome (e.g., 'clostridiales').",
+    default='reference',
+    show_default=True,
+    help="A descriptive label for the pangenome.",
 )
 @click.option(
     '-i',
     '--identity',
+    'cluster_id',
     default = 0.8,
     help = "Identity threshold for the gene family clustering by PPanGGOLiN",
     show_default = True,
@@ -99,21 +103,15 @@ def cli(ctx, verbose, quiet):
 @click.option(
     '-c',
     '--coverage',
+    'cluster_cov',
     default = 0.6,
     help = "Coverage threshold for the gene family clustering by PPanGGOLiN",
     show_default = True,
 )
 @click.option(
-    "-t",
-    "--threads",
-    default=_DEFAULT_THREADS,
-    show_default=True,
-    help="Number of CPU threads to allocate.",
-)
-@click.option(
     "--add-small",
     is_flag=True,
-    help="Whether to add genes of small gene families (occurrence below threshold) to the pan-model. This can increase coverage but may add noise.",
+    help="Add genes of small gene families (with occurrence below threshold) to the panmodel. This can increase reaction coverage but may add noise.",
 )
 @click.option(
     "--occurrence",
@@ -124,6 +122,13 @@ def cli(ctx, verbose, quiet):
         "Override the default gene family occurrence threshold (fraction 0–1). "
         "Default is 2/n_genomes."
     ),
+)
+@click.option(
+    "-t",
+    "--threads",
+    default=get_default_threads(),
+    show_default=True,
+    help="Number of CPU threads to allocate.",
 )
 @click.option(
     '-f',
@@ -141,7 +146,7 @@ def pan(genomes: Path | None,
         occurrence: float | None = None,
         force: bool = False,
         ):
-    """Step 1 & 2: Construct the partitioned pangenome and build the pan-model."""
+    """Construct the pangenome and build the panmodel."""
     if genomes is None or label is None:
         raise click.UsageError(
             "Missing required arguments: genomes and label must be provided"
@@ -171,29 +176,30 @@ def pan(genomes: Path | None,
     logger.info(f"Pan-tasks complete! Pan-model saved to {panmodel_out}")
 
 
-@cli.command()
+@cli.command(help_priority = 2)
 @click.option(
-    "-g",
-    "--genomes",
+    "-sg",
+    "--strains",
     type=click.Path(exists=True),
     help="Directory of strain genome files (.gbff or .faa format).",
 )
 @click.option(
-    "-r",
+    "-rf",
     "--reference",
     type=click.Path(exists=True),
     help="Path to the PPanGGOLiN representatives FASTA file.",
 )
 @click.option(
-    "-p",
-    "--panmodel-rxns",
+    "-pr",
+    "--panmodel",
+    'panmodel_rxns',
     type=click.Path(exists=True),
-    help="Path to the pan-model reaction table file.",
+    help="Path to the panmodel reaction table.",
 )
 @click.option(
     "-o",
     "--output",
-    default="03-strain_models",
+    default="output/03-strain_models",
     type=click.Path(),
     show_default=True,
     help="Target directory for the generated strain-specific draft models.",
@@ -202,14 +208,27 @@ def pan(genomes: Path | None,
     "-m",
     "--medium",
     type=click.Path(exists=True),
-    help="Path to the media CSV file used for gapfilling.",
+    help="Medium CSV file used for gapfilling.",
 )
 @click.option(
-    "-t",
-    "--threads",
-    default=_DEFAULT_THREADS,
+    "--strain-bits",
+    default=150,
     show_default=True,
-    help="Number of CPU threads to allocate.",
+    help="Minimum bitscore threshold for DIAMOND homolog detection in the projected strains.",
+)
+@click.option(
+    "--pan-bits",
+    default=150,
+    show_default=True,
+    help="Minimum bitscore threshold for gapseq panmodel pathway/transport identification.",
+)
+@click.option(
+    "--biomass",
+    default="pos",
+    type = click.Choice(['pos', 'neg']),
+    show_default=True,
+    show_choices=True,
+    help="Biomass type for gapseq draft model generation ('pos' or 'neg').",
 )
 @click.option(
     "--no-gapfill",
@@ -217,28 +236,18 @@ def pan(genomes: Path | None,
     help = "Do not gapfill the projected models",
 )
 @click.option(
-    "--strain-bits",
-    default=150,
+    "-t",
+    "--threads",
+    default=get_default_threads(),
     show_default=True,
-    help="Minimum bitscore threshold for DIAMOND blastp alignment.",
+    help="Number of CPU threads to allocate.",
 )
 @click.option(
-    "--pan-bits",
-    default=150,
-    show_default=True,
-    help="Minimum bitscore threshold for gapseq pathway/transport searches.",
-)
-@click.option(
-    "--biomass",
-    default="pos",
-    show_default=True,
-    help="Biomass reaction type for gapseq draft model generation (e.g. 'pos', 'neg').",
-)
-@click.option(
-    "--parallel-strains",
+    '-w',
+    "--workers",
     default=None,
     type=int,
-    help="Number of strains to process concurrently. Default: threads//4 (auto). Each worker peaks at ~1.5 GB RAM.",
+    help="Number of concurrent workers. Default: threads//4. Account for ~1.5 GB RAM per worker.",
 )
 @click.option(
     '-f',
@@ -247,7 +256,7 @@ def pan(genomes: Path | None,
     help = "Overwrite existing output"
 )
 def project(
-    genomes,
+    strains,
     reference,
     panmodel_rxns,
     output,
@@ -257,14 +266,14 @@ def project(
     strain_bits,
     pan_bits,
     biomass,
-    parallel_strains,
+    workers,
     force
 ):
-    """Step 3: Derive strain-specific models by homology matches."""
+    """Project strain-specific models from the panmodel by homology matches."""
     click.echo("Deriving strain models...")
 
     missing_args = []
-    if genomes is None:
+    if strains is None:
         missing_args.append("genomes")
     if reference is None:
         missing_args.append("fasta")
@@ -276,7 +285,7 @@ def project(
         raise click.UsageError("Missing required arguments: " + ", ".join(missing_args))
 
     derive_strain_models(
-        genomes_dir=Path(genomes),
+        genomes_dir=Path(strains),
         pangenome_fasta=Path(reference),
         panmodel_rxn_table=Path(panmodel_rxns),
         output_dir=Path(output),
@@ -286,18 +295,73 @@ def project(
         strain_bits=strain_bits,
         pan_bits=pan_bits,
         biomass=biomass,
-        parallel_strains=parallel_strains,
+        parallel_strains=workers,
         force = force,
     )
     
     
-@cli.command()
+@cli.command(help_priority = 3)
+@click.option(
+    "-i",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Input directory containing SBML models (.xml) to evaluate.",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(),
+    help="Output directory for memote reports (HTML + JSON).",
+)
+@click.option(
+    '-e',
+    "--excel",
+    default = None,
+    show_default=True,
+    help="Path to optional curation Excel prefilled with memote results.",
+)
+@click.option(
+    '-w',
+    "--workers",
+    default=1,
+    show_default=True,
+    type=int,
+    help="Number of concurrent workers. Memote uses ~6 threads per worker internally.",
+)
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def evaluate(models, output, excel, workers, force):
+    """Run memote evaluation for a directory of models."""
+    models_path = Path(models)
+    output_path = Path(output)
+    
+    t_start = time.time()
+    failed = evaluate_models(models, output, workers, force)
+    click.echo(
+        f"Memote reports saved to {output_path} ({format_elapsed(time.time() - t_start)} total)"
+    )
+    
+    if failed:
+        click.echo(f"{failed} model(s) failed memote evaluation.")
+
+    if excel:
+        extract_memote_problems(output_path, models_path, excel)
+        click.echo(f"Curation template saved to {excel}")
+    
+
+@cli.command(help_priority = 4)
 @click.option(
     "-o",
     "--output",
     required = True,
     type = click.Path(),
-    help = "Path to write the empty curation DB to."
+    help = "Output path for the empty curation DB."
 )
 @click.option(
     '-f',
@@ -307,7 +371,7 @@ def project(
 )
 def init_curation(output: Path, force: bool) -> None:
     """
-    Write an empty PaRMMoSaHN curation DB.
+    Write an empty curation spreadsheet.
     """
     output_excel = Path(output)
     logger.info(f"Writing curation template to {output_excel.name}...")
@@ -315,10 +379,11 @@ def init_curation(output: Path, force: bool) -> None:
     init_curation_table(output_excel, force = force)
 
 
-@cli.command()
+@cli.command(help_priority = 5)
 @click.option(
-    "-s",
-    "--source-models",
+    "-i",
+    "--input",
+    'source_models',
     required=True,
     type=click.Path(exists=True),
     help="Path to the input draft SBML model (.xml).",
@@ -333,11 +398,12 @@ def init_curation(output: Path, force: bool) -> None:
     "the source model).",
 )
 @click.option(
-    "-d",
-    "--db",
+    "-e",
+    "--excel",
+    'db',
     required=True,
     type=click.Path(exists=True),
-    help="Path to the Excel Curation Database containing curated reactions.",
+    help="Excel curation database with manual curations.",
 )
 @click.option(
     '-f',
@@ -346,26 +412,35 @@ def init_curation(output: Path, force: bool) -> None:
     help = "Overwrite existing output"
 )
 def curate(source_models, curated_models, db, force):
-    """Step 4: Apply curation database rules to a specific model."""
+    """Curate a directory of models using an existing curation spreadsheet."""
     out = Path(curated_models)
     apply_curations(Path(source_models), Path(db), out, force = force)
 
 
-@cli.command()
+@cli.command(help_priority = 6)
 @click.option(
-    "-M",
+    "-i",
     "--models",
     required=True,
     type=click.Path(exists=True),
-    help="Directory containing the final SBML models.",
+    help="Directory containing SBML models (.xml) to polish.",
 )
 @click.option(
     "-o",
     "--output",
-    default="06-final_models",
+    required=True,
     type=click.Path(),
-    show_default=True,
-    help="Target directory for the exported output formats (JSON/MATLAB).",
+    help="Directory for the polished models.",
+)
+@click.option(
+    "--bigg",
+    'rename_to_bigg',
+    is_flag=True,
+    show_default=False,
+    help=(
+        "After polishing, translate SEED IDs to "
+        "BiGG IDs where possible. Unmapped IDs keep their SEED form."
+    ),
 )
 @click.option(
     '-f',
@@ -373,19 +448,59 @@ def curate(source_models, curated_models, db, force):
     is_flag=True,
     help = "Overwrite existing output"
 )
-def gather(models, output, force):
-    """Step 6: Gather models and convert to JSON/MATLAB formats."""
+def polish(models, output, rename_to_bigg, force):
+    """Polish a folder of models by enriching cross-refs."""
+    models_path = Path(models)
+    output_path = Path(output)
+
+    xml_count = len(list(models_path.rglob("*.xml")))
+    click.echo(f"Input:  {models_path} ({xml_count} models)")
+    click.echo(f"Output: {output_path}")
+    if rename_to_bigg:
+        click.echo("Rename: SEED -> BiGG primary IDs (--rename-to-bigg)")
+
+    t_start = time.time()
+    polish_models(models_path, output_path, rename=rename_to_bigg, force = force)
+    click.echo(
+        f"Enriched models saved to {output_path} ({format_elapsed(time.time() - t_start)} total)"
+    )
+
+
+@cli.command(help_priority = 7)
+@click.option(
+    "-i",
+    "--models",
+    required=True,
+    type=click.Path(exists=True),
+    help="Folder containing SBML models.",
+)
+@click.option(
+    "-o",
+    "--output",
+    default="output/models",
+    type=click.Path(),
+    show_default=True,
+    help="Target folder for the new output formats (JSON/MATLAB).",
+)
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def convert(models, output, force):
+    """Convert models to JSON and MATLAB formats."""
     models_path = Path(models)
     xml_count = len(list(models_path.rglob("*.xml")))
     click.echo(f"Input:  {models_path} ({xml_count} models)")
     click.echo(f"Output: {output}")
 
     t_start = time.time()
-    gather_and_convert_models(models, output, force)
+    convert_models(models, output, force)
     click.echo(f"Done ({format_elapsed(time.time() - t_start)} total)")
 
 
-@cli.group()
+@cli.group(help_priority = 8)
 def analyze():
     """Optional analysis extensions: FBA summaries, auxotrophy screening, heatmaps."""
     pass
@@ -393,7 +508,7 @@ def analyze():
 
 @analyze.command()
 @click.option(
-    "-M",
+    "-i",
     "--models",
     required=True,
     type=click.Path(exists=True),
@@ -411,9 +526,15 @@ def analyze():
     "--medium",
     type=click.Path(exists=True),
     default=None,
-    help="Optional medium CSV (cols: exchange_id, flux) to override model media.",
+    help="Optional medium CSV to override model media.",
 )
-def fba(models, output, medium):
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def fba(models, output, medium, force):
     """Run FBA on each model and produce a comparative growth summary."""
     from parmmosahn.analysis import fba_summary
 
@@ -428,7 +549,7 @@ def fba(models, output, medium):
 
 @analyze.command()
 @click.option(
-    "-M",
+    "-i",
     "--models",
     required=True,
     type=click.Path(exists=True),
@@ -449,12 +570,19 @@ def fba(models, output, medium):
     help="Optional medium CSV (cols: exchange_id, flux) to override model media.",
 )
 @click.option(
-    "--threshold",
+    "--auxo",
+    'threshold',
     default=1e-3,
     show_default=True,
-    help="Growth rate below this is flagged as auxotrophic.",
+    help="A growth rate below this threshold is flagged as auxotrophic.",
 )
-def auxotrophy(models, output, medium, threshold):
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def auxotrophy(models, output, medium, threshold, force):
     """Screen for auxotrophies by single-component medium knockouts."""
     from parmmosahn.analysis import auxotrophy_screen
 
@@ -470,7 +598,7 @@ def auxotrophy(models, output, medium, threshold):
 
 @analyze.command()
 @click.option(
-    "-M",
+    "-i",
     "--models",
     required=True,
     type=click.Path(exists=True),
@@ -490,10 +618,12 @@ def auxotrophy(models, output, medium, threshold):
     help="Optional clustered heatmap output path (image format deduced from extension).",
 )
 @click.option(
+    '-f',
+    '--force',
     is_flag=True,
-    help="Also generate a clustered heatmap PNG (requires pip install 'parmmosahn[viz]').",
+    help = "Overwrite existing output"
 )
-def heatmap(models, output, plot):
+def heatmap(models, output, plot, force):
     """Build a reaction presence/absence matrix across strains."""
     from parmmosahn.analysis import reaction_heatmap
 
@@ -506,9 +636,10 @@ def heatmap(models, output, plot):
     click.echo(f"Reaction matrix saved to {output}")
 
 
+#TODO: to be revisited
 @analyze.command()
 @click.option(
-    "-M",
+    "-i",
     "--models",
     required=True,
     type=click.Path(exists=True),
@@ -522,25 +653,34 @@ def heatmap(models, output, plot):
     help="Output TSV file path (additional files written alongside).",
 )
 @click.option(
+    '-p',
     "--plot",
     is_flag=True,
     help="Also generate a dendrogram PNG (requires pip install 'parmmosahn[viz]' scipy).",
 )
 @click.option(
-    "--core-threshold",
+    "--core",
+    'core_threshold',
     type=float,
     default=0.99,
     show_default=True,
     help="Core if a reaction occurs in strictly more than this fraction of strains (>99% thesis convention).",
 )
 @click.option(
-    "--cloud-threshold",
+    "--cloud",
+    'cloud_threshold',
     type=float,
     default=0.05,
     show_default=True,
     help="Unique (cloud) if a reaction occurs in strictly fewer than this fraction of strains (<5%).",
 )
-def panreactome(models, output, plot, core_threshold, cloud_threshold):
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def panreactome(models, output, plot, core_threshold, cloud_threshold, force):
     """Characterize the pan-reactome: core/accessory/unique reactions, Jaccard similarity, accumulation curve."""
     from parmmosahn.analysis import panreactome as panreactome_fn
 
@@ -555,9 +695,9 @@ def panreactome(models, output, plot, core_threshold, cloud_threshold):
     click.echo(f"Pan-reactome analysis saved alongside {output}")
 
 
-@analyze.command(name="prune-report")
+@analyze.command(name="dead-ends")
 @click.option(
-    "-M",
+    "-i",
     "--models",
     required=True,
     type=click.Path(exists=True),
@@ -570,29 +710,24 @@ def panreactome(models, output, plot, core_threshold, cloud_threshold):
     type=click.Path(),
     help="Output TSV file path.",
 )
-def prune_report(models, output):
-    """Report dead-end metabolites + fully-blocked reactions per model.
-
-    This is a DRY-RUN diagnostic — no SBML files are modified. It identifies
-    metabolites with zero producers or zero consumers (the structural source
-    of the cohort-wide ~42% blocked-fraction baseline) and reactions whose
-    participants are all dead-end (guaranteed-prunable without affecting any
-    connected pathway).
-
-    Scaffolding for the full `parmmosahn prune` step on the v0.3 roadmap
-    (item B2); use the output to size the prune-step impact before
-    committing to a destructive pass.
-    """
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def dead_ends(models, output, force):
+    """Report dead-end metabolites and fully-blocked reactions in each model."""
     from parmmosahn.analysis import prune_report as prune_report_fn
 
-    click.echo(f"Building prune dry-run report from models in {models}...")
+    click.echo(f"Building dead-ends report from models in {models}...")
     prune_report_fn(models_dir=Path(models), output_path=Path(output))
-    click.echo(f"Prune dry-run report saved to {output}")
+    click.echo(f"Dead-ends report saved to {output}")
 
 
 @analyze.command()
 @click.option(
-    "-M",
+    "-i",
     "--models",
     required=True,
     type=click.Path(exists=True),
@@ -620,12 +755,20 @@ def prune_report(models, output):
     help="Optional base medium CSV (cols: exchange_id, flux).",
 )
 @click.option(
-    "--threshold",
+    '-mg',
+    "--min-growth",
+    'threshold',
     default=1e-3,
     show_default=True,
-    help="Growth rate below this is predicted as 'no growth'.",
+    help="Growth rate below this is considered as 'no growth'.",
 )
-def validate(models, phenotypes, output, medium, threshold):
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def validate(models, phenotypes, output, medium, threshold, force):
     """Validate model predictions against experimental growth phenotypes."""
     from parmmosahn.analysis import validate_phenotypes
 
@@ -642,7 +785,7 @@ def validate(models, phenotypes, output, medium, threshold):
 
 @analyze.command()
 @click.option(
-    "-M",
+    "-i",
     "--models",
     required=True,
     type=click.Path(exists=True),
@@ -663,19 +806,29 @@ def validate(models, phenotypes, output, medium, threshold):
     help="Optional medium CSV (cols: exchange_id, flux) to override model media.",
 )
 @click.option(
-    "--essential-fraction",
+    '-mf',
+    "--min-frac",
+    'essential_fraction',
     default=1e-2,
     show_default=True,
-    help="Knockout growth below this fraction of WT marks a gene as essential.",
+    help="Minimum fraction of wildtype growth rate for a knockout to be considered as non-essential.",
 )
 @click.option(
-    "--min-wt-growth",
+    '-mwr',
+    "--min-wt-rate",
+    'min_wt_growth',
     default=1e-3,
     show_default=True,
-    help="Absolute wild-type growth floor below which a strain is skipped.",
+    help="Minimum wildtype growth rate for a strain to be included in the analysis.",
 )
-def essentiality(models, output, medium, essential_fraction, min_wt_growth):
-    """Predict essential genes via single-gene deletion FBA."""
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def essentiality(models, output, medium, essential_fraction, min_wt_growth, force):
+    """Predict essential genes via single knockout FBA."""
     from parmmosahn.analysis import gene_essentiality
 
     click.echo(f"Running gene essentiality analysis on models in {models}...")
@@ -687,111 +840,6 @@ def essentiality(models, output, medium, essential_fraction, min_wt_growth):
         min_wt_growth=min_wt_growth,
     )
     click.echo(f"Gene essentiality predictions saved to {output}")
-
-
-@cli.command()
-@click.option(
-    "-M",
-    "--models",
-    required=True,
-    type=click.Path(exists=True),
-    help="Directory containing SBML models (.xml) to evaluate.",
-)
-@click.option(
-    "-o",
-    "--output",
-    required=True,
-    type=click.Path(),
-    help="Directory for memote reports (HTML + JSON).",
-)
-@click.option(
-    "--curation-template",
-    is_flag=True,
-    help="Also generate the curation Excel template from memote results.",
-)
-@click.option(
-    "--workers",
-    default=1,
-    show_default=True,
-    type=int,
-    help="Number of strains to evaluate in parallel. Memote uses ~6 internal "
-    "threads per model, so 2-3 outer workers typically saturate a 12-16 core host.",
-)
-@click.option(
-    '-f',
-    '--force',
-    is_flag=True,
-    help = "Overwrite existing output"
-)
-def evaluate(models, output, curation_template, workers, force):
-    """Run memote evaluation on a directory of SBML models."""
-    models_path = Path(models)
-    output_path = Path(output)
-    
-    t_start = time.time()
-    failed = evaluate_models(models, output, workers, force)
-    click.echo(
-        f"Memote reports saved to {output_path} ({format_elapsed(time.time() - t_start)} total)"
-    )
-    
-    if failed:
-        click.echo(f"{failed} model(s) failed memote evaluation.")
-
-    if curation_template:
-        out_excel = output_path / "curation_template.xlsx"
-        extract_memote_problems(output_path, models_path, out_excel)
-        click.echo(f"Curation template saved to {out_excel}")
-    
-
-@cli.command()
-@click.option(
-    "-M",
-    "--models",
-    required=True,
-    type=click.Path(exists=True),
-    help="Directory containing SBML models (.xml) to enrich.",
-)
-@click.option(
-    "-o",
-    "--output",
-    required=True,
-    type=click.Path(),
-    help="Directory for the annotation-enriched models.",
-)
-@click.option(
-    "--rename-to-bigg",
-    is_flag=True,
-    default=False,
-    help=(
-        "After annotation enrichment, rewrite SEED-namespace primary IDs to "
-        "BiGG IDs where a mapping exists (metabolites, exchanges, internal "
-        "reactions). Opt-in; default off. Unmapped IDs keep their SEED form."
-    ),
-)
-@click.option(
-    '-f',
-    '--force',
-    is_flag=True,
-    help = "Overwrite existing output"
-)
-def polish(models, output, rename_to_bigg, force):
-    """Enrich model cross-ref annotations."""
-    from parmmosahn.polish import polish_models
-
-    models_path = Path(models)
-    output_path = Path(output)
-
-    xml_count = len(list(models_path.rglob("*.xml")))
-    click.echo(f"Input:  {models_path} ({xml_count} models)")
-    click.echo(f"Output: {output_path}")
-    if rename_to_bigg:
-        click.echo("Rename: SEED -> BiGG primary IDs (--rename-to-bigg)")
-
-    t_start = time.time()
-    polish_models(models_path, output_path, rename=rename_to_bigg, force = force)
-    click.echo(
-        f"Enriched models saved to {output_path} ({format_elapsed(time.time() - t_start)} total)"
-    )
 
 
 _DOCTOR_REQUIRED_TOOLS = ("ppanggolin", "gapseq", "diamond")
@@ -905,7 +953,7 @@ def _render_doctor_text(report: dict) -> None:
         click.echo(f"WARNING: {w}")
 
 
-@cli.command()
+@cli.command(help_priority = 9)
 @click.option(
     "--json",
     "json_out",
@@ -913,8 +961,7 @@ def _render_doctor_text(report: dict) -> None:
     default=False,
     help=(
         "Emit the environment report as a single JSON object on stdout "
-        "instead of the human-readable text. Useful for CI gates and "
-        "automation (pipe to `jq` to filter on specific tools / versions)."
+        "instead of the human-readable text."
     ),
 )
 def doctor(json_out: bool):

@@ -9,7 +9,7 @@ from parmmosahn.utils import safe_init_output_dir
 logger = logging.getLogger(__name__)
 
 
-def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path, force: bool) -> Path:
+def convert_models(model_dir: str | Path, output_dir: str | Path, force: bool) -> Path:
     """
     Copies final SBML models into a centralized output directory and
     converts them into JSON and MATLAB formats for broad compatibility.

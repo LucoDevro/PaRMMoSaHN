@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import click
 from collections import deque
 from pathlib import Path
 from typing import Any, Generator
@@ -22,6 +23,46 @@ class ToolExecutionError(Exception):
 
 class FolderExistsError(FileExistsError):
     pass
+
+class SpecialHelpOrder(click.Group):
+
+    def __init__(self, *args, **kwargs):
+        self.help_priorities = {}
+        super().__init__(*args, **kwargs)
+
+    def list_commands(self, ctx):
+        """reorder the list of commands when listing the help"""
+        commands = super(SpecialHelpOrder, self).list_commands(ctx)
+        return (c[1] for c in sorted(
+            (self.help_priorities.get(command, 1), command)
+            for command in commands))
+
+    def command(self, *args, **kwargs):
+        """Behaves the same as `click.Group.command()` except capture
+        a priority for listing command names in help.
+        """
+        help_priority = kwargs.pop('help_priority', 1)
+        help_priorities = self.help_priorities
+
+        def decorator(f):
+            cmd = super(SpecialHelpOrder, self).command(*args, **kwargs)(f)
+            help_priorities[cmd.name] = help_priority
+            return cmd
+
+        return decorator
+    
+    def group(self, *args, **kwargs):
+        """Like click.Group.group(), but also accepts help_priority."""
+        help_priority = kwargs.pop('help_priority', 1)
+        help_priorities = self.help_priorities
+
+        def decorator(f):
+            cmd = super(SpecialHelpOrder, self).group(*args, **kwargs)(f)
+            help_priorities[cmd.name] = help_priority
+            return cmd
+
+        return decorator
+
 
 
 def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> Path:
@@ -62,6 +103,13 @@ def safe_init_output_file(output_file: Path | str, force: bool = False) -> None:
         raise FileExistsError(
             f'Output file {output_file} already exists! Use --force to overwrite it.'
             )
+        
+        
+def get_default_threads() -> int:
+    """Default to 75 % of available CPU cores (minimum 1)."""
+    cpus = os.cpu_count()
+    return max(1, int(cpus * 0.75)) if cpus else 1
+
 
 def get_system_resources() -> dict[str, Any]:
     """Best-effort inventory of host CPU, RAM, and OS for run provenance.
