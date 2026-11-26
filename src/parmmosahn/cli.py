@@ -10,6 +10,7 @@ from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.results import gather_and_convert_models
 from parmmosahn.pangenome import build_pangenome
 from parmmosahn.utils import ToolExecutionError
+from parmmosahn.utils import ToolExecutionError, format_elapsed
 
 logger = logging.getLogger(__name__)
 
@@ -21,17 +22,6 @@ def get_default_threads() -> int:
 
 
 _DEFAULT_THREADS = get_default_threads()
-
-
-def _format_elapsed(seconds: float) -> str:
-    """Format elapsed seconds into a human-readable string."""
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    m, s = divmod(int(seconds), 60)
-    if m < 60:
-        return f"{m}m {s}s"
-    h, m = divmod(m, 60)
-    return f"{h}h {m}m {s}s"
 
 
 def _setup_logging(verbose: bool, quiet: bool) -> None:
@@ -349,13 +339,16 @@ def init_curation(output: Path, force: bool) -> None:
     type=click.Path(exists=True),
     help="Path to the Excel Curation Database containing curated reactions.",
 )
-def curate(source_models, curated_models, db):
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def curate(source_models, curated_models, db, force):
     """Step 4: Apply curation database rules to a specific model."""
     out = Path(curated_models)
-    # apply_curations expects an output *directory* and derives the filename
-    # from the source model. -o/--output is therefore a directory path.
-    out.mkdir(parents=True, exist_ok=True)
-    apply_curations(Path(source_models), Path(db), out)
+    apply_curations(Path(source_models), Path(db), out, force = force)
 
 
 @cli.command()
@@ -374,7 +367,13 @@ def curate(source_models, curated_models, db):
     show_default=True,
     help="Target directory for the exported output formats (JSON/MATLAB).",
 )
-def gather(models, output):
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def gather(models, output, force):
     """Step 6: Gather models and convert to JSON/MATLAB formats."""
     models_path = Path(models)
     xml_count = len(list(models_path.rglob("*.xml")))
@@ -382,8 +381,8 @@ def gather(models, output):
     click.echo(f"Output: {output}")
 
     t_start = time.time()
-    gather_and_convert_models(models, output)
-    click.echo(f"Done ({_format_elapsed(time.time() - t_start)} total)")
+    gather_and_convert_models(models, output, force)
+    click.echo(f"Done ({format_elapsed(time.time() - t_start)} total)")
 
 
 @cli.group()
@@ -852,7 +851,13 @@ def evaluate(models, output, curation_template, workers, force):
         "reactions). Opt-in; default off. Unmapped IDs keep their SEED form."
     ),
 )
-def polish(models, output, rename_to_bigg):
+@click.option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help = "Overwrite existing output"
+)
+def polish(models, output, rename_to_bigg, force):
     """Enrich model cross-ref annotations."""
     from parmmosahn.polish import polish_models
 
@@ -866,9 +871,9 @@ def polish(models, output, rename_to_bigg):
         click.echo("Rename: SEED -> BiGG primary IDs (--rename-to-bigg)")
 
     t_start = time.time()
-    polish_models(models_path, output_path, rename=rename_to_bigg)
+    polish_models(models_path, output_path, rename=rename_to_bigg, force = force)
     click.echo(
-        f"Enriched models saved to {output_path} ({_format_elapsed(time.time() - t_start)} total)"
+        f"Enriched models saved to {output_path} ({format_elapsed(time.time() - t_start)} total)"
     )
 
 

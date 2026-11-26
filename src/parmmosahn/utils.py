@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 class ToolExecutionError(Exception):
     pass
 
+class FolderExistsError(FileExistsError):
+    pass
+
 
 def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> Path:
     """Write *text* to *path* atomically via a temp file in the same dir.
@@ -42,6 +45,23 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> Path:
         raise
     return path
 
+
+def safe_init_output_dir(output: Path | str, force: bool = False) -> None:
+    output_path = Path(output)
+    try:
+        output_path.mkdir(parents=True, exist_ok=force)
+    except FileExistsError:
+        raise FolderExistsError(
+            f'Output folder {output_path} already exists! Use --force to overwrite it.'
+            )
+        
+        
+def safe_init_output_file(output_file: Path | str, force: bool = False) -> None:
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    if output_file.is_file() and not force:
+        raise FileExistsError(
+            f'Output file {output_file} already exists! Use --force to overwrite it.'
+            )
 
 def get_system_resources() -> dict[str, Any]:
     """Best-effort inventory of host CPU, RAM, and OS for run provenance.
@@ -77,6 +97,17 @@ def get_system_resources() -> dict[str, Any]:
             pass
 
     return info
+
+
+def format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds into a human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m, s = divmod(int(seconds), 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m {s}s"
 
 
 def run_command(

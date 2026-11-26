@@ -15,6 +15,7 @@ from parmmosahn.utils import (
     extract_gene_id_mapping,
     extract_proteome_from_gbff,
     run_command,
+    safe_init_output_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,12 +88,7 @@ def build_pan_model(
     if not fasta_path.exists():
         raise FileNotFoundError(f"Pangenome FASTA not found at: {fasta_path}")
         
-    try:
-        out_dir.mkdir(parents=True, exist_ok=force)
-    except FileExistsError:
-        raise ToolExecutionError(
-            "Panmodel results folder already exists. Use --force to overwrite it."
-            )
+    safe_init_output_dir(out_dir, force=force)
 
     # 1. Prepare input: clean into a derived copy so the source representatives FASTA
     #    is never mutated in place — a re-run or any external consumer must still
@@ -419,13 +415,8 @@ def derive_strain_models(
     models_workdir = output_dir / "models_workdir"
     proteomes_dir = output_dir / "proteomes"
     
-    try:
-        for d in [matches_dir, models_workdir, proteomes_dir, models_dir]:
-            d.mkdir(parents=True, exist_ok=force)
-    except FileExistsError:
-        raise ToolExecutionError(
-            "Projection results folder already exists. Use --force to overwrite it."
-            )
+    for d in [matches_dir, models_workdir, proteomes_dir, models_dir]:
+        safe_init_output_dir(d, force=force)
 
     # Collect both file types
     faa_files = list(genomes_dir.glob("*.faa"))

@@ -14,6 +14,8 @@ from typing import Any, Iterator, Optional
 import cobra as cb
 from cobra.core import Model, Solution
 
+from parmmosahn.utils import safe_init_output_file
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,6 +124,7 @@ def fba_summary(
     models_dir: Path,
     output_path: Path,
     medium_path: Path | None = None,
+    force: bool = False,
 ) -> Path:
     """Run FBA on every model and write a comparative TSV.
 
@@ -136,12 +139,14 @@ def fba_summary(
     medium_path:
         Optional CSV to override each model's medium (cols: exchange_id, flux).
         When *None* the medium already stored in each model is used.
+    force:
+        Boolean flag to overwrite any existing output.
 
     Returns
     -------
     Path to the written TSV.
     """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_init_output_file(output_path, force = force)
 
     rows: list[str] = []
     header = "strain\tstatus\tgrowth_rate\tnum_active_exchanges\tactive_exchanges"
@@ -188,6 +193,7 @@ def auxotrophy_screen(
     output_path: Path,
     medium_path: Path | None = None,
     threshold: float = 1e-3,
+    force: bool = False,
 ) -> Path:
     """Systematically knock out each medium component and check growth.
 
@@ -206,12 +212,14 @@ def auxotrophy_screen(
     threshold:
         Growth rate below this is reported as auxotrophic (for the summary
         column only; the raw rates are always written).
+    force:
+        Boolean flag to overwrite any existing output.
 
     Returns
     -------
     Path to the written TSV.
     """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_init_output_file(output_path, force = force)
 
     # Stream models once. For each strain we record only floats (its baseline
     # growth and per-component knockout growth), never the Model object, so the
@@ -290,6 +298,7 @@ def reaction_heatmap(
     models_dir: Path,
     output_path: Path,
     plot: bool = False,
+    force: bool = False,
 ) -> Path:
     """Build a reaction presence/absence matrix across strains.
 
@@ -303,12 +312,14 @@ def reaction_heatmap(
         If *True*, also save a clustered heatmap as PNG next to the TSV.
         Requires ``matplotlib`` and ``seaborn`` (install with
         ``pip install 'parmmosahn[viz]'``).
+    force:
+        Boolean flag to overwrite any existing output.
 
     Returns
     -------
     Path to the written TSV.
     """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_init_output_file(output_path, force = force)
 
     # Stream models once, keeping only each strain's reaction-ID set (cheap)
     # instead of holding the whole cohort in memory.
@@ -351,6 +362,7 @@ def panreactome(
     plot: bool = False,
     core_threshold: float = 0.99,
     cloud_threshold: float = 0.05,
+    force: bool = False,
 ) -> Path:
     """Characterize the pan-reactome across all strain models.
 
@@ -382,12 +394,19 @@ def panreactome(
         A reaction is *unique* (cloud) if it occurs in strictly fewer than this
         fraction of strains. Default ``0.05`` (<5%). Everything between the two
         thresholds is *accessory* (5-99%).
+    force:
+        Boolean flag to overwrite any existing output.
 
     Returns
     -------
     Path to the main reaction classification TSV.
     """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path = output_path.with_name(f"{output_path.stem}_summary.tsv")
+    jaccard_path = output_path.with_name(f"{output_path.stem}_jaccard.tsv")
+    accum_path = output_path.with_name(f"{output_path.stem}_accumulation.tsv")
+
+    for file in (output_path, summary_path, jaccard_path, accum_path):
+        safe_init_output_file(file, force = force)
 
     # Stream models once, keeping only each strain's reaction-ID set so the
     # whole cohort is never resident in memory at 1000-model scale.
@@ -449,7 +468,6 @@ def panreactome(
         sum((x - mean_size) ** 2 for x in model_sizes) / len(model_sizes)
     ) ** 0.5
 
-    summary_path = output_path.with_name(f"{output_path.stem}_summary.tsv")
     summary_rows = [
         "metric\tvalue",
         f"n_strains\t{n_strains}",
@@ -474,7 +492,6 @@ def panreactome(
     )
 
     # --- Jaccard similarity matrix ---
-    jaccard_path = output_path.with_name(f"{output_path.stem}_jaccard.tsv")
     jac_rows: list[str] = ["strain\t" + "\t".join(strain_names)]
     for s1 in strain_names:
         vals: list[str] = []
@@ -489,7 +506,6 @@ def panreactome(
     # --- Accumulation curve ---
     import random
 
-    accum_path = output_path.with_name(f"{output_path.stem}_accumulation.tsv")
     # Average over multiple random orderings for a smoother curve
     n_permutations = min(100, max(10, n_strains * 5))
     accum_sums = [0.0] * n_strains
@@ -582,6 +598,7 @@ def validate_phenotypes(
     output_path: Path,
     medium_path: Path | None = None,
     threshold: float = 1e-3,
+    force: bool = False
 ) -> Path:
     """Validate model predictions against experimental growth phenotypes.
 
@@ -606,6 +623,8 @@ def validate_phenotypes(
         is loaded and the specific exchange reaction is toggled.
     threshold:
         Predicted growth rate below this counts as "no growth".
+    force:
+        Boolean flag to overwrite any existing output.
 
     Returns
     -------
@@ -613,7 +632,7 @@ def validate_phenotypes(
     """
     import polars as pl
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_init_output_file(output_path, force = force)
 
     # --- Parse phenotype data ---
     sep = "\t" if phenotype_path.suffix == ".tsv" else ","
@@ -772,6 +791,7 @@ def gene_essentiality(
     medium_path: Path | None = None,
     essential_fraction: float = 1e-2,
     min_wt_growth: float = 1e-3,
+    force: bool = False,
 ) -> Path:
     """Predict essential genes via single-gene deletion FBA.
 
@@ -792,6 +812,8 @@ def gene_essentiality(
         flux are skipped (the model cannot grow, so essentiality is undefined).
         This is a separate concern from ``essential_fraction`` and is kept at
         the conservative ``1e-3`` numerical-tolerance default.
+    force:
+        Boolean flag to overwrite any existing output.
 
     Returns
     -------
@@ -799,7 +821,7 @@ def gene_essentiality(
     """
     from cobra.flux_analysis import single_gene_deletion
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_init_output_file(output_path, force = force)
 
     rows: list[str] = ["strain\tgene\twt_growth\tko_growth\tessential"]
 
@@ -937,6 +959,7 @@ def _classify_dead_end(metabolite) -> tuple[int, int]:
 def prune_report(
     models_dir: Path,
     output_path: Path,
+    force: bool = False
 ) -> Path:
     """Report dead-end metabolites + unambiguously-blocked reactions per model.
 
@@ -960,10 +983,8 @@ def prune_report(
 
     Returns the path to the written TSV.
     """
-    import cobra as cb
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
+    safe_init_output_file(output_path, force = force)
+    
     rows: list[str] = [
         "\t".join(
             [

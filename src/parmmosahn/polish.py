@@ -11,6 +11,8 @@ import re
 from importlib.resources import files
 from pathlib import Path
 
+from parmmosahn.utils import safe_init_output_dir
+
 import cobra
 
 logger = logging.getLogger(__name__)
@@ -502,12 +504,9 @@ def polish_models(
     output_dir: Path,
     proteomes_dir: Path | None = None,
     rename: bool = False,
-    skip_existing: bool = True,
+    force: bool = False,
 ) -> Path:
     """Enrich all SBML models in a directory. Returns the output directory.
-
-    With *skip_existing* (default), a model whose enriched output already exists
-    and is non-empty is skipped, so a resumed run does not re-enrich it.
 
     Parameters
     ----------
@@ -522,7 +521,7 @@ def polish_models(
         If True, also rewrite SEED-namespace primary IDs to BiGG IDs via
         :func:`rename_to_bigg` after annotation enrichment. Opt-in.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_init_output_dir(output_dir, force = force)
     xml_files = list(models_dir.rglob("*.xml"))
 
     if not xml_files:
@@ -553,12 +552,8 @@ def polish_models(
 
     n = len(xml_files)
     failed: list[str] = []
-    skipped = 0
     for i, xml in enumerate(xml_files, 1):
         out_file = output_dir / xml.name
-        if skip_existing and out_file.exists() and out_file.stat().st_size > 0:
-            skipped += 1
-            continue
         try:
             model = cobra.io.read_sbml_model(str(xml))
 
@@ -613,10 +608,6 @@ def polish_models(
             f"+{sbo_counts['reactions']} sbo rxns, +{sbo_counts['metabolites']} sbo mets"
         )
 
-    if skipped:
-        logger.info(
-            f"Annotation enrichment skipped {skipped}/{n} model(s) already enriched."
-        )
     if failed:
         logger.warning(
             f"Annotation enrichment skipped {len(failed)}/{n} model(s) due to "

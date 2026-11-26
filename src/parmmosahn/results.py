@@ -4,10 +4,12 @@ from pathlib import Path
 
 import cobra as cb
 
+from parmmosahn.utils import safe_init_output_dir
+
 logger = logging.getLogger(__name__)
 
 
-def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path) -> Path:
+def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path, force: bool) -> Path:
     """
     Copies final SBML models into a centralized output directory and
     converts them into JSON and MATLAB formats for broad compatibility.
@@ -24,8 +26,8 @@ def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path) -> 
 
     if not model_dir.exists():
         raise FileNotFoundError(f"Source model directory not found: {model_dir}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    safe_init_output_dir(output_dir, force = force)
 
     # Find all XML models
     all_xml = sorted(model_dir.rglob("*.xml"))

@@ -17,7 +17,12 @@ from cobra.core import Model, Reaction
 from memote.suite import api as memote_api
 from memote.suite.reporting import ReportConfiguration
 
-from parmmosahn.utils import ToolExecutionError
+from parmmosahn.utils import (
+    ToolExecutionError,
+    format_elapsed,
+    safe_init_output_dir,
+    safe_init_output_file,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +36,7 @@ def init_curation_table(output_excel: Path, force: bool = False) -> None:
     """
     Write an empty PaRMMoSaHN curation DB.
     """
-    output_excel.parent.mkdir(parents=True, exist_ok=True)
-    if output_excel.is_file() and not force:
-        raise ToolExecutionError(
-            'Output file already exists! Use --force to overwrite it.'
-            )
+    safe_init_output_file(output_excel, force = force)
     
     df_dupl = pl.DataFrame(
         schema=["Pair", "Decision",
@@ -533,6 +534,7 @@ def apply_curations(
     models_dir: Path,
     curation_db_path: Path,
     output_dir: Path,
+    force: bool = False,
 ) -> Path | None:
     """Read the curation database and apply all fixes to a specific strain model.
 
@@ -543,6 +545,8 @@ def apply_curations(
     existing file is always complete (never a truncated partial). To re-apply an
     updated curation database, clear the output directory first.
     """
+    safe_init_output_dir(output_dir, force = force)
+    
     models = list(models_dir.rglob('*.xml'))
     for model_path in models:
         out_file = output_dir / model_path.name
