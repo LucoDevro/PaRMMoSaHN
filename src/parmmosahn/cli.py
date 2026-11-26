@@ -484,7 +484,12 @@ def auxotrophy(models, output, medium, threshold):
     help="Output TSV file path.",
 )
 @click.option(
+    '-p',
     "--plot",
+    default = None,
+    help="Optional clustered heatmap output path (image format deduced from extension).",
+)
+@click.option(
     is_flag=True,
     help="Also generate a clustered heatmap PNG (requires pip install 'parmmosahn[viz]').",
 )

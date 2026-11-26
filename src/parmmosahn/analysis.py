@@ -297,7 +297,7 @@ def auxotrophy_screen(
 def reaction_heatmap(
     models_dir: Path,
     output_path: Path,
-    plot: bool = False,
+    plot: Path | None = None,
     force: bool = False,
 ) -> Path:
     """Build a reaction presence/absence matrix across strains.
@@ -346,7 +346,7 @@ def reaction_heatmap(
     )
 
     if plot:
-        _plot_heatmap(output_path, strain_names, rxn_list, rxn_sets)
+        _plot_heatmap(plot, strain_names, rxn_list, rxn_sets, force = force)
 
     return output_path
 
@@ -871,33 +871,27 @@ def gene_essentiality(
 
 
 def _plot_heatmap(
-    tsv_path: Path,
+    plot_path: Path,
     strain_names: list[str],
     rxn_list: list[str],
     rxn_sets: dict[str, set[str]],
+    force: bool = False,
 ) -> Path:
     """Render a clustered heatmap PNG from the reaction matrix."""
-    try:
-        import matplotlib
+    import matplotlib
 
-        matplotlib.use("Agg")  # Non-interactive backend
-        import matplotlib.pyplot as plt
-        import numpy as np
-        import seaborn as sns
-    except ImportError:
-        logger.warning(
-            "matplotlib/seaborn not installed — skipping heatmap plot. "
-            "Install with: pip install 'parmmosahn[viz]'"
-        )
-        return tsv_path
+    matplotlib.use("Agg")  # Non-interactive backend
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import seaborn as sns
+    
+    safe_init_output_file(plot_path)
 
     # Build numpy array
     data = np.array(
         [[1 if rxn in rxn_sets[s] else 0 for s in strain_names] for rxn in rxn_list],
         dtype=np.int8,
     )
-
-    png_path = tsv_path.with_suffix(".png")
 
     # For large matrices, use a clustermap with no individual row labels
     fig_height = max(6, min(len(rxn_list) * 0.01, 40))
@@ -917,11 +911,11 @@ def _plot_heatmap(
     g.ax_heatmap.set_xlabel("Strain")
     g.ax_heatmap.set_ylabel(f"Reactions (n={len(rxn_list)})")
     g.figure.suptitle("Reaction Presence/Absence", y=1.02)
-    g.savefig(png_path, dpi=150, bbox_inches="tight")
+    g.savefig(plot_path, dpi=150, bbox_inches="tight")
     plt.close(g.figure)
 
-    logger.info(f"Heatmap saved to {png_path}")
-    return png_path
+    logger.info(f"Heatmap saved to {plot_path}")
+    return plot_path
 
 
 # ---------------------------------------------------------------------------
