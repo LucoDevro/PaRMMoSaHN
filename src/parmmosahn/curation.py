@@ -5,6 +5,7 @@ import logging
 import multiprocessing
 import os
 import re
+import time
 import warnings
 from pathlib import Path
 from typing import Any, Tuple, cast
@@ -429,6 +430,80 @@ def extract_memote_problems(
         )
         _excel_safe_df(df_imb).write_excel(workbook=wb, worksheet="curated_imbalances")
         df_ign.write_excel(workbook=wb, worksheet="ignored_imbalances")
+        
+        
+    def evaluate_models(models, output, workers, force) -> int:
+        """Run memote evaluation on a directory of SBML models."""
+        models_path = Path(models)
+        output_path = Path(output)
+        
+        safe_init_output_dir(output_path, force=force)
+
+        all_xml = sorted(models_path.rglob("*.xml"))
+        if not all_xml:
+            logger.error(f"No XML models found in {models_path}")
+            return
+
+        todo = [output_path / f"{xml.stem}.json" for xml in all_xml]
+        n = len(todo)
+        logger.info(f"Input:  {models_path} ({n} models)")
+        logger.info(f"Output: {output_path}")
+        if n == 0:
+            logger.error("Nothing to do.")
+            return
+
+        # Sanity-check RAM before launching parallel memote workers. memote peaks
+        # around 3-4 GB per worker on typical strain models; on memory-constrained
+        # hosts (e.g. default WSL2 caps) requesting too many workers triggers
+        # BrokenProcessPool errors. Suggest a safer count instead of letting the
+        # pool fail mid-run. See suggestions_code.md §5.
+        from parmmosahn.utils import get_system_resources
+
+        resources = get_system_resources()
+        avail_gb = resources.get("available_ram_gb")
+        if avail_gb is not None and workers > 1:
+            safe_workers = max(1, int(avail_gb // 4))
+            if workers > safe_workers:
+                logger.warning(
+                    f"requested workers={workers} but only "
+                    f"{avail_gb:.1f} GB RAM available "
+                    f"(~4 GB/worker recommended). Consider `--workers {safe_workers}` "
+                    f"if memote crashes with BrokenProcessPool."
+                )
+
+        logger.info(f"Evaluating {n} model(s) with memote (workers={workers})...")
+        t_start = time.time()
+
+        failed = 0
+        # Threads orchestrate; each task delegates to run_memote_snapshot which
+        # spawns its own subprocess (subprocess_mode=True by default), so memory
+        # is reclaimed per strain even though the outer pool is thread-based.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for xml in todo:
+                out_json = output_path / f"{xml.stem}.json"
+                out_html = output_path / f"{xml.stem}.html"
+                fut = executor.submit(run_memote_snapshot, xml, out_json, out_html)
+                futures[fut] = xml
+            for done, fut in enumerate(as_completed(futures), 1):
+                xml = futures[fut]
+                t_done = time.time() - t_start
+                try:
+                    ok = fut.result()
+                    status = "ok" if ok else "FAIL"
+                except Exception as e:
+                    ok = False
+                    status = f"ERROR: {e}"
+                if not ok:
+                    failed += 1
+                logger.debug(
+                    f"  [{done}/{n}] {xml.stem} {status} "
+                    f"(elapsed {format_elapsed(t_done)})"
+                )
+                
+        return failed
 
 
 # ==========================================

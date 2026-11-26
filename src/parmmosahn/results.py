@@ -35,28 +35,11 @@ def gather_and_convert_models(model_dir: str | Path, output_dir: str | Path, for
         logger.warning(f"No .xml models found in {model_dir} to gather.")
         return output_dir
 
-    # Collapse duplicate stems (e.g. gapseq trees keep {strain}.xml plus copies
-    # in per-strain sub-dirs). Outputs are keyed by stem, so without this the
-    # same strain would convert twice and the later path would silently
-    # overwrite the earlier. First path wins.
-    xml_models: list[Path] = []
-    seen_stems: set[str] = set()
-    for xml in all_xml:
-        if xml.stem in seen_stems:
-            continue
-        seen_stems.add(xml.stem)
-        xml_models.append(xml)
-    if len(xml_models) < len(all_xml):
-        logger.info(
-            f"{len(all_xml)} .xml files collapse to {len(xml_models)} unique "
-            f"strains (same-stem copies in sub-directories ignored)."
-        )
+    logger.info(f"Gathering and converting {len(all_xml)} models...")
 
-    logger.info(f"Gathering and converting {len(xml_models)} models...")
-
-    n = len(xml_models)
+    n = len(all_xml)
     failed_models = []
-    for i, xml_path in enumerate(xml_models, 1):
+    for i, xml_path in enumerate(all_xml, 1):
         strain_name = xml_path.stem
         logger.debug(f"[{i}/{n}] Processing final model: {strain_name}")
 

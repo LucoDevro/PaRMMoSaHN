@@ -9,7 +9,7 @@ from parmmosahn.curation import apply_curations, init_curation_table
 from parmmosahn.models import build_pan_model, derive_strain_models
 from parmmosahn.results import gather_and_convert_models
 from parmmosahn.pangenome import build_pangenome
-from parmmosahn.utils import ToolExecutionError
+from parmmosahn.curation import evaluate_models, extract_memote_problems
 from parmmosahn.utils import ToolExecutionError, format_elapsed
 
 logger = logging.getLogger(__name__)
@@ -720,111 +720,23 @@ def essentiality(models, output, medium, essential_fraction, min_wt_growth):
 )
 def evaluate(models, output, curation_template, workers, force):
     """Run memote evaluation on a directory of SBML models."""
-    from parmmosahn.curation import (
-        extract_memote_problems,
-        run_memote_snapshot,
-    )
-
     models_path = Path(models)
     output_path = Path(output)
-    try:
-        output_path.mkdir(parents=True, exist_ok=force)
-    except FileExistsError:
-        raise ToolExecutionError(
-            'Evaluation results folder already exists! Use --force to overwrite it.'
-            )
-
-    all_xml = sorted(models_path.rglob("*.xml"))
-    if not all_xml:
-        click.echo(f"No XML models found in {models_path}")
-        return
-
-    todo = [output_path / f"{xml.stem}.json" for xml in all_xml]
-    n = len(todo)
-    click.echo(f"Input:  {models_path} ({n} models)")
-    click.echo(f"Output: {output_path}")
-    if n == 0:
-        click.echo("Nothing to do.")
-        return
-
-    # Sanity-check RAM before launching parallel memote workers. memote peaks
-    # around 3-4 GB per worker on typical strain models; on memory-constrained
-    # hosts (e.g. default WSL2 caps) requesting too many workers triggers
-    # BrokenProcessPool errors. Suggest a safer count instead of letting the
-    # pool fail mid-run. See suggestions_code.md §5.
-    from parmmosahn.utils import get_system_resources
-
-    resources = get_system_resources()
-    avail_gb = resources.get("available_ram_gb")
-    if avail_gb is not None and workers > 1:
-        safe_workers = max(1, int(avail_gb // 4))
-        if workers > safe_workers:
-            click.echo(
-                f"WARNING: requested workers={workers} but only "
-                f"{avail_gb:.1f} GB RAM available "
-                f"(~4 GB/worker recommended). Consider `--workers {safe_workers}` "
-                f"if memote crashes with BrokenProcessPool."
-            )
-
-    click.echo(f"Evaluating {n} model(s) with memote (workers={workers})...")
+    
     t_start = time.time()
-
-    failed = 0
-    if workers <= 1:
-        for i, xml in enumerate(todo, 1):
-            t_model = time.time()
-            click.echo(f"  [{i}/{n}] {xml.stem} ...", nl=False)
-            out_json = output_path / f"{xml.stem}.json"
-            out_html = output_path / f"{xml.stem}.html"
-            ok = run_memote_snapshot(xml, out_json, out_html)
-            if not ok:
-                failed += 1
-            click.echo(
-                f" {'done' if ok else 'FAIL'} "
-                f"({_format_elapsed(time.time() - t_model)})"
-            )
-    else:
-        # Threads orchestrate; each task delegates to run_memote_snapshot which
-        # spawns its own subprocess (subprocess_mode=True by default), so memory
-        # is reclaimed per strain even though the outer pool is thread-based.
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        futures = {}
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            for xml in todo:
-                out_json = output_path / f"{xml.stem}.json"
-                out_html = output_path / f"{xml.stem}.html"
-                fut = executor.submit(run_memote_snapshot, xml, out_json, out_html)
-                futures[fut] = xml
-            for done, fut in enumerate(as_completed(futures), 1):
-                xml = futures[fut]
-                t_done = time.time() - t_start
-                try:
-                    ok = fut.result()
-                    status = "ok" if ok else "FAIL"
-                except Exception as e:
-                    ok = False
-                    status = f"ERROR: {e}"
-                if not ok:
-                    failed += 1
-                click.echo(
-                    f"  [{done}/{n}] {xml.stem} {status} "
-                    f"(elapsed {_format_elapsed(t_done)})"
-                )
+    failed = evaluate_models(models, output, workers, force)
+    click.echo(
+        f"Memote reports saved to {output_path} ({format_elapsed(time.time() - t_start)} total)"
+    )
+    
+    if failed:
+        click.echo(f"{failed} model(s) failed memote evaluation.")
 
     if curation_template:
         out_excel = output_path / "curation_template.xlsx"
         extract_memote_problems(output_path, models_path, out_excel)
         click.echo(f"Curation template saved to {out_excel}")
-
-    click.echo(
-        f"Memote reports saved to {output_path} ({_format_elapsed(time.time() - t_start)} total)"
-    )
-    if failed:
-        # Signal failure so CI gates / `&&` chains can detect that strains failed.
-        click.echo(f"{failed}/{n} model(s) failed memote evaluation.")
-        raise SystemExit(1)
-
+    
 
 @cli.command()
 @click.option(
