@@ -177,12 +177,13 @@ def pan(genomes: Path | None,
         raise click.UsageError(
             "Missing required arguments: genomes and label must be provided"
         )
+    output_path = Path(output)
     
-    safe_init_output_dir(output, force = force)
-    click.echo(f"Building pangenome and pan-model '{label}'...")
+    safe_init_output_dir(output_path, force = force)
+    logger.info(f"Building pangenome and panmodel '{label}'...")
     
     # --- STEP 1: Pangenome ---
-    pangenome_out = output / "01-pangenome"
+    pangenome_out = output_path / "01-pangenome"
     included_fasta = build_pangenome(
         genomes,
         pangenome_out,
@@ -298,7 +299,7 @@ def project(
     force
 ):
     """Project strain-specific models from the panmodel by homology matches."""
-    click.echo("Deriving strain models...")
+    logger.info("Deriving strain models...")
 
     missing_args = []
     if strains is None:
@@ -373,16 +374,16 @@ def evaluate(models, output, excel, workers, force):
     
     t_start = time.time()
     failed = evaluate_models(models, output, workers, force)
-    click.echo(
+    logger.info(
         f"Memote reports saved to {output_path} ({format_elapsed(time.time() - t_start)} total)"
     )
     
     if failed:
-        click.echo(f"{failed} model(s) failed memote evaluation.")
+        logger.warning(f"{failed} model(s) failed memote evaluation.")
 
     if excel:
         extract_memote_problems(output_path, models_path, excel)
-        click.echo(f"Curation template saved to {excel}")
+        logger.info(f"Curation template saved to {excel}")
         
     return None
     
@@ -490,14 +491,12 @@ def polish(models, output, rename_to_bigg, force):
     output_path = Path(output)
 
     xml_count = len(list(models_path.rglob("*.xml")))
-    click.echo(f"Input:  {models_path} ({xml_count} models)")
-    click.echo(f"Output: {output_path}")
-    if rename_to_bigg:
-        click.echo("Rename: SEED -> BiGG primary IDs (--rename-to-bigg)")
+    logger.debug(f"Input:  {models_path} ({xml_count} models)")
+    logger.debug(f"Output: {output_path}")
 
     t_start = time.time()
     polish_models(models_path, output_path, rename=rename_to_bigg, force = force)
-    click.echo(
+    logger.info(
         f"Enriched models saved to {output_path} ({format_elapsed(time.time() - t_start)} total)"
     )
     
@@ -530,12 +529,12 @@ def convert(models, output, force):
     """Convert models to JSON and MATLAB formats."""
     models_path = Path(models)
     xml_count = len(list(models_path.rglob("*.xml")))
-    click.echo(f"Input:  {models_path} ({xml_count} models)")
-    click.echo(f"Output: {output}")
+    logger.debug(f"Input:  {models_path} ({xml_count} models)")
+    logger.debug(f"Output: {output}")
 
     t_start = time.time()
     convert_models(models, output, force)
-    click.echo(f"Done ({format_elapsed(time.time() - t_start)} total)")
+    logger.info(f"Done ({format_elapsed(time.time() - t_start)} total)")
     
     return None
 
@@ -577,13 +576,13 @@ def analyze():
 def fba(models, output, medium, force):
     """Run FBA on each model and produce a comparative growth summary."""
 
-    click.echo(f"Running FBA summary on models in {models}...")
+    logger.info(f"Running FBA summary on models in {models}...")
     fba_summary(
         models_dir=Path(models),
         output_path=Path(output),
         medium_path=Path(medium) if medium else None,
     )
-    click.echo(f"FBA summary saved to {output}")
+    logger.info(f"FBA summary saved to {output}")
     
     return None
 
@@ -625,14 +624,14 @@ def fba(models, output, medium, force):
 )
 def auxotrophy(models, output, medium, threshold, force):
     """Screen for auxotrophies by single-component medium knockouts."""
-    click.echo(f"Running auxotrophy screen on models in {models}...")
+    logger.info(f"Running auxotrophy screen on models in {models}...")
     auxotrophy_screen(
         models_dir=Path(models),
         output_path=Path(output),
         medium_path=Path(medium) if medium else None,
         threshold=threshold,
     )
-    click.echo(f"Auxotrophy screen saved to {output}")
+    logger.info(f"Auxotrophy screen saved to {output}")
     
     return None
 
@@ -666,13 +665,13 @@ def auxotrophy(models, output, medium, threshold, force):
 )
 def heatmap(models, output, plot, force):
     """Build a reaction presence/absence matrix across strains."""
-    click.echo(f"Building reaction heatmap from models in {models}...")
+    logger.info(f"Building reaction heatmap from models in {models}...")
     reaction_heatmap(
         models_dir=Path(models),
         output_path=Path(output),
         plot=plot,
     )
-    click.echo(f"Reaction matrix saved to {output}")
+    logger.info(f"Reaction matrix saved to {output}")
     
     return None
 
@@ -722,8 +721,8 @@ def heatmap(models, output, plot, force):
     help = "Overwrite existing output"
 )
 def panreactome(models, output, plot, core_threshold, cloud_threshold, force):
-    """Characterize the pan-reactome: core/accessory/unique reactions, Jaccard similarity, accumulation curve."""
-    click.echo(f"Analyzing pan-reactome from models in {models}...")
+    """Characterize the panreactome: core/accessory/unique reactions, Jaccard similarity, accumulation curve."""
+    logger.info(f"Analyzing panreactome from models in {models}...")
     analyse_panreactome(
         models_dir=Path(models),
         output_path=Path(output),
@@ -731,7 +730,7 @@ def panreactome(models, output, plot, core_threshold, cloud_threshold, force):
         core_threshold=core_threshold,
         cloud_threshold=cloud_threshold,
     )
-    click.echo(f"Pan-reactome analysis saved alongside {output}")
+    logger.info(f"Panreactome analysis saved alongside {output}")
     
     return None
 
@@ -759,9 +758,9 @@ def panreactome(models, output, plot, core_threshold, cloud_threshold, force):
 )
 def dead_ends(models, output, force):
     """Report dead-end metabolites and fully-blocked reactions in each model."""
-    click.echo(f"Building dead-ends report from models in {models}...")
+    logger.info(f"Building dead-ends report from models in {models}...")
     find_dead_ends(models_dir=Path(models), output_path=Path(output))
-    click.echo(f"Dead-ends report saved to {output}")
+    logger.info(f"Dead-ends report saved to {output}")
     
     return None
 
@@ -811,7 +810,7 @@ def dead_ends(models, output, force):
 )
 def validate(models, phenotypes, output, medium, threshold, force):
     """Validate model predictions against experimental growth phenotypes."""
-    click.echo(f"Validating models in {models} against {phenotypes}...")
+    logger.info(f"Validating models in {models} against {phenotypes}...")
     validate_phenotypes(
         models_dir=Path(models),
         phenotype_path=Path(phenotypes),
@@ -819,7 +818,7 @@ def validate(models, phenotypes, output, medium, threshold, force):
         medium_path=Path(medium) if medium else None,
         threshold=threshold,
     )
-    click.echo(f"Validation results saved to {output}")
+    logger.info(f"Validation results saved to {output}")
     
     return None
 
@@ -870,7 +869,7 @@ def validate(models, phenotypes, output, medium, threshold, force):
 )
 def essentiality(models, output, medium, essential_fraction, min_wt_growth, force):
     """Predict essential genes via single knockout FBA."""
-    click.echo(f"Running gene essentiality analysis on models in {models}...")
+    logger.info(f"Running gene essentiality analysis on models in {models}...")
     gene_essentiality(
         models_dir=Path(models),
         output_path=Path(output),
@@ -878,7 +877,7 @@ def essentiality(models, output, medium, essential_fraction, min_wt_growth, forc
         essential_fraction=essential_fraction,
         min_wt_growth=min_wt_growth,
     )
-    click.echo(f"Gene essentiality predictions saved to {output}")
+    logger.info(f"Gene essentiality predictions saved to {output}")
     
     return None
 
