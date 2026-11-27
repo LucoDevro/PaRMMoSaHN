@@ -451,8 +451,7 @@ def evaluate_models(models, output, workers, force) -> int:
         logger.error(f"No XML models found in {models_path}")
         return
 
-    todo = [output_path / f"{xml.stem}.json" for xml in all_xml]
-    n = len(todo)
+    n = len(all_xml)
     logger.info(f"Input:  {models_path} ({n} models)")
     logger.info(f"Output: {output_path}")
     if n == 0:

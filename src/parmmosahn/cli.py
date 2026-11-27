@@ -371,6 +371,7 @@ def evaluate(models, output, excel, workers, force):
     """Run memote evaluation for a directory of models."""
     models_path = Path(models)
     output_path = Path(output)
+    excel_path = Path(excel)
     
     t_start = time.time()
     failed = evaluate_models(models, output, workers, force)
@@ -382,7 +383,7 @@ def evaluate(models, output, excel, workers, force):
         logger.warning(f"{failed} model(s) failed memote evaluation.")
 
     if excel:
-        extract_memote_problems(output_path, models_path, excel)
+        extract_memote_problems(output_path, models_path, excel_path)
         logger.info(f"Curation template saved to {excel}")
         
     return None
