@@ -11,6 +11,8 @@ import random
 import polars as pl
 from pathlib import Path
 from typing import Any, Iterator, Optional
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 import matplotlib
 matplotlib.use("Agg")
@@ -162,31 +164,34 @@ def fba_summary(
     header = "strain\tstatus\tgrowth_rate\tnum_active_exchanges\tactive_exchanges"
     rows.append(header)
 
-    for name, model in _load_models(models_dir):
-        if medium_path:
-            _apply_medium_csv(model, medium_path)
-
-        sol = _safe_optimize(model, name)
-        if sol is None:
-            rows.append(f"{name}\terror\tNA\t0\t")
-            continue
-
-        status = sol.status
-        growth = (
-            f"{sol.objective_value:.6f}" if sol.objective_value is not None else "NA"
-        )
-
-        # Collect exchange reactions with non-zero flux
-        active: list[str] = []
-        if sol.status == "optimal":
-            for rxn in model.exchanges:
-                flux = sol.fluxes.get(rxn.id, 0.0)
-                if abs(flux) > 1e-8:
-                    active.append(f"{rxn.id}={flux:.4f}")
-        active.sort()
-
-        rows.append(f"{name}\t{status}\t{growth}\t{len(active)}\t{';'.join(active)}")
-        logger.info(f"  {name}: {status}, growth={growth}")
+    with logging_redirect_tqdm(loggers = [logger]):
+        for name, model in tqdm(_load_models(models_dir), 
+                                total = len(list(models_dir.rglob("*.xml"))), 
+                                leave = False):
+            if medium_path:
+                _apply_medium_csv(model, medium_path)
+    
+            sol = _safe_optimize(model, name)
+            if sol is None:
+                rows.append(f"{name}\terror\tNA\t0\t")
+                continue
+    
+            status = sol.status
+            growth = (
+                f"{sol.objective_value:.6f}" if sol.objective_value is not None else "NA"
+            )
+    
+            # Collect exchange reactions with non-zero flux
+            active: list[str] = []
+            if sol.status == "optimal":
+                for rxn in model.exchanges:
+                    flux = sol.fluxes.get(rxn.id, 0.0)
+                    if abs(flux) > 1e-8:
+                        active.append(f"{rxn.id}={flux:.4f}")
+            active.sort()
+    
+            rows.append(f"{name}\t{status}\t{growth}\t{len(active)}\t{';'.join(active)}")
+            logger.info(f"  {name}: {status}, growth={growth}")
 
     output_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     logger.info(f"FBA summary written to {output_path}")
@@ -241,36 +246,39 @@ def auxotrophy_screen(
     # knockout_growth[strain][component] = growth with that component removed.
     knockout_growth: dict[str, dict[str, float]] = {}
 
-    for name, model in _load_models(models_dir):
-        if medium_path:
-            _apply_medium_csv(model, medium_path)
-        strain_names.append(name)
-
-        med = dict(model.medium)
-        all_components.update(med)
-
-        base_sol = _safe_optimize(model, name)
-        baselines[name] = (
-            base_sol.objective_value
-            if base_sol is not None and base_sol.objective_value is not None
-            else 0.0
-        )
-
-        ko: dict[str, float] = {}
-        for comp in sorted(med):
-            # Build a fresh medium each iteration (never mutate `med` in place):
-            # a failed optimisation then cannot leak a knocked-out component into
-            # the next test, and no explicit restore is needed.
-            knocked = dict(med)
-            knocked[comp] = 0.0
-            model.medium = knocked
-            sol = _safe_optimize(model, name)
-            ko[comp] = (
-                sol.objective_value
-                if sol is not None and sol.objective_value is not None
+    with logging_redirect_tqdm(loggers = [logger]):
+        for name, model in tqdm(_load_models(models_dir),
+                                total = len(list(models_dir.rglob('*.xml'))),
+                                leave = False):
+            if medium_path:
+                _apply_medium_csv(model, medium_path)
+            strain_names.append(name)
+    
+            med = dict(model.medium)
+            all_components.update(med)
+    
+            base_sol = _safe_optimize(model, name)
+            baselines[name] = (
+                base_sol.objective_value
+                if base_sol is not None and base_sol.objective_value is not None
                 else 0.0
             )
-        knockout_growth[name] = ko
+    
+            ko: dict[str, float] = {}
+            for comp in sorted(med):
+                # Build a fresh medium each iteration (never mutate `med` in place):
+                # a failed optimisation then cannot leak a knocked-out component into
+                # the next test, and no explicit restore is needed.
+                knocked = dict(med)
+                knocked[comp] = 0.0
+                model.medium = knocked
+                sol = _safe_optimize(model, name)
+                ko[comp] = (
+                    sol.objective_value
+                    if sol is not None and sol.objective_value is not None
+                    else 0.0
+                )
+            knockout_growth[name] = ko
 
     components = sorted(all_components)
 
@@ -665,71 +673,74 @@ def validate_phenotypes(
     tp = fp = tn = fn = 0
     seen: set[str] = set()
 
-    for name, model in _load_models(models_dir):
-        if name not in tests_by_strain:
-            continue
-        seen.add(name)
-
-        # Capture the baseline medium once, before any per-test mutation, so a
-        # carbon source enabled for one test never leaks into the next.
-        if medium_path:
-            _apply_medium_csv(model, medium_path)
-        base_medium = dict(model.medium)
-
-        for carbon_source, observed_growth in tests_by_strain[name]:
-            # Check if the exchange reaction exists
-            if carbon_source not in model.reactions:
+    with logging_redirect_tqdm(loggers = [logger]):
+        for name, model in tqdm(_load_models(models_dir), 
+                                total = len(list(models_dir.rglob("*.xml"))), 
+                                leave = False):
+            if name not in tests_by_strain:
+                continue
+            seen.add(name)
+    
+            # Capture the baseline medium once, before any per-test mutation, so a
+            # carbon source enabled for one test never leaks into the next.
+            if medium_path:
+                _apply_medium_csv(model, medium_path)
+            base_medium = dict(model.medium)
+    
+            for carbon_source, observed_growth in tests_by_strain[name]:
+                # Check if the exchange reaction exists
+                if carbon_source not in model.reactions:
+                    results.append(
+                        {
+                            "strain": name,
+                            "carbon_source": carbon_source,
+                            "observed": observed_growth,
+                            "predicted": False,
+                            "growth_rate": 0.0,
+                            "match": not observed_growth,
+                            "note": "exchange_not_in_model",
+                        }
+                    )
+                    if observed_growth:
+                        fn += 1
+                    else:
+                        tn += 1
+                    continue
+    
+                # Reset to baseline, then enable just this carbon source for the test.
+                medium = dict(base_medium)
+                medium[carbon_source] = 1000.0
+                model.medium = medium
+    
+                sol = _safe_optimize(model, name)
+                growth_rate = (
+                    sol.objective_value
+                    if sol is not None and sol.objective_value is not None
+                    else 0.0
+                )
+                predicted_growth = growth_rate > threshold
+    
+                match = predicted_growth == observed_growth
                 results.append(
                     {
                         "strain": name,
                         "carbon_source": carbon_source,
                         "observed": observed_growth,
-                        "predicted": False,
-                        "growth_rate": 0.0,
-                        "match": not observed_growth,
-                        "note": "exchange_not_in_model",
+                        "predicted": predicted_growth,
+                        "growth_rate": growth_rate,
+                        "match": match,
+                        "note": "",
                     }
                 )
-                if observed_growth:
-                    fn += 1
-                else:
+    
+                if predicted_growth and observed_growth:
+                    tp += 1
+                elif predicted_growth and not observed_growth:
+                    fp += 1
+                elif not predicted_growth and not observed_growth:
                     tn += 1
-                continue
-
-            # Reset to baseline, then enable just this carbon source for the test.
-            medium = dict(base_medium)
-            medium[carbon_source] = 1000.0
-            model.medium = medium
-
-            sol = _safe_optimize(model, name)
-            growth_rate = (
-                sol.objective_value
-                if sol is not None and sol.objective_value is not None
-                else 0.0
-            )
-            predicted_growth = growth_rate > threshold
-
-            match = predicted_growth == observed_growth
-            results.append(
-                {
-                    "strain": name,
-                    "carbon_source": carbon_source,
-                    "observed": observed_growth,
-                    "predicted": predicted_growth,
-                    "growth_rate": growth_rate,
-                    "match": match,
-                    "note": "",
-                }
-            )
-
-            if predicted_growth and observed_growth:
-                tp += 1
-            elif predicted_growth and not observed_growth:
-                fp += 1
-            elif not predicted_growth and not observed_growth:
-                tn += 1
-            else:
-                fn += 1
+                else:
+                    fn += 1
 
     # Strains present in the phenotype table but absent from the model directory.
     for strain in tests_by_strain:
@@ -816,45 +827,48 @@ def gene_essentiality(
 
     rows: list[str] = ["strain\tgene\twt_growth\tko_growth\tessential"]
 
-    for name, model in _load_models(models_dir):
-        if medium_path:
-            _apply_medium_csv(model, medium_path)
-
-        wt_sol = _safe_optimize(model, name)
-        wt_growth = (
-            wt_sol.objective_value
-            if wt_sol is not None and wt_sol.objective_value is not None
-            else 0.0
-        )
-
-        if wt_growth < min_wt_growth:
-            logger.warning(
-                f"{name}: wild-type growth is {wt_growth:.6f} (below the "
-                f"{min_wt_growth:g} viability floor), skipping essentiality analysis"
+    with logging_redirect_tqdm(loggers = [logger]):
+        for name, model in tqdm(_load_models(models_dir), 
+                                total = len(list(models_dir.rglob("*.xml"))), 
+                                leave = False):
+            if medium_path:
+                _apply_medium_csv(model, medium_path)
+    
+            wt_sol = _safe_optimize(model, name)
+            wt_growth = (
+                wt_sol.objective_value
+                if wt_sol is not None and wt_sol.objective_value is not None
+                else 0.0
             )
-            continue
-
-        logger.info(
-            f"  {name}: testing {len(model.genes)} genes (WT growth={wt_growth:.4f})..."
-        )
-
-        try:
-            result = single_gene_deletion(model)
-        except Exception as exc:
-            logger.warning(
-                f"  {name}: single-gene deletion failed ({exc}); skipping strain"
+    
+            if wt_growth < min_wt_growth:
+                logger.warning(
+                    f"{name}: wild-type growth is {wt_growth:.6f} (below the "
+                    f"{min_wt_growth:g} viability floor), skipping essentiality analysis"
+                )
+                continue
+    
+            logger.info(
+                f"  {name}: testing {len(model.genes)} genes (WT growth={wt_growth:.4f})..."
             )
-            continue
-
-        for _, row in result.iterrows():
-            gene_ids = row["ids"]
-            ko_growth = row["growth"] if row["growth"] is not None else 0.0
-            gene_id = next(iter(gene_ids)) if gene_ids else "unknown"
-            essential = ko_growth < essential_fraction * wt_growth
-            rows.append(
-                f"{name}\t{gene_id}\t{wt_growth:.6f}\t{ko_growth:.6f}\t"
-                f"{'1' if essential else '0'}"
-            )
+    
+            try:
+                result = single_gene_deletion(model)
+            except Exception as exc:
+                logger.warning(
+                    f"  {name}: single-gene deletion failed ({exc}); skipping strain"
+                )
+                continue
+    
+            for _, row in result.iterrows():
+                gene_ids = row["ids"]
+                ko_growth = row["growth"] if row["growth"] is not None else 0.0
+                gene_id = next(iter(gene_ids)) if gene_ids else "unknown"
+                essential = ko_growth < essential_fraction * wt_growth
+                rows.append(
+                    f"{name}\t{gene_id}\t{wt_growth:.6f}\t{ko_growth:.6f}\t"
+                    f"{'1' if essential else '0'}"
+                )
 
     output_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     logger.info(f"Gene essentiality predictions written to {output_path}")
@@ -976,58 +990,61 @@ def find_dead_ends(
     cobra_logger.setLevel(logging.WARNING)
 
     try:
-        for name, model in _load_models(models_dir):
-            mets = list(model.metabolites)
-            dead_end_ids: set[str] = set()
-            for met in mets:
-                prods, cons = _classify_dead_end(met)
-                if prods == 0 or cons == 0:
-                    dead_end_ids.add(met.id)
-
-            n_total = len(mets)
-            n_dead = len(dead_end_ids)
-            dead_frac = (n_dead / n_total) if n_total else 0.0
-
-            rxns = list(model.reactions)
-            n_rxns = len(rxns)
-            all_dead_rxns = sum(
-                1
-                for r in rxns
-                if r.metabolites and all(m.id in dead_end_ids for m in r.metabolites)
-            )
-            prun_frac = (all_dead_rxns / n_rxns) if n_rxns else 0.0
-
-            try:
-                sol = model.optimize()
-                growth = (
-                    f"{sol.objective_value:.6f}"
-                    if sol.objective_value is not None
-                    else "NA"
+        with logging_redirect_tqdm(loggers = [logger]):
+            for name, model in tqdm(_load_models(models_dir), 
+                                    total = len(list(models_dir.rglob("*.xml"))), 
+                                    leave = False):
+                mets = list(model.metabolites)
+                dead_end_ids: set[str] = set()
+                for met in mets:
+                    prods, cons = _classify_dead_end(met)
+                    if prods == 0 or cons == 0:
+                        dead_end_ids.add(met.id)
+    
+                n_total = len(mets)
+                n_dead = len(dead_end_ids)
+                dead_frac = (n_dead / n_total) if n_total else 0.0
+    
+                rxns = list(model.reactions)
+                n_rxns = len(rxns)
+                all_dead_rxns = sum(
+                    1
+                    for r in rxns
+                    if r.metabolites and all(m.id in dead_end_ids for m in r.metabolites)
                 )
-                status = sol.status
-            except Exception as exc:
-                growth = "NA"
-                status = f"error: {exc}"
-
-            rows.append(
-                "\t".join(
-                    [
-                        name,
-                        str(n_total),
-                        str(n_dead),
-                        f"{dead_frac:.4f}",
-                        str(n_rxns),
-                        str(all_dead_rxns),
-                        f"{prun_frac:.4f}",
-                        growth,
-                        status,
-                    ]
+                prun_frac = (all_dead_rxns / n_rxns) if n_rxns else 0.0
+    
+                try:
+                    sol = model.optimize()
+                    growth = (
+                        f"{sol.objective_value:.6f}"
+                        if sol.objective_value is not None
+                        else "NA"
+                    )
+                    status = sol.status
+                except Exception as exc:
+                    growth = "NA"
+                    status = f"error: {exc}"
+    
+                rows.append(
+                    "\t".join(
+                        [
+                            name,
+                            str(n_total),
+                            str(n_dead),
+                            f"{dead_frac:.4f}",
+                            str(n_rxns),
+                            str(all_dead_rxns),
+                            f"{prun_frac:.4f}",
+                            growth,
+                            status,
+                        ]
+                    )
                 )
-            )
-            logger.info(
-                f"  {name}: {n_dead}/{n_total} dead-end mets "
-                f"({dead_frac:.1%}), {all_dead_rxns}/{n_rxns} fully-dead-end rxns"
-            )
+                logger.info(
+                    f"  {name}: {n_dead}/{n_total} dead-end mets "
+                    f"({dead_frac:.1%}), {all_dead_rxns}/{n_rxns} fully-dead-end rxns"
+                )
     finally:
         cobra_logger.setLevel(prev_level)
 

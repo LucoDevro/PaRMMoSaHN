@@ -1,6 +1,8 @@
 import logging
 import shutil
 from pathlib import Path
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 import cobra as cb
 
@@ -39,30 +41,31 @@ def convert_models(model_dir: str | Path, output_dir: str | Path, force: bool) -
 
     n = len(all_xml)
     failed_models = []
-    for i, xml_path in enumerate(all_xml, 1):
-        strain_name = xml_path.stem
-        logger.debug(f"[{i}/{n}] Processing final model: {strain_name}")
-
-        dest_xml = output_dir / xml_path.name
-        dest_json = output_dir / f"{strain_name}.json"
-        dest_mat = output_dir / f"{strain_name}.mat"
-
-        try:
-            # Convert from the validated SOURCE (not a freshly-made copy) so a
-            # copy fault is never misattributed to conversion. Read first, so an
-            # unreadable model leaves no stray .xml copy behind.
-            model = cb.io.read_sbml_model(str(xml_path))
-            shutil.copy2(xml_path, dest_xml)
-            cb.io.save_json_model(model, str(dest_json))
-            cb.io.save_matlab_model(model, str(dest_mat))
-
-        except Exception as e:
-            logger.error(f"Failed to convert model {strain_name}: {e}")
-            failed_models.append(strain_name)
-            # Don't leave a partial JSON/MAT pair for downstream consumers.
-            for partial in (dest_json, dest_mat):
-                partial.unlink(missing_ok=True)
-            continue
+    with logging_redirect_tqdm(loggers = [logger]):
+        for i, xml_path in tqdm(list(enumerate(all_xml, 1)), leave = False):
+            strain_name = xml_path.stem
+            logger.debug(f"[{i}/{n}] Processing final model: {strain_name}")
+    
+            dest_xml = output_dir / xml_path.name
+            dest_json = output_dir / f"{strain_name}.json"
+            dest_mat = output_dir / f"{strain_name}.mat"
+    
+            try:
+                # Convert from the validated SOURCE (not a freshly-made copy) so a
+                # copy fault is never misattributed to conversion. Read first, so an
+                # unreadable model leaves no stray .xml copy behind.
+                model = cb.io.read_sbml_model(str(xml_path))
+                shutil.copy2(xml_path, dest_xml)
+                cb.io.save_json_model(model, str(dest_json))
+                cb.io.save_matlab_model(model, str(dest_mat))
+    
+            except Exception as e:
+                logger.error(f"Failed to convert model {strain_name}: {e}")
+                failed_models.append(strain_name)
+                # Don't leave a partial JSON/MAT pair for downstream consumers.
+                for partial in (dest_json, dest_mat):
+                    partial.unlink(missing_ok=True)
+                continue
 
     if failed_models:
         logger.warning(

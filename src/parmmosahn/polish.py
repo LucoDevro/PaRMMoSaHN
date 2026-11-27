@@ -10,6 +10,8 @@ import logging
 import re
 from importlib.resources import files
 from pathlib import Path
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from parmmosahn.utils import safe_init_output_dir
 
@@ -557,61 +559,62 @@ def polish_models(
 
     n = len(xml_files)
     failed: list[str] = []
-    for i, xml in enumerate(xml_files, 1):
-        out_file = output_dir / xml.name
-        try:
-            model = cobra.io.read_sbml_model(str(xml))
-
-            # Load per-strain gene mapping if available
-            gene_mapping: dict[str, str] | None = None
-            if proteomes_dir:
-                mapping_tsv = proteomes_dir / f"{xml.stem}.gene_mapping.tsv"
-                if mapping_tsv.exists():
-                    gene_mapping = load_gene_mapping(mapping_tsv)
-
-            gene_count = annotate_genes(model, gene_mapping=gene_mapping)
-            rxn_counts = annotate_reactions(
-                model, seed_rhea=seed_rhea, mnxr_rhea=mnxr_rhea
-            )
-            exch_count = annotate_exchanges(model, seed_bigg=seed_bigg)
-            met_count = annotate_metabolites(model, seed_bigg=seed_bigg)
-            sbo_counts = annotate_sbo_terms(model)
-            if rename:
-                rename_counts = rename_to_bigg(
-                    model, seed_bigg=seed_bigg, seed_rxn_bigg=seed_rxn_bigg
+    with logging_redirect_tqdm(loggers = [logger]):
+        for i, xml in tqdm(list(enumerate(xml_files, 1)), leave  = False):
+            out_file = output_dir / xml.name
+            try:
+                model = cobra.io.read_sbml_model(str(xml))
+    
+                # Load per-strain gene mapping if available
+                gene_mapping: dict[str, str] | None = None
+                if proteomes_dir:
+                    mapping_tsv = proteomes_dir / f"{xml.stem}.gene_mapping.tsv"
+                    if mapping_tsv.exists():
+                        gene_mapping = load_gene_mapping(mapping_tsv)
+    
+                gene_count = annotate_genes(model, gene_mapping=gene_mapping)
+                rxn_counts = annotate_reactions(
+                    model, seed_rhea=seed_rhea, mnxr_rhea=mnxr_rhea
                 )
-            else:
-                rename_counts = {
-                    "metabolites": 0,
-                    "reactions_internal": 0,
-                    "reactions_exchange": 0,
-                    "collisions_skipped": 0,
-                }
-
-            cobra.io.write_sbml_model(model, str(out_file))
-        except Exception as exc:  # one bad model must not abort the batch
-            failed.append(xml.name)
-            logger.error(f"Annotation enrichment failed for {xml.name}: {exc}")
-            continue
-
-        totals["genes_ncbiprotein"] += gene_count
-        totals["reactions_brenda"] += rxn_counts["brenda"]
-        totals["reactions_rhea"] += rxn_counts["rhea"]
-        totals["exchanges_bigg"] += exch_count
-        totals["metabolites_bigg"] += met_count
-        totals["sbo_reactions"] += sbo_counts["reactions"]
-        totals["sbo_metabolites"] += sbo_counts["metabolites"]
-        totals["renamed_metabolites"] += rename_counts["metabolites"]
-        totals["renamed_reactions_internal"] += rename_counts["reactions_internal"]
-        totals["renamed_reactions_exchange"] += rename_counts["reactions_exchange"]
-        totals["rename_collisions_skipped"] += rename_counts["collisions_skipped"]
-
-        logger.debug(
-            f"  [{i}/{n}] {xml.name}: +{gene_count} ncbiprotein, "
-            f"+{rxn_counts['brenda']} brenda, +{rxn_counts['rhea']} rhea, "
-            f"+{exch_count} bigg.reaction, +{met_count} bigg.metabolite, "
-            f"+{sbo_counts['reactions']} sbo rxns, +{sbo_counts['metabolites']} sbo mets"
-        )
+                exch_count = annotate_exchanges(model, seed_bigg=seed_bigg)
+                met_count = annotate_metabolites(model, seed_bigg=seed_bigg)
+                sbo_counts = annotate_sbo_terms(model)
+                if rename:
+                    rename_counts = rename_to_bigg(
+                        model, seed_bigg=seed_bigg, seed_rxn_bigg=seed_rxn_bigg
+                    )
+                else:
+                    rename_counts = {
+                        "metabolites": 0,
+                        "reactions_internal": 0,
+                        "reactions_exchange": 0,
+                        "collisions_skipped": 0,
+                    }
+    
+                cobra.io.write_sbml_model(model, str(out_file))
+            except Exception as exc:  # one bad model must not abort the batch
+                failed.append(xml.name)
+                logger.error(f"Annotation enrichment failed for {xml.name}: {exc}")
+                continue
+    
+            totals["genes_ncbiprotein"] += gene_count
+            totals["reactions_brenda"] += rxn_counts["brenda"]
+            totals["reactions_rhea"] += rxn_counts["rhea"]
+            totals["exchanges_bigg"] += exch_count
+            totals["metabolites_bigg"] += met_count
+            totals["sbo_reactions"] += sbo_counts["reactions"]
+            totals["sbo_metabolites"] += sbo_counts["metabolites"]
+            totals["renamed_metabolites"] += rename_counts["metabolites"]
+            totals["renamed_reactions_internal"] += rename_counts["reactions_internal"]
+            totals["renamed_reactions_exchange"] += rename_counts["reactions_exchange"]
+            totals["rename_collisions_skipped"] += rename_counts["collisions_skipped"]
+    
+            logger.debug(
+                f"  [{i}/{n}] {xml.name}: +{gene_count} ncbiprotein, "
+                f"+{rxn_counts['brenda']} brenda, +{rxn_counts['rhea']} rhea, "
+                f"+{exch_count} bigg.reaction, +{met_count} bigg.metabolite, "
+                f"+{sbo_counts['reactions']} sbo rxns, +{sbo_counts['metabolites']} sbo mets"
+            )
 
     if failed:
         logger.warning(

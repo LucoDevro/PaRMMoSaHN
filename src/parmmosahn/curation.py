@@ -5,12 +5,13 @@ import logging
 import multiprocessing
 import os
 import re
-import time
 import warnings
 from pathlib import Path
 from typing import Any, Tuple, cast
 from xlsxwriter import Workbook
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm.contrib.logging import logging_redirect_tqdm
+from tqdm import tqdm
 
 import cobra as cb
 import polars as pl
@@ -22,7 +23,6 @@ from memote.suite.reporting import ReportConfiguration
 
 from parmmosahn.utils import (
     ToolExecutionError,
-    format_elapsed,
     safe_init_output_dir,
     safe_init_output_file,
     get_system_resources,
@@ -478,36 +478,34 @@ def evaluate_models(models, output, workers, force) -> int:
             )
 
     logger.info(f"Evaluating {n} model(s) with memote (workers={workers})...")
-    t_start = time.time()
 
     failed = 0
     # Threads orchestrate; each task delegates to run_memote_snapshot which
     # spawns its own subprocess (subprocess_mode=True by default), so memory
     # is reclaimed per strain even though the outer pool is thread-based.
     futures = {}
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        for xml in todo:
-            out_json = output_path / f"{xml.stem}.json"
-            out_html = output_path / f"{xml.stem}.html"
-            fut = executor.submit(run_memote_snapshot, xml, out_json, out_html)
-            futures[fut] = xml
-        for done, fut in enumerate(as_completed(futures), 1):
-            xml = futures[fut]
-            t_done = time.time() - t_start
-            try:
-                ok = fut.result()
-                status = "ok" if ok else "FAIL"
-            except Exception as e:
-                ok = False
-                status = f"ERROR: {e}"
-            if not ok:
-                failed += 1
-            logger.debug(
-                f"  [{done}/{n}] {xml.stem} {status} "
-                f"(elapsed {format_elapsed(t_done)})"
-            )
-            
-    return failed
+    with logging_redirect_tqdm(loggers = [logger]):
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for xml in todo:
+                out_json = output_path / f"{xml.stem}.json"
+                out_html = output_path / f"{xml.stem}.html"
+                fut = executor.submit(run_memote_snapshot, xml, out_json, out_html)
+                futures[fut] = xml
+            for fut in tqdm(as_completed(futures), total = len(todo), leave = False):
+                xml = futures[fut]
+                try:
+                    ok = fut.result()
+                    status = "ok" if ok else "FAIL"
+                except Exception as e:
+                    ok = False
+                    status = f"ERROR: {e}"
+                if not ok:
+                    failed += 1
+                logger.debug(
+                    f"{xml.stem} {status} "
+                )
+                
+        return failed
 
 
 # ==========================================
@@ -627,7 +625,7 @@ def apply_curations(
     safe_init_output_dir(output_dir, force = force)
     
     models = list(models_dir.rglob('*.xml'))
-    for model_path in models:
+    for model_path in tqdm(models, leave = False):
         out_file = output_dir / model_path.name
         
         logger.debug(f"Curating model {out_file.stem}")

@@ -3,6 +3,8 @@ import logging
 import re
 import shutil
 import threading
+from tqdm.contrib.logging import logging_redirect_tqdm
+from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -435,7 +437,7 @@ def derive_strain_models(
 
     # 1. Prepare Genomes (Extract GBFFs and isolate FAAs)
     logger.info("Preparing input genomes for DIAMOND mapping...")
-
+    
     processed_genomes_map: dict[str, Path] = {}
     prep_failures: list[str] = []
     for gbff in gbff_files:
@@ -533,47 +535,48 @@ def derive_strain_models(
     skipped = 0
     failed = 0
 
-    with ThreadPoolExecutor(max_workers=parallel_strains) as pool:
-        futures = {
-            pool.submit(
-                _process_single_strain,
-                genome,
-                total_strains,
-                models_workdir,
-                matches_dir,
-                db_file,
-                panmodel_rxn_table,
-                medium_file,
-                strain_bits,
-                pan_bits,
-                biomass,
-                threads_per_strain,
-                gapfill,
-                counter,
-                counter_lock,
-                model_id_map,
-            ): genome
-            for genome in processed_genomes
-        }
-        try:
-            for future in as_completed(futures):
-                try:
-                    _, was_skipped = future.result()
-                    if was_skipped:
-                        skipped += 1
-                except Exception as exc:
-                    genome = futures[future]
-                    failed += 1
-                    logger.error(f"Strain {genome.stem} failed: {exc}")
-        except KeyboardInterrupt:
-            # On Ctrl-C, cancel queued (not-yet-started) strain jobs. Strains
-            # already running cannot be interrupted here — their gapseq/DIAMOND
-            # subprocesses must finish before the ThreadPoolExecutor drains — so
-            # the prompt returns once the in-flight workers complete.
-            logger.warning("Interrupted — cancelling queued strain jobs.")
-            for f in futures:
-                f.cancel()
-            raise
+    with logging_redirect_tqdm(loggers = [logger]):
+        with ThreadPoolExecutor(max_workers=parallel_strains) as pool:
+            futures = {
+                pool.submit(
+                    _process_single_strain,
+                    genome,
+                    total_strains,
+                    models_workdir,
+                    matches_dir,
+                    db_file,
+                    panmodel_rxn_table,
+                    medium_file,
+                    strain_bits,
+                    pan_bits,
+                    biomass,
+                    threads_per_strain,
+                    gapfill,
+                    counter,
+                    counter_lock,
+                    model_id_map,
+                ): genome
+                for genome in processed_genomes
+            }
+            try:
+                for future in tqdm(as_completed(futures), total = len(processed_genomes), leave = False):
+                    try:
+                        _, was_skipped = future.result()
+                        if was_skipped:
+                            skipped += 1
+                    except Exception as exc:
+                        genome = futures[future]
+                        failed += 1
+                        logger.error(f"Strain {genome.stem} failed: {exc}")
+            except KeyboardInterrupt:
+                # On Ctrl-C, cancel queued (not-yet-started) strain jobs. Strains
+                # already running cannot be interrupted here — their gapseq/DIAMOND
+                # subprocesses must finish before the ThreadPoolExecutor drains — so
+                # the prompt returns once the in-flight workers complete.
+                logger.warning("Interrupted — cancelling queued strain jobs.")
+                for f in futures:
+                    f.cancel()
+                raise
             
     # Step 4: Gather all generated models into one output folder
     for strain_dir in models_workdir.iterdir():
