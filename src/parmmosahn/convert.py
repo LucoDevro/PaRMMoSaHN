@@ -32,7 +32,7 @@ def convert_models(model_dir: str | Path, output_dir: str | Path, force: bool) -
     safe_init_output_dir(output_dir, force = force)
 
     # Find all XML models
-    all_xml = sorted(model_dir.rglob("*.xml"))
+    all_xml = sorted(model_dir.glob("*.xml"))
     if not all_xml:
         logger.warning(f"No .xml models found in {model_dir} to gather.")
         return output_dir

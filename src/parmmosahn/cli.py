@@ -491,7 +491,7 @@ def polish(models, output, rename_to_bigg, force):
     models_path = Path(models)
     output_path = Path(output)
 
-    xml_count = len(list(models_path.rglob("*.xml")))
+    xml_count = len(list(models_path.glob("*.xml")))
     logger.debug(f"Input:  {models_path} ({xml_count} models)")
     logger.debug(f"Output: {output_path}")
 
@@ -529,7 +529,7 @@ def polish(models, output, rename_to_bigg, force):
 def convert(models, output, force):
     """Convert models to JSON and MATLAB formats."""
     models_path = Path(models)
-    xml_count = len(list(models_path.rglob("*.xml")))
+    xml_count = len(list(models_path.glob("*.xml")))
     logger.debug(f"Input:  {models_path} ({xml_count} models)")
     logger.debug(f"Output: {output}")
 

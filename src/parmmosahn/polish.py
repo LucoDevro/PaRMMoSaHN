@@ -529,7 +529,7 @@ def polish_models(
         :func:`rename_to_bigg` after annotation enrichment. Opt-in.
     """
     safe_init_output_dir(output_dir, force = force)
-    xml_files = list(models_dir.rglob("*.xml"))
+    xml_files = list(models_dir.glob("*.xml"))
 
     if not xml_files:
         logger.warning(f"No XML models found in {models_dir} — skipping annotation.")

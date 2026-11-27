@@ -446,7 +446,7 @@ def evaluate_models(models, output, workers, force) -> int:
     
     safe_init_output_dir(output_path, force=force)
 
-    all_xml = sorted(models_path.rglob("*.xml"))
+    all_xml = sorted(models_path.glob("*.xml"))
     if not all_xml:
         logger.error(f"No XML models found in {models_path}")
         return
@@ -621,7 +621,7 @@ def apply_curations(
     """
     safe_init_output_dir(output_dir, force = force)
     
-    models = list(models_dir.rglob('*.xml'))
+    models = list(models_dir.glob('*.xml'))
     for model_path in tqdm(models, leave = False):
         out_file = output_dir / model_path.name
         

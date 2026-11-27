@@ -48,7 +48,7 @@ def _load_models(models_dir: Path) -> Iterator[tuple[str, Model]]:
     the cheap per-model summary they need (reaction-ID sets, growth rates, ...)
     rather than retaining the ``Model`` objects.
     """
-    xml_files = sorted(models_dir.rglob("*.xml"))
+    xml_files = sorted(models_dir.glob("*.xml"))
     if not xml_files:
         raise FileNotFoundError(f"No .xml models found in {models_dir}")
 
@@ -166,7 +166,7 @@ def fba_summary(
 
     with logging_redirect_tqdm(loggers = [logger]):
         for name, model in tqdm(_load_models(models_dir), 
-                                total = len(list(models_dir.rglob("*.xml"))), 
+                                total = len(list(models_dir.glob("*.xml"))), 
                                 leave = False):
             if medium_path:
                 _apply_medium_csv(model, medium_path)
@@ -248,7 +248,7 @@ def auxotrophy_screen(
 
     with logging_redirect_tqdm(loggers = [logger]):
         for name, model in tqdm(_load_models(models_dir),
-                                total = len(list(models_dir.rglob('*.xml'))),
+                                total = len(list(models_dir.glob('*.xml'))),
                                 leave = False):
             if medium_path:
                 _apply_medium_csv(model, medium_path)
@@ -675,7 +675,7 @@ def validate_phenotypes(
 
     with logging_redirect_tqdm(loggers = [logger]):
         for name, model in tqdm(_load_models(models_dir), 
-                                total = len(list(models_dir.rglob("*.xml"))), 
+                                total = len(list(models_dir.glob("*.xml"))), 
                                 leave = False):
             if name not in tests_by_strain:
                 continue
@@ -829,7 +829,7 @@ def gene_essentiality(
 
     with logging_redirect_tqdm(loggers = [logger]):
         for name, model in tqdm(_load_models(models_dir), 
-                                total = len(list(models_dir.rglob("*.xml"))), 
+                                total = len(list(models_dir.glob("*.xml"))), 
                                 leave = False):
             if medium_path:
                 _apply_medium_csv(model, medium_path)
@@ -992,7 +992,7 @@ def find_dead_ends(
     try:
         with logging_redirect_tqdm(loggers = [logger]):
             for name, model in tqdm(_load_models(models_dir), 
-                                    total = len(list(models_dir.rglob("*.xml"))), 
+                                    total = len(list(models_dir.glob("*.xml"))), 
                                     leave = False):
                 mets = list(model.metabolites)
                 dead_end_ids: set[str] = set()
