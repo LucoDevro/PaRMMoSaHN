@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Tuple, cast
 from xlsxwriter import Workbook
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm.contrib.logging import logging_redirect_tqdm
 from tqdm import tqdm
 
 import cobra as cb
@@ -484,28 +483,27 @@ def evaluate_models(models, output, workers, force) -> int:
     # spawns its own subprocess (subprocess_mode=True by default), so memory
     # is reclaimed per strain even though the outer pool is thread-based.
     futures = {}
-    with logging_redirect_tqdm(loggers = [logger]):
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            for xml in todo:
-                out_json = output_path / f"{xml.stem}.json"
-                out_html = output_path / f"{xml.stem}.html"
-                fut = executor.submit(run_memote_snapshot, xml, out_json, out_html)
-                futures[fut] = xml
-            for fut in tqdm(as_completed(futures), total = len(todo), leave = False):
-                xml = futures[fut]
-                try:
-                    ok = fut.result()
-                    status = "ok" if ok else "FAIL"
-                except Exception as e:
-                    ok = False
-                    status = f"ERROR: {e}"
-                if not ok:
-                    failed += 1
-                logger.debug(
-                    f"{xml.stem} {status} "
-                )
-                
-        return failed
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for xml in all_xml:
+            out_json = output_path / f"{xml.stem}.json"
+            out_html = output_path / f"{xml.stem}.html"
+            fut = executor.submit(run_memote_snapshot, xml, out_json, out_html)
+            futures[fut] = xml
+        for fut in tqdm(as_completed(futures), total = len(all_xml), leave = False):
+            xml = futures[fut]
+            try:
+                ok = fut.result()
+                status = "ok" if ok else "FAIL"
+            except Exception as e:
+                ok = False
+                status = f"ERROR: {e}"
+            if not ok:
+                failed += 1
+            logger.debug(
+                f"{xml.stem} {status} "
+            )
+            
+    return failed
 
 
 # ==========================================
