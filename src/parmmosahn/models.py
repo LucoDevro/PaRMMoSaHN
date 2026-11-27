@@ -21,6 +21,10 @@ from parmmosahn.utils import (
 logger = logging.getLogger(__name__)
 
 
+_GENBANK_EXTENSIONS = (".gbff", ".gbk", ".gb")
+_FASTA_EXTENSIONS = ('.faa', '.fasta', '.fa')
+
+
 def clean_fasta_file(fasta_path: Path, output_path: Path | None = None) -> Path:
     """
     Clean a FASTA file by:
@@ -71,7 +75,7 @@ def build_pan_model(
     force: bool = False,
 ) -> Path:
     """
-    Executes 'gapseq find' on the pangenome FASTA to construct a pan-metabolic model.
+    Executes 'gapseq find' on the pangenome FASTA to construct a panmetabolic model.
 
     Args:
         pangenome_fasta: Path to the representatives FASTA from PPanGGOLiN.
@@ -80,7 +84,7 @@ def build_pan_model(
         threads: Number of CPU cores to use.
 
     Returns:
-        Path to the output directory containing the pan-model results.
+        Path to the output directory containing the panmodel results.
     """
     fasta_path = Path(pangenome_fasta).resolve()
     out_dir = Path(output_dir).resolve()
@@ -122,13 +126,13 @@ def build_pan_model(
     ]
 
     logger.info(
-        "Running gapseq find. This may take a while depending on the pangenome size..."
+        "Running gapseq find. This may take a while..."
     )
 
     # 4. Execute (outputs are piped directly to the log files, keeping RAM usage low)
     run_command(cmd, stdout_file=log_out, stderr_file=log_err)
 
-    logger.info(f"Pan-model generation complete! Results saved in {out_dir}")
+    logger.info(f"Panmodel generation complete! Results saved in {out_dir}")
 
     return out_dir
 
@@ -171,7 +175,6 @@ def filter_blast_table(
     )
 
     # 2. Setup LazyFrame for Pan-model Reactions
-    # FIX: Added quote_char=None, truncate_ragged_lines, and increased infer_schema_length
     df_pan = pl.read_csv(
         pan_reaction_table_file,
         separator="\t",
@@ -398,7 +401,8 @@ def derive_strain_models(
 ) -> Path:
     """
     Uses diamond and gapseq to project the pan-model onto individual strains.
-    Gracefully accepts both .gbff (extracts CDS) and .faa (direct mapping).
+    Accepts both Genbanks (.gbff, .gbk, .gb) (extracts CDS) and protein Fastas
+    (.faa, .fasta, .fa) (direct mapping).
 
     Args:
         parallel_strains: Number of strains to process concurrently. Each strain
@@ -421,11 +425,13 @@ def derive_strain_models(
         safe_init_output_dir(d, force=force)
 
     # Collect both file types
-    faa_files = list(genomes_dir.glob("*.faa"))
-    gbff_files = list(genomes_dir.glob("*.gbff"))
+    faa_files = [f for f in genomes_dir.iterdir() if f.suffix in _FASTA_EXTENSIONS]
+    gbff_files = [f for f in genomes_dir.iterdir() if f.suffix in _GENBANK_EXTENSIONS]
 
     if not faa_files and not gbff_files:
-        raise FileNotFoundError(f"No .faa or .gbff files found in {genomes_dir}")
+        raise FileNotFoundError(
+            f"No Fasta or Genbank files found in {genomes_dir}. Use one of these extensions: {', '.join(_FASTA_EXTENSIONS)}, {', '.join(_GENBANK_EXTENSIONS)}."
+            )
 
     # 1. Prepare Genomes (Extract GBFFs and isolate FAAs)
     logger.info("Preparing input genomes for DIAMOND mapping...")
@@ -449,7 +455,7 @@ def derive_strain_models(
     for faa in faa_files:
         if faa.stem in processed_genomes_map:
             logger.warning(
-                f"Ignoring {faa.name} as {faa.stem}.gbff was already processed."
+                f"Ignoring {faa.name} as it was already processed as a Genbank file."
             )
             continue
         try:

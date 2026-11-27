@@ -101,7 +101,7 @@ def cli(ctx, verbose, quiet):
     "--genomes",
     required=True,
     type=click.Path(exists=True),
-    help="Directory of input genome files (.gbff format).",
+    help="Directory of input genome files (Genbank format).",
 )
 @click.option(
     "-o",
@@ -197,10 +197,10 @@ def pan(genomes: Path | None,
     )
     
     # --- STEP 2: Pan-model ---
-    panmodel_out = output / "02-panmodel"
+    panmodel_out = output_path / "02-panmodel"
     build_pan_model(included_fasta, panmodel_out, threads=threads, force = force)
     
-    logger.info(f"Pan-tasks complete! Pan-model saved to {panmodel_out}")
+    logger.info(f"Pan tasks complete! Panmodel saved to {panmodel_out}")
     
     return None
 

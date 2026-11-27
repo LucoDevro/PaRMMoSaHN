@@ -13,6 +13,9 @@ from parmmosahn.utils import (
 logger = logging.getLogger(__name__)
 
 
+_GBK_EXTENSIONS = (".gbff", ".gbk", ".gb")
+
+
 def _summarize_ppanggolin_log(log_path: Path) -> None:
     """Scan PPanGGOLiN log for notable warnings and print a brief summary."""
     if not log_path.exists():
@@ -57,8 +60,8 @@ def _parse_genome_count(info_output: str | None) -> int:
 def get_genbank_files(genomes_dir: Path) -> list[Path]:
     """Helper to find all genbank extensions."""
     files: list[Path] = []
-    for ext in ["*.gbff", "*.gbk", "*.gb"]:
-        files.extend(genomes_dir.glob(ext))
+    for ext in _GBK_EXTENSIONS:
+        files.extend(genomes_dir.glob(f'*{ext}'))
         
     return files
 
@@ -222,7 +225,6 @@ def build_pangenome(
             f"--content`. Parsed {no_genomes}. Raw output:\n{info_out}"
         )
 
-    # Calculate occurrence threshold exactly as bash `echo "scale=5; 2/$no_genomes" | bc`
     # Users can override this via occurrence_override if they want a different fraction.
     if occurrence is not None:
         if not 0.0 < occurrence <= 1.0:
